@@ -1,0 +1,8 @@
+{
+    "recommendations": [
+        "rogalmic.bash-debug",
+        "foxundermoon.shell-format",
+        "timonwong.shellcheck",
+        "formulahendry.code-runner"
+    ]
+}
