@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+option java_multiple_files = true;
+option java_package = "com.student.service.grpc";
+
+// Defining a service
+service StudentService {
+    rpc AllStudents(Empty) returns (ListStudent){};
+}
+
+message Empty{
+
+}
+
+message Student {
+    int64 id = 1;
+    string name = 2;
+    float calification = 3;
+}
+
+message ListStudent {
+    repeated Student students = 1;
+}
+
