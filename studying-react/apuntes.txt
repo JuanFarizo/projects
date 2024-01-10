@@ -1,0 +1,132 @@
+Component: reutilizable block, each one of them has his own state.
+If any Props or State changes react will re-render the component and update the DOM.
+We can pass children(one component) to a component which is the father.
+
+-----------------
+Props
+-----------------
+We have to treat it like immutable, change is an anti-pattern. 
+    Input pass to a component, similar to function args. Example of Props:
+    interface Props {
+        items: string[];
+        heading: string;
+        // To pass information to the parent we can use a function the convetion the naming start with on
+        onSelectItem: (item: string) => void; //function parameter item and return void
+    }
+
+-----------------
+State
+-----------------
+Are mutable, Internal Data managed by a component, 
+    may change over time, are like local variables inside the function. 
+    To declare data (state) in the component that may change over time can use a hook named useState
+
+----------------------------------
+PASS COMPONENT AS CHILDREN PROPS
+----------------------------------
+To pass a children component to a father there is a special Props named  "children"
+if we want to pass a simple structure to the child component:
+
+interface Props {
+    children: string;
+}
+
+if we want to pass a more complex we need  to use a class ReactNode from import { ReactNode } from "react"
+interface Props {
+  children: ReactNode; //Allows to pass HTML content
+}
+
+-----------------
+String literals
+-----------------
+type StringLiteral = {
+  message: 'loading' | 'success' | 'pending'; // This can be one of the three options
+};
+
+-----------------
+Optional Type using ?
+-----------------
+interface Props {
+  children?: ReactNode; //Children now is optional
+  onClose: () => void;
+}
+
+-----------------
+OnClick Event
+-----------------  
+interface Props {
+  handleOnClick: () => void;
+}
+// This is an option but if we need to pass the button event to the function:
+interface Props {
+  description: string;
+  handleOnClick: (event: React.MouseEvent<HTMLButtonElement>) => void;
+}
+
+const Button = ({ description, handleOnClick }: Props) => {
+  const [color, setColor] = useState('primary');
+  return (
+    <div>
+      <button
+        type="button"
+        className={'btn btn-' + color}
+        onClick={handleOnClick}
+      >
+        {description}
+      </button>
+    </div>
+  );
+};
+
+-----------------
+Input Elements
+-----------------
+interface Props {
+  inputValue: string;
+  handleOnChange: (event: React.ChangeEvent<HTMLInputElement>) => void;
+}
+
+function Input({ inputValue, handleOnChange }: Props) {
+  return <input type="text" onChange={handleOnChange} />;
+}
+
+export default Input;
+
+-----------------
+Style Props
+-----------------
+import React from "react"
+
+interface Props {
+    style: React.CSSProperties;
+}
+
+function ContainerStyle({style} : Props) {
+  return (
+    <div style={style}>ContainerStyle</div>
+  )
+}
+
+export default ContainerStyle
+
+//And in the father component
+ {
+    <ContainerStyle
+      style={{ border: '1px solid black', padding: '1erm' }}
+    />
+  }
+
+-----------------
+Using types
+-----------------
+Create a file Person.type.ts and inside: 
+type Adress = {
+  street: string;
+  number: number;
+};
+
+export type Person = {
+  name: string;
+  lastname: string;
+  adress: Adress;
+};
