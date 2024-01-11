@@ -130,3 +130,101 @@ export type Person = {
   lastname: string;
   adress: Adress;
 };
+
+----------------------
+useState Future Value
+----------------------
+With this we are allow to set the variable null at the time of initialize or when
+have to set the user to null like in the handleLougout
+
+function User() {
+  const [user, setUser] = useState<User | null>(null);
+
+  const handleLogin = () => {
+    setUser({
+      name: 'Pepetrueno',
+      email: 'pepe@pepe.com',
+    });
+  };
+
+  const handleLogout = () => {
+    setUser(null);
+  };
+
+  return (
+    <div>
+      <button onClick={handleLogin}>Login</button>
+      <button onClick={handleLogout}>Logout</button>
+      <div>User Name is: {user?.name} </div>
+    </div>
+  );
+}
+
+-----------------------
+useState Type Assertion
+-----------------------
+If there is no chance to the User to be null after the component renders
+we can use type Assertion and not use the operator ?
+
+function UserAssertion() {
+  const [user, setUser] = useState<User>({} as User);
+
+  const handleLogin = () => {
+    setUser({
+      name: 'Pepetrueno',
+      email: 'pepe@pepe.com',
+    });
+  };
+
+  return (
+    <div>
+      <button onClick={handleLogin}>Login</button>
+      <div>User Name is: {user.name} </div>
+    </div>
+  );
+}
+
+---------------
+useReducer Hook
+---------------
+type CounterState = {
+  count: number;
+};
+type Action = {
+  type: string;
+  payload: number;
+};
+
+const initializeState = { count: 0 };
+
+function reducer(state: CounterState, action: Action) {
+  switch (action.type) {
+    case 'increment':
+      return { count: state.count + action.payload };
+    case 'decrement':
+      return { count: state.count - action.payload };
+    default:
+      return state;
+  }
+}
+
+function Counter() {
+  const [state, dispatch] = useReducer(reducer, initializeState);
+  return (
+    <>
+      <h3>Counter: {state.count}</h3>
+      <button
+        type="button"
+        onClick={() => dispatch({ type: 'increment', payload: 10 })}
+      >
+        Increment 10
+      </button>
+      <button
+        type="button"
+        onClick={() => dispatch({ type: 'decrement', payload: 10 })}
+      >
+        Decrement 10
+      </button>
+    </>
+  );
+}

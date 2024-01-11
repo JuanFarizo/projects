@@ -4,6 +4,7 @@ import Button from './components/Button';
 import ListGroup from './components/ListGroup';
 import Input from './components/Input';
 import ContainerStyle from './components/ContainerStyle';
+import Counter from './components/Counter';
 function App() {
   let items = ['New York', 'Pergamino', 'Paris', 'Rancagua'];
 
@@ -47,6 +48,8 @@ function App() {
           style={{ border: '1px solid black', padding: '1erm' }}
         />
       }
+
+      {<Counter />}
     </>
   );
 }
