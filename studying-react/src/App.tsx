@@ -16,6 +16,9 @@ import { Profile } from './components/auth/Profile';
 import { List } from './components/generics/List';
 import { RandomNumber } from './components/restriction/RandomNumber';
 import { Text } from './components/polymorphic/Text';
+import { Route, Routes } from 'react-router-dom';
+import { Home } from './components/Home';
+import { NavBar } from './NavBar';
 
 function App() {
   let items = ['New York', 'Pergamino', 'Paris', 'Rancagua'];
@@ -31,7 +34,24 @@ function App() {
   const [alertVisible, setAlertVisibility] = useState(false);
   return (
     <>
-      {alertVisible && (
+      <NavBar />
+      <Routes>
+        <Route path="/" element={<Home />}></Route>
+        <Route
+          path="/list-group"
+          element={
+            <div>
+              <ListGroup
+                items={items}
+                heading="Cities"
+                onSelectItem={handleSelectedItem}
+              />
+            </div>
+          }
+        ></Route>
+      </Routes>
+
+      {/* {alertVisible && (
         <Alert onClose={() => setAlertVisibility(false)}> My Alert</Alert>
       )}
       <div>
@@ -39,7 +59,7 @@ function App() {
           description="Simple Button"
           handleOnClick={() => setAlertVisibility(true)}
         />
-      </div>
+      </div> */}
       {/*  <div>
         <ListGroup
           items={items}
@@ -48,7 +68,7 @@ function App() {
         />
       </div> */}
 
-      {
+      {/* {
         <Input
           inputValue="Write your value here"
           handleOnChange={handleOnChangeInput}
@@ -73,11 +93,11 @@ function App() {
         <UserContextProvider>
           <UserC></UserC>
         </UserContextProvider>
-      }
+      } */}
 
       {/*<MutableRef></MutableRef>*/}
       {/* {<CounterClass message="The counter value is"></CounterClass>} */}
-      {<Private isLogged={true} component={Profile}></Private>}
+      {/* {<Private isLogged={true} component={Profile}></Private>}
 
       {<List items={items} onClick={(item) => console.log(item)}></List>}
 
@@ -87,7 +107,7 @@ function App() {
         <Text as="h1" size="lg" color="primary">
           May Frend
         </Text>
-      }
+      } */}
     </>
   );
 }
