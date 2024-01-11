@@ -191,7 +191,7 @@ type CounterState = {
   count: number;
 };
 type Action = {
-  type: string;
+  type: 'increment' | 'decrement' | 'reset'; //To restrict use string literals
   payload: number;
 };
 
@@ -228,3 +228,366 @@ function Counter() {
     </>
   );
 }
+
+---------------------
+Discriminating Union
+---------------------
+type IncrementAction = {
+  type: 'increment' | 'decrement';
+  payload: number;
+};
+
+type ResetAction = {
+  type: 'reset';
+};
+
+type Action = IncrementAction | ResetAction;
+
+
+---------------------
+useContext Hook
+---------------------
+1. Create a context. Lo que se hace en el código de abajo es utilizar las Props
+de react node, y generar un contexto con el hook con el objeto que deseamos pasar, en este
+caso es un theme que tiene propiedades de css
+2.Creamos un componente que acepte un children (componente que va a terminar utilizando)
+el contexto que estamos generando
+
+type ThemeContextThemeProviderProps = {
+  children: React.ReactNode;
+};
+
+export const ThemeContext = createContext(theme); //Crea un contexto con el objeto que le pasamos
+
+// prettier-ignore
+export const ThemeContextProvider = ({children}: ThemeContextThemeProviderProps) => {
+  return (
+    <ThemeContext.Provider value={theme}>{children}</ThemeContext.Provider>
+  );
+};
+
+3. En el children llamamos al contexto con el hook useContext
+
+export const Box = () => {
+  const theme = useContext(ThemeContext);
+  return (
+    <div
+      style={{ backgroundColor: theme.primary.main, color: theme.primary.text }} //Utilizamos propiedades del context
+    >
+      Theme Context
+    </div>
+  );
+};
+
+-------------------------------
+useContext Hook with future values
+--------------------------------
+
+import React, { createContext, useState } from 'react';
+
+export type AuthUser = {
+  name: string;
+  email: string;
+};
+
+type UserContextType = {
+  user: AuthUser | null;
+  setUser: React.Dispatch<React.SetStateAction<AuthUser | null>>;
+};
+
+type UserContextProviderProps = {
+  children: React.ReactNode;
+};
+
+// prettier-ignore
+export const UserContext = createContext({} as UserContextType); //Al crear el contexto pasamos nulo inicialmente
+// Pero también puede ser un objeto del tipo AuthUser o null y una función setUser como utiliza el dispatcher
+// {} as UserContextType we can prevent the check for null when use the context in the child
+
+
+// prettier-ignore
+export const UserContextProvider = ({children}: UserContextProviderProps) => {
+// When the user Login the context should hold information about the user
+    const [user, setUser] = useState<AuthUser | null>(null);
+
+    return <UserContext.Provider value={{user, setUser: setUser}}>{children}</UserContext.Provider>  
+}
+
+----------------
+useRef Hook
+----------------
+Can be use as a readonline element of the DOM
+or 
+As mutable value as instance variable
+
+1. For DOM references specify the DOM element type
+function DomRef() {
+  //HTMLInputElement element type
+  const inputRef = useRef<HTMLInputElement>(null!); //Is a input element so we have to specify
+  //And can negate the null to specify only not Null are accepted
+
+  useEffect(() => {
+    inputRef.current.focus();
+  }, []);
+
+  return (
+    <div>
+      <input type="text" ref={inputRef} />
+    </div>
+  );
+}
+
+2. For mutable references specify de property type
+
+function MutableRef() {
+  const [timer, setTimer] = useState(0);
+  const interValRef = useRef<number | null>(null); //Property type
+
+  const stopTimer = () => {
+    if (interValRef.current) {
+      window.clearInterval(interValRef.current);
+    }
+  };
+
+  useEffect(() => {
+    interValRef.current = window.setInterval(() => {
+      setTimer((timer) => timer + 1);
+    }, 1000);
+    return () => {
+      stopTimer();
+    };
+  }, []);
+
+  return (
+    <div>
+      HookTimer - {timer}
+      <button type="button" onClick={() => stopTimer()}>
+        Stop Timer
+      </button>
+    </div>
+  );
+}
+
+----------------
+Class Component
+----------------
+//1. Have to define the props and state type
+type CounterProps = {
+  message: string;
+};
+type CounterState = {
+  count: number;
+};
+
+//2. Use the type in the Component <>
+export class CounterClass extends Component<CounterProps, CounterState> {
+  state = {
+    count: 0,
+  };
+  handleClick = () => {
+    this.setState((prevState) => ({ count: prevState.count + 1 }));
+  };
+  render() {
+    return (
+      <div>
+        <button type="button" onClick={this.handleClick}>
+          Increment
+        </button>
+        {this.props.message} {this.state.count}
+      </div>
+    );
+  }
+}
+
+---------------
+Component Prop
+---------------
+type Props = {
+  isLogged: boolean;
+  component: React.ComponentType<ProfileProps>; //For type the Componen Props and between
+}; // the diamons the type of the props that te component accepts in this case the component
+// is Profile and has a type of Props ProfileProps
+
+export const Private = ({ isLogged, component: Component }: Props) => {
+  if (isLogged) {
+    return <Component name="PepeTrueno"></Component>;
+  } else {
+    return <Login></Login>;
+  }
+};
+
+// And when have to call the component from App component:
+{<Private isLogged={true} component={Profile}></Private>}
+
+
+-------------
+Generic Props
+-------------
+1. Add a generic type to Props type, can think them as parametrized types
+2. Paremetrize the Props of the component as well
+
+type ListProps<T> = {
+  items: T[];
+  onClick: (value: T) => void;
+};
+
+export const List = <T extends {}>({ items, onClick }: ListProps<T>) => {
+  return (
+    <div>
+      <h2>List of Items</h2>
+      {items.map((item, index) => {
+        return (
+          <div key={index} onClick={() => onClick(item)}>
+            {item.toString()}
+          </div>
+        );
+      })}
+    </div>
+  );
+};
+
+
+------------------
+Restricting Props
+------------------
+Only can give one of the properties, can be negative, positive or even zero
+To achive that have to:
+1. Make a base clase with the number
+2. Create a class specific for each case
+3. Make RandomNumberProps one of the posibilities and give like type Prop of the component
+
+type RandomNumberType = {
+  value: number;
+};
+type PositiveNumber = RandomNumberType & {
+  isPositive: boolean;
+  isNegative?: never; //With never can negate that propertie to be setted when invoke the component
+  isZero?: never;
+};
+
+type NegativeNumber = RandomNumberType & {
+  isNegative: boolean;
+  isZero?: never;
+  isPositive?: never;
+};
+type ZeroNumber = RandomNumberType & {
+  isZero: boolean;
+  isPositive?: never;
+  isNegative?: never;
+};
+
+type RandomNumberProps = PositiveNumber | NegativeNumber | ZeroNumber;
+
+export const RandomNumber = ({
+  value,
+  isPositive,
+  isNegative,
+  isZero,
+}: RandomNumberProps) => {
+  return (
+    <div>
+      {value} {isPositive && 'Is Positive'} {isNegative && 'Is Negative'}{' '}
+      {isZero && 'Is Zero'}
+    </div>
+  );
+};
+
+
+-----------------------------
+Template Literals and Exclude
+-----------------------------
+// Position prop can be on of:
+// "left-center" | "left-top" | "left-bottom" | "center" | "center-top"
+// "center-bottom" | "right-center" | "right-top" | "right-bottom"
+
+type HorizontalPosition = 'left' | 'right' | 'center';
+type VerticalPosition = 'top' | 'center' | 'bottom';
+
+type ToastProps = {
+  //prettier-ignore
+  position: Exclude<`${HorizontalPosition}-${VerticalPosition}`, 'center-center'> | 'center'; // Typescript is going to inferer all the posible
+  // positions. Can exclude some properties like center-center
+};
+
+export const Toast = ({ position }: ToastProps) => {
+  return <div>Toast Notification Position - {position}</div>;
+};
+
+
+----------------------
+Wrapping HTML Elements
+----------------------
+Permits create basic elements like Buttons or inputs with own styling, and can accept special props
+and the regular of the HTML element. For this react provides a Type React.ComponentProps<>
+
+type ButtonProps = {
+  variant: 'primary' | 'secondary';
+} & React.ComponentProps<'button'>;
+
+export const CustomButton = ({ variant, children, ...rest }: ButtonProps) => {
+  return (
+    <button className={`class-with-${variant}`} {...rest}>
+      {children}
+    </button>
+  );
+};
+
+Other example
+
+type ButtonProps = React.ComponentProps<'input'>;
+
+export const Input = (props: ButtonProps) => {
+  return <input {...props} />;
+};
+
+
+If we want to omit a specific class like not allow HTML tags:
+type ButtonProps = {
+  variant: 'primary' | 'secondary';
+  children: string
+} & Omit<React.ComponentProps<'button'>, 'children'>;
+
+
+----------------------------------
+Extracting a Components Prop Types from other component
+----------------------------------
+export const CustomComponent = (props: React.ComponentProps<typeof ListGroup>) => {
+  return <div>{props.items}</div>;
+};
+
+----------------------
+Polymorphic Components
+----------------------
+With the property as of ElementType of react can control the tag of the component
+
+type TextOwnProps<E extends React.ElementType> = {
+  size?: 'sm' | 'md' | 'lg';
+  color?: 'primary' | 'secondary';
+  children: React.ReactNode;
+  as?: E; // To control the tag
+};
+
+type TextProps<E extends React.ElementType> = TextOwnProps<E> &
+  Omit<React.ComponentProps<E>, keyof TextOwnProps<E>>;
+
+export const Text = <E extends React.ElementType>({
+  size,
+  color,
+  children,
+  as,
+}: TextProps<E>) => {
+  const Component = as || 'div';
+  return (
+    <Component className={`class-with-${size}-${color}`}>{children}</Component>
+  );
+};
+
+And when I have to use the Component in the App
+
+ {
+  <Text as="h1" size="lg" color="primary">
+    May Frend
+  </Text>
+}
+
+

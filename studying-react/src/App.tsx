@@ -5,6 +5,18 @@ import ListGroup from './components/ListGroup';
 import Input from './components/Input';
 import ContainerStyle from './components/ContainerStyle';
 import Counter from './components/Counter';
+import { ThemeContextProvider } from './components/context/ThemeContext';
+import { Box } from './components/context/Box';
+import { UserContextProvider } from './components/context/UserContext';
+import UserC from './components/context/UserC';
+import MutableRef from './components/ref/MutableRef';
+import { CounterClass } from './components/class/CounterClass';
+import { Private } from './components/auth/Private';
+import { Profile } from './components/auth/Profile';
+import { List } from './components/generics/List';
+import { RandomNumber } from './components/restriction/RandomNumber';
+import { Text } from './components/polymorphic/Text';
+
 function App() {
   let items = ['New York', 'Pergamino', 'Paris', 'Rancagua'];
 
@@ -50,6 +62,32 @@ function App() {
       }
 
       {<Counter />}
+
+      {
+        <ThemeContextProvider>
+          <Box></Box>
+        </ThemeContextProvider>
+      }
+
+      {
+        <UserContextProvider>
+          <UserC></UserC>
+        </UserContextProvider>
+      }
+
+      {/*<MutableRef></MutableRef>*/}
+      {/* {<CounterClass message="The counter value is"></CounterClass>} */}
+      {<Private isLogged={true} component={Profile}></Private>}
+
+      {<List items={items} onClick={(item) => console.log(item)}></List>}
+
+      {<RandomNumber value={10} isNegative></RandomNumber>}
+
+      {
+        <Text as="h1" size="lg" color="primary">
+          May Frend
+        </Text>
+      }
     </>
   );
 }
