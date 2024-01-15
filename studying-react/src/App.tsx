@@ -19,6 +19,7 @@ import { Text } from './components/polymorphic/Text';
 import { Route, Routes } from 'react-router-dom';
 import { Home } from './components/Home';
 import { NavBar } from './NavBar';
+import { Demo } from './components/demo/Demo';
 
 function App() {
   let items = ['New York', 'Pergamino', 'Paris', 'Rancagua'];
@@ -36,7 +37,7 @@ function App() {
     <>
       <NavBar />
       <Routes>
-        <Route path="/" element={<Home />}></Route>
+        <Route path="/" element={<Demo />}></Route>
         <Route
           path="/list-group"
           element={
