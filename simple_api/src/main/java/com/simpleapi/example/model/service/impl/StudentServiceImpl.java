@@ -4,7 +4,7 @@ import java.util.List;
 
 import org.springframework.stereotype.Service;
 
-import com.simpleapi.example.model.Student;
+import com.simpleapi.example.model.entity.Student;
 import com.simpleapi.example.model.service.StudentService;
 import com.simpleapi.example.repository.StudentRepository;
 

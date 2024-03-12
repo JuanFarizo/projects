@@ -9,7 +9,7 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.context.annotation.Bean;
 
 import com.simpleapi.example.grpcserviceimpl.GprcSchoolServiceImpl;
-import com.simpleapi.example.model.Student;
+import com.simpleapi.example.model.entity.Student;
 import com.simpleapi.example.repository.StudentRepository;
 
 import io.grpc.Server;

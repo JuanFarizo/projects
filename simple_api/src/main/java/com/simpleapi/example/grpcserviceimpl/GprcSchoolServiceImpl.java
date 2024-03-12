@@ -4,7 +4,7 @@ import java.util.List;
 
 import org.springframework.beans.factory.annotation.Autowired;
 
-import com.simpleapi.example.model.Student;
+import com.simpleapi.example.model.entity.Student;
 import com.simpleapi.example.model.service.StudentService;
 import com.student.service.grpc.Empty;
 import com.student.service.grpc.ListStudent;

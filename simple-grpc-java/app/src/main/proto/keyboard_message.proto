@@ -1,0 +1,21 @@
+syntax = "proto3";
+
+package techschool.pcbook;
+
+option go_package = "pb";
+// To Specify the package inside the fodlers in wich the code is generated
+option java_package = "com.gitlab.techschool.pcbook.pb";
+// To split the code in smaller files
+option java_multiple_files = true;
+
+message Keyboard {
+    enum Layout {
+        UNKNOWN = 0;
+        QWERTY = 1;
+        QWWERTZ = 2;
+        AZERTY = 3;
+    }
+
+    Layout layout = 1;
+    bool backlit = 2;
+}

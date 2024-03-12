@@ -1,4 +1,4 @@
-package com.simpleapi.example.controller;
+package presentation.controller;
 
 import java.util.List;
 
@@ -7,7 +7,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-import com.simpleapi.example.model.Student;
+import com.simpleapi.example.model.entity.Student;
 import com.simpleapi.example.model.service.StudentService;
 
 @RestController

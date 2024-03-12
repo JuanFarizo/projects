@@ -1,4 +1,4 @@
-package com.simpleapi.example.model;
+package com.simpleapi.example.model.entity;
 
 import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
