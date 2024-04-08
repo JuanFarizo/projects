@@ -1,0 +1,175 @@
+::-webkit-scrollbar {
+    width: 5px;
+  }
+  
+  ::-webkit-scrollbar-track {
+    border-radius: 10px;
+    background-color: #777;
+  }
+  
+  ::-webkit-scrollbar-thumb {
+    border-radius: 10px;
+    background-color: #444;
+  }
+  
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: #555;
+  }
+
+body{
+    min-height: 345px;
+    overflow: hidden;
+    font-size: 12px;
+}
+
+#auth-token{
+    text-align: center;
+}
+
+#bot-list{
+    font-size: 10px;
+    height: 345px;
+    overflow-y: auto;
+    width: 100%;
+}
+
+.bot-list-item{
+    display: flex;
+    padding-bottom: 10px;
+    gap: 12px;
+}
+
+.bot-list-item:last-child {
+    padding-bottom: 50px;
+}
+
+.bot-list-image{
+    height: 40px;
+}
+
+.bot-url{
+    cursor: pointer;
+    color: #46d228;
+}
+
+.buttons-box{
+    position: absolute;
+    bottom: 10px;
+    left: 10px;
+    right: 10px;
+    display: flex;
+    gap: 10px;
+}
+
+#coupon-form{
+    padding: 10px;
+    position: absolute;
+    bottom: 0;
+    top: 0;
+    left: 0;
+    right: 0;
+    background: #191d21;
+}
+
+#coupon-form div:first-child{
+    margin-top: 20%;
+}
+
+#coupon-form .coupon-buttons-box{
+    display: flex;
+    margin-top: 10px;
+    gap: 10px;
+}
+
+.coupon-error{
+    text-align: center;
+    margin-top: 10px;
+    color: red;
+    font-size: 12px;
+}
+
+.coupon-success{
+    text-align: center;
+    margin-top: 10px;
+    color: #46d228;
+    font-size: 12px;
+}
+
+.oauth2-alert{
+    font-size: 10px;
+    text-align: center;
+}
+
+.no-bots{
+    text-align: center;
+    font-size: 23px;
+    margin-top: 5rem;
+}
+
+#token-auth{
+    position: absolute;
+    left: 0;
+    right: 0;
+    width: 280px;
+    margin: auto;
+    bottom: 10px;
+}
+
+#discord-auth{
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    height: 120px;
+    left: 95px;
+    right: 95px;
+    margin: auto;
+}
+
+#login-form{
+    position: relative;
+    height: 350px;
+}
+
+.bot-urls{
+    display: flex;
+    flex-direction: column;
+}
+
+.token-auth-box{
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    justify-content: space-between;
+}
+
+#login-button{
+    width: 88px;
+}
+
+#egg-timer{
+    display: none;
+    position: absolute;
+    bottom: 10px;
+    left: 0;
+    right: 0;
+    margin: auto;
+    width: fit-content;
+    font-size: 25px;
+    font-weight: 600;
+}
+
+#egg{
+    width: 20px;
+    height: 20px;
+    bottom: 0;
+    right: 0;
+    position: absolute;
+}
+
+.green {
+    color: #1abc9c;
+}
+
+.red {
+    color: #e7515a;
+}

@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Bottingempire Options</title>
+    <script type="text/javascript" src="jquery-2.2.4.min.js"></script>
+    <link rel="stylesheet" href="options.css">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-1BmE4kWBq78iYhFldvKuhfTAU6auU8tT94WrHftjDbrCEXSU1oBoqyl2QvZ6jIW3" crossorigin="anonymous">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@forevolve/bootstrap-dark@1.0.0/dist/css/bootstrap-dark.min.css" />
+</head>
+<body>
+<div id="login-form" style="display: none;">
+    <div class="btn btn-primary" id="discord-auth">
+        <img src="Discord-Logo-White.png" style="height:78px;" alt="discord-logo">
+        <div>Login with Discord</div>
+    </div>
+
+    <div id="egg"></div>
+    <div id="egg-timer"></div>
+    <div id="token-auth" style="display: none;">
+        <div class="token-auth-box">
+            <input type="text" class="form-control text-center" id="auth-token" placeholder="Auth token">
+            <button type="submit" id="login-button" class="btn btn-success">Login</button>
+        </div>
+    </div>
+</div>
+
+<div id="options-form" style="display: none; padding: 10px;">
+    <ul class="nav nav-tabs" id="optionsTabs" role="tablist">
+        <li class="nav-item">
+            <a class="nav-link active" id="botListTab" data-toggle="tab" href="#bot-list" role="tab" aria-controls="bot-list" aria-selected="true">Bot List</a>
+        </li>
+        <li class="nav-item">
+            <a class="nav-link" id="settingsTab" data-toggle="tab" href="#settings" role="tab" aria-controls="settings" aria-selected="false">Settings</a>
+        </li>
+    </ul>
+
+    <div class="tab-content" id="optionsTabContent">
+        <div class="tab-pane fade show active" id="bot-list" role="tabpanel" aria-labelledby="botListTab">
+            <!-- Inhalt der Bot-Liste hier -->
+        </div>
+        <div class="tab-pane fade" id="settings" role="tabpanel" aria-labelledby="settingsTab">
+            <div class="form-check form-switch pl-5 pt-2">
+                <input class="form-check-input" type="checkbox" id="case-collector-checkbox" checked>
+                <label class="form-check-label" for="case-collector-checkbox">Use CSGORoll Daily Collector</label>
+                
+            </div>
+            <div class="form-check form-switch pl-5 pt-2">
+                <input class="form-check-input" type="checkbox" id="clash-rain-collector-checkbox">
+                <label class="form-check-label" for="clash-rain-collector-checkbox">Use Clash.gg Rain Collector (Beta)</label>
+            </div>
+            <div class="form-check form-switch pl-5 pt-2">
+                <input class="form-check-input" type="checkbox" id="clash-daily-collector-checkbox">
+                <label class="form-check-label" for="clash-daily-collector-checkbox">Use Clash.gg Daily Collector</label>
+            </div>
+            <div class="form-check form-switch pl-5 pt-2">
+                <input class="form-check-input" type="checkbox" id="auto-update-checkbox" checked>
+                <label class="form-check-label" for="auto-update-checkbox">Automatical download newest version</label>
+            </div>
+        </div>
+    </div>
+
+    <div class="buttons-box">
+        <button id="coupon-button" class="btn btn-warning w-100">Coupons</button>
+        <button id="logout-button" class="btn btn-danger w-100">Logout</button>
+    </div>
+</div>
+
+
+<div id="coupon-form" style="display: none;padding: 10px;">
+    <div>
+        <input type="text" class="form-control text-center" id="coupon-code" placeholder="Enter coupon">
+        <div class="coupon-buttons-box">
+            <button type="submit" id="coupon-cancel-button" class="btn btn-danger w-100">Back</button>
+            <button type="submit" id="coupon-activate-button" class="btn btn-success w-100">Activate</button>
+        </div>
+        <div class="coupon-error"></div>
+        <div class="coupon-success"></div>
+    </div>
+</div>
+
+<script type="text/javascript" src="options.js"></script>
+</body>
+</html>
