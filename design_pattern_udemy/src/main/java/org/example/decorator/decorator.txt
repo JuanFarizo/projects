@@ -1,0 +1,19 @@
+Motivation:
+- Want to augment an object with additional functionality
+- Do not want to rewrite or alter existing code (Open-Close Principle)
+- Want to keep new functionality separate (Single Responsability Principle)
+- Need to be able to ineract with existing strctures
+Tow options:
+    - Inherit from requiere object if possible; some classes are final
+    - Build a Decorator, which simple references the decorated object(s)
+
+Decorator: design pattern facilitates the addition of behaviors to individual 
+objects without directly inheriting from them.
+
+
+Instead of modifying the original object, you end up making these decorators 
+which take your original object in the constructor. They aggregate it in a private variable,
+and then they provide additional information as well.
+
+DynamicOperatorDemo: When you have to create a new decorator at runtime
+StaticDecoratorDemo: 

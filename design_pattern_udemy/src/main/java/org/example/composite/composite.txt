@@ -1,0 +1,26 @@
+Composite: A mechanism for treating individual (scalar) objects and compositions
+of objects in a uniform manner
+
+Motivation:
+- Objects use other objects' fields/methods through inheritance and composition
+- Composition lets us make compund objects
+- Composite design pattern allows us to treat individual or scalar components as well as aggregate
+objects or collections of components uniformly.
+- Some composed and singular objects need similar/identical behaviors
+
+
+Composite pattern has a simple and very noble goal:
+It allows us to treat individual or scalar components as well as aggregate
+objects or collections of components uniformly.
+
+
+So this is the key of the composite design pattern.
+It's an ability to have objects which can be treated in both 
+singular manner as scalar objects or as collections of objects.
+In the example the class GraphicObject is acting like scalar and as collection of objects
+and is treated as a single object and as a collection of it.
+
+---------
+IMPORTANT When implement this pattern
+---------
+A single object can masquerade as a collection by returning a single-element collection contaning only "this"
