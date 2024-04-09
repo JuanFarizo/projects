@@ -16,4 +16,10 @@ which take your original object in the constructor. They aggregate it in a priva
 and then they provide additional information as well.
 
 DynamicOperatorDemo: When you have to create a new decorator at runtime
-StaticDecoratorDemo: 
+StaticDecoratorDemo: Static decorator can be achieve by passing to the constructor
+a supplier with the specific implementation of the generics that we are creating/instantiating
+
+Summary:
+- A decorator keeps the refernece to the decorated object(s)
+- May or may not forward calls (delegate the calls)
+- Exist in a static variant

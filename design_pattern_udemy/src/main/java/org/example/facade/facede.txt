@@ -1,0 +1,37 @@
+Facade: Provides a simple, easy to understand/user interface over a large
+ and sophisticated body of code
+
+Motivation:
+- Balancing complexity and presentation/usability
+- Many Subsystems
+- Complex internal structure
+- End user is not exposed to internals
+- Many systems working to provide flexibility, etc
+- API consumers want it to just work
+
+Example:
+    Buffer buffer = new Buffer(30, 20);
+    ViewPort viewPort = new ViewPort(buffer, 30, 20, 0, 0);
+    Console console = new Console(30, 20);
+    console.addViewport(viewPort);
+    console.render();
+
+So the problem with this is that the user might not necessarily want to 
+go through all of this low level API.
+And this is precisely where the facade design pattern comes in.
+So the facade essentially provides a simplified API over a set of subsystems 
+and here we have the subsystems
+
+Applying Facade:
+    public static Console newConsole(int width, int height) {
+        Buffer buffer = new Buffer(width, height);
+        ViewPort viewPort = new ViewPort(buffer, width, height, 0, 0);
+        Console console = new Console(width, width);
+        console.addViewport(viewPort);
+        return console;
+    }
+
+Summary:
+- Build a facade to privde a simplified API over a set of classes
+- May wish to (optionally) expose internals through the facade
+- May allow user to escalate to use more complex API IF the need to
