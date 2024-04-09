@@ -1,0 +1,78 @@
+Singleton: a component which is instantiated only once.
+
+BasicSingleton has 2 problem:
+1. Reflection, using reflection can access to the private 
+constructor
+2. Serialization, when do you deserialize the object the jvm
+do not care about the private constructor
+To fix the serialization problem we have to use readResolve()
+
+    protected Object readResolve() {
+        return INSTANCE;
+    }
+
+This gives to the JVM the information that when serialization occur is in the context
+of this INSTANCE
+
+-------------------
+LAZY INITIALIZATION
+-------------------
+This can end in a race condition problem if there is more classes calling
+to the same getInstance. A way to fix is made getInstance synchronized, but has
+some performance issue. A better way is using double-checked locking
+
+    public static LazySingleton getInstance() {
+        if (instance == null) {
+            synchronized (LazySingleton.class) {
+                if (instance == null) {
+                    instance = new LazySingleton();
+                }
+            }
+        }
+        return instance;
+    }
+Now is lazy and thread safe
+-----------------------
+INNCER STATIC SINGLETON
+-----------------------
+//With this approach do not have to deal with thread safety
+public class InnerStaticSingleton
+
+--------------
+ENUM SINGLETON
+---------------
+/**
+ * Do not have the problem of thread safety
+ * but the serialization do not preserver the
+ * internal state of the singleton, only serialize
+ * the name of the singleton
+ */
+
+
+---------------
+MONOSTATIC
+---------------
+Is not the best approach because the class do not comunicate
+that is a singleton
+//To conver the class to a monostate you have to 
+// make the fields static
+
+class MonoStaticClass {
+    private static String name;
+
+    public String getName() {
+        return name;
+    }
+
+    public void setName(String name) {
+        ChiefExecutiveOfficer.name = name;
+    }
+}
+
+--------
+MULTITON
+--------
+The finale propourse of the multiton is not to have just one isntance of an particular
+object-class, multiton tries to do is that there is a finite set of instances, and for every single
+instance you can also implement additional benefits such as lazy loading, for example.
+Can we restrict the number of instances that are in the program

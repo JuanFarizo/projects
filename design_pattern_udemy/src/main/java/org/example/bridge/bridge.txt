@@ -1,0 +1,22 @@
+The bridge design pattern is all 
+about connecting components together through abstractions.
+decouples the interface or the hierarchy from the implementation.
+And both of these can be hierarchies, but they don't have to engage in one big inheritance relationship.
+
+Bridge: a mechanism that decouples an interface (hierarchy) from an implementation (hierarchy)
+
+Motivation:
+Bridge prevents what is called Cartesian product complexity explosion.
+
+Example cartesian product explosion:
+let's suppose that you have some 
+- base class called ThreadScheduler, and then the
+- can be preemptive or cooperative, and it can also 
+- run on Windows and Linux and you
+end up with a 2x2 scenario: WindowsPTS, UnixPTS, WindowsCTS, UnixCTS
+And the bridge pattern is precisely the thing that actually avoids this whole entity explosion.
+
+Summary:
+- Decouple abstraction from implementation
+- Both can exist as hierarchies
+- A strong for of encapsulation

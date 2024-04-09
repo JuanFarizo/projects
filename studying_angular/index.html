@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en" ng-app="universidadApp">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Document</title>
+    <link rel="stylesheet" href="css/bootstrap.css">
+    <link rel="stylesheet" href="node_modules/animate.css/animate.css" />
+    <script src="js/lib/angular.min.js"></script>
+    <script src="js/app.js"></script>
+    <style>
+        .avatar {
+            width: 75px;
+            height: 75px;
+        }
+
+        .puntero {
+            cursor: pointer;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container" ng-controller="mainCtrl">
+
+        <h1>$HTTP Request</h1>
+        <h4>Data dinámica</h4>
+        <hr>
+        <div ng-include="tblProfesores"></div>
+
+    </div><!-- fin del listadoCtrl -->
+
+
+    <div class="container">
+        <h1>Filtros :: Filters</h1>
+        <h4>En Angular js</h4>
+        <hr>
+        <p>
+            Filtro de texto: {{ "FerTRolo"}}
+            <br>
+            Filtro de texto: {{ "FerTRolo"| uppercase}}
+            Filtro de texto: {{ "FerTRolo"| lowercase}}
+        </p>
+        <p>
+            Filtro de moneda: {{1350 | currency}}
+            <br>
+            Filtro de moneda: {{1350 | currency:''}}
+        </p>
+        <p>
+            Filtro de numero: {{13545845 | number}}
+        </p>
+    </div>
+    <hr>
+    <div class="container">
+        <h1>Ng Model</h1>
+        <p>
+            Su Nombre: {{nombre | uppercase}}
+            <br>
+            <input ng-model="nombre" type="text" name="nombre" id="" placeholder="Ingrese su nombre"
+                class="form-control">
+        </p>
+        <p>
+            Seleccione el pais: {{pais}}
+            <select ng-model="pais" name="ubicacion" id="" class="form-control">
+                <option value="1">Mex</option>
+                <option value="2">Arg</option>
+                <option value="3">Col</option>
+            </select>
+        </p>
+        <p>
+            Seleccione una opción: {{opt1}} {{opt2}}
+            <br>
+            <input type="checkbox" ng-model="opt1"> Opcion 1
+            <br>
+            <input type="checkbox" ng-model="opt2"> Opcion 2
+        </p>
+        <p>
+            Seleccione el genero: {{genero}}
+            <br>
+            <input ng-model="genero" type="radio" value="M"> Masc
+            <br>
+            <input ng-model="genero" type="radio" value="F"> Fem
+        </p>
+    </div>
+    <hr>
+
+    <div class="container" ng-controller="profesorCtrl">
+        <h1>Profesor</h1>
+        <h4>{{profesor.nombre}}</h4>
+
+        <div class="row">
+            <div class="col-sm-3">
+                <section class="panel">
+                    <div class="panel-body">
+                        <img ng-src={{profesor.foto}} alt="" width="150px" height="150px" class="img-circle">
+                    </div>
+                </section>
+            </div>
+            <div class="col-sm-9">
+                <section class="panel">
+                    <div class="panel-body">
+                        {{profesor.bio}}
+                        <br><br>
+                        <strong>Edad: </strong>{{profesor.edad}}
+                        <br>
+                        <button ng-click="editarProfesor()" type="button" class="btn-primary">Editar</button>
+                    </div>
+                </section>
+            </div>
+        </div>
+
+        <div class="row animate__fadeInDown" ng-show="mostrarCaja">
+            <div class="col-sm-9">
+                <section class="panel">
+                    <div class="panel-body">
+                        Nombre:
+                        <input ng-model="editando.nombre" type="text" class="form-control">
+                        <br>
+                        <input ng-model="editando.edad" type="text" name="" id="" class="form-control">
+                        <br>
+                        Bio:
+                        <textarea ng-model="editando.bio" cols="30" rows="5"></textarea>
+                        <br>
+                        <br>
+                        <button class="btn btn-primary" ng-click="guardarCambios()">Guardar</button>
+                        <button class="btn btn-danger" ng-click="cancelarCambios()">Cancelar</button>
+                    </div>
+                </section>
+            </div>
+        </div>
+
+        <hr>
+
+        <div class="container" ng-controller="listadoCtrl">
+            <h1>ng-repeat</h1>
+            <h4>Manejando repeticiones</h4>
+            <br>
+            <ul>
+                <li ng-repeat="item in listado">{{item}}</li>
+            </ul>
+
+            <table class="table table-striped">
+                <tr>
+                    <th>Nombre</th>
+                    <th>Edad</th>
+                    <th>Clase</th>
+                </tr>
+                <tr ng-repeat="item in listadoProfesores.profesores">
+                    <td>{{item.nombre}}</td>
+                    <td>{{item.edad}}</td>
+                    <td>{{item.clase}}</td>
+                </tr>
+            </table>
+
+            <ul>
+                <li ng-repeat="numero in [1,2,3,4,5,6,7,8,9,10]"> 2 x {{numero}} = {{2 * numero}}</li>
+            </ul>
+
+            <h2>Filtros para el ng-repeat</h2>
+            <div class="row">Busqueda
+                <br>
+                <input ng-model="busqueda.nombre" type="text" class="form-control"
+                    placeholder="Ingrese lo que quiere buscar">
+                <br>
+                <select ng-model="busqueda.sexo" class="form-control">
+                    <option value="Male">Hombre</option>
+                    <option value="Female">Mujer</option>
+                    <option value="">Cualquiera</option>
+                </select>
+            </div>
+            <table class="table table-striped">
+                <tr>
+                    <th>Avatar</th>
+                    <th><a class="puntero" ng-click="columna='nombre'; reverse = !reverse;">Nombre</a></th>
+                    <th><a class="puntero" ng-click="columna='sexo'; reverse = !reverse;">Sexo</a></th>
+                    <th>Celular</th>
+                </tr>
+                <tr ng-repeat="persona in personas | filter:busqueda | orderBy:columna:reverse">
+                    <td> <img ng-src="{{persona.avatar}}" alt="" class="avatar img-circle"></td>
+                    <td>{{persona.nombre}}</td>
+                    <td>{{persona.sexo}}</td>
+                    <td>{{persona.celular}}</td>
+                </tr>
+            </table>
+
+            <hr>
+            <div class="container">
+                <h1>ng-options</h1>
+                <h4>Repeticion de elementos</h4>
+                Selección de Pais:{{paisSeleccionado}}
+                <select ng-model="paisSeleccionado" class="form-control">
+                    <option value="">Selecicone un pais:</option>
+                    <option ng-repeat="pais in paises" value="{{pais.id}}">{{pais.nombre}}</option>
+                </select>
+
+                <select ng-model="paisSeleccionado" class="form-control" ,
+                    ng-options="pais.id as pais.nombre for pais in paises">
+                    <option value="">Seleccione</option>
+                </select>
+
+            </div>
+        </div>
+
+
+
+    </div>
+</body>
+
+</html>

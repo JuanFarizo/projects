@@ -1,0 +1,11 @@
+Motivation:
+- Object creation logic becomes too convulted
+- Constructors is not descriptive
+Name mandate by name of containing type
+Cannot overload with same set of arguments with different names
+Can turn into overloading hell
+- Wholesale object creation (non-piecewise, unlike Builder) can be outsourced to
+
+A separate function (factory method) That may exist in a separate class (Factory)
+can create hirarchy of factories with Abstract Factory
+Definition: A component responsible solely for the wholesale (not piecewise) creation of objects.

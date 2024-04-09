@@ -1,0 +1,102 @@
+{"alumnos":[{
+    "codigo": 1,
+    "nombre": "Fabien",
+    "telefono": "500-662-4029",
+    "direccion": "10 Haas Way"
+  }, {
+    "codigo": 2,
+    "nombre": "Giustino",
+    "telefono": "814-105-9370",
+    "direccion": "7 Surrey Junction"
+  }, {
+    "codigo": 3,
+    "nombre": "Stanly",
+    "telefono": "194-550-9527",
+    "direccion": "38518 Thierer Center"
+  }, {
+    "codigo": 4,
+    "nombre": "Liuka",
+    "telefono": "912-371-0915",
+    "direccion": "5 Miller Center"
+  }, {
+    "codigo": 5,
+    "nombre": "Claudina",
+    "telefono": "318-317-2891",
+    "direccion": "99 Prentice Center"
+  }, {
+    "codigo": 6,
+    "nombre": "Romeo",
+    "telefono": "730-538-8617",
+    "direccion": "41 Holmberg Avenue"
+  }, {
+    "codigo": 7,
+    "nombre": "Hort",
+    "telefono": "130-387-6011",
+    "direccion": "31 Corben Crossing"
+  }, {
+    "codigo": 8,
+    "nombre": "Ario",
+    "telefono": "255-676-6138",
+    "direccion": "10826 Crowley Avenue"
+  }, {
+    "codigo": 9,
+    "nombre": "Lennie",
+    "telefono": "945-980-7956",
+    "direccion": "967 Clove Parkway"
+  }, {
+    "codigo": 10,
+    "nombre": "Borg",
+    "telefono": "871-465-5959",
+    "direccion": "65 Gina Center"
+  }, {
+    "codigo": 11,
+    "nombre": "Belicia",
+    "telefono": "579-615-9805",
+    "direccion": "02 Red Cloud Crossing"
+  }, {
+    "codigo": 12,
+    "nombre": "Melania",
+    "telefono": "439-998-5614",
+    "direccion": "27272 Surrey Pass"
+  }, {
+    "codigo": 13,
+    "nombre": "Marcille",
+    "telefono": "776-533-5236",
+    "direccion": "1013 Eliot Alley"
+  }, {
+    "codigo": 14,
+    "nombre": "Zorana",
+    "telefono": "788-205-8113",
+    "direccion": "1 Debra Parkway"
+  }, {
+    "codigo": 15,
+    "nombre": "Patton",
+    "telefono": "888-932-1036",
+    "direccion": "8 Reinke Plaza"
+  }, {
+    "codigo": 16,
+    "nombre": "Grete",
+    "telefono": "659-939-4651",
+    "direccion": "5 Homewood Road"
+  }, {
+    "codigo": 17,
+    "nombre": "Griswold",
+    "telefono": "860-427-0526",
+    "direccion": "3554 Meadow Ridge Point"
+  }, {
+    "codigo": 18,
+    "nombre": "Ingelbert",
+    "telefono": "531-208-9704",
+    "direccion": "66 Prairie Rose Lane"
+  }, {
+    "codigo": 19,
+    "nombre": "Elliott",
+    "telefono": "962-550-0978",
+    "direccion": "37 Del Mar Crossing"
+  }, {
+    "codigo": 20,
+    "nombre": "Montgomery",
+    "telefono": "250-670-0066",
+    "direccion": "10116 Bunting Terrace"
+  }]
+}
