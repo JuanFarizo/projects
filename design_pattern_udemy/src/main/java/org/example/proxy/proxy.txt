@@ -1,0 +1,19 @@
+Proxy
+A class that functions as an interface to a particular resource.
+That resource may be remote, expensive to construct,
+o may require loggin or some other added functionality.
+
+The key thing about the proxy is that its interface looks just 
+like the interface of the object
+that you're actually attempting to access.
+
+Motivation: 
+- The proxy basically gives you the same interface as the one that you've been using, 
+but it gives you entirely a different behavior behind the scenes.
+
+Example:
+    CommunicationProxy
+    VirtualProxy
+    SelectionProxy
+    LogginProxy
+    ProtectionProxy: Control access to a particula resource

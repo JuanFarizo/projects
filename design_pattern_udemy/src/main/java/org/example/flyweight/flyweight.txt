@@ -1,0 +1,13 @@
+Flyweight: Is a space optimization technique
+that lets us use less memory by storing
+externally the data associated with similar objects
+
+Motivation:
+- Avoid redundancy when storing data
+
+Summary:
+ - Store common data externally
+ - Specify an index or a reference into the externall data Store
+ - Define the ide aof "ranges" on homogeneus collections and
+ sotre data related to thos ranges 
+ - Don't forget String.internet()
