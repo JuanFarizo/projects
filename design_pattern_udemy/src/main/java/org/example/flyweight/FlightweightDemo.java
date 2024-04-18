@@ -6,6 +6,7 @@ import java.util.List;
 import java.util.function.Function;
 
 class User {
+    @SuppressWarnings("unused")
     private String fullName;
 
     public User(String fullName) {
@@ -16,6 +17,7 @@ class User {
 
 class UserFlyweight {
     static List<String> strings = new ArrayList<>();
+    @SuppressWarnings("unused")
     private int[] names;
 
     public UserFlyweight(String fullname) {
@@ -37,6 +39,7 @@ class UserFlyweight {
 }
 
 public class FlightweightDemo {
+    @SuppressWarnings("unused")
     public static void main(String[] args) {
         UserFlyweight user = new UserFlyweight("Jhon Smith");
         UserFlyweight user2 = new UserFlyweight("Jane Smith");

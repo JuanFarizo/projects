@@ -1,0 +1,14 @@
+Chan if responsability:
+A chain of components who all get a chance to process either a command or a query, and they can optionally have some sort of default processing implementation, and they can also terminate the processing chain and thereby preventing the rest of the objects in the chain to actually prevent them from processing this particular command or query.
+
+Motivation
+Example:
+Unethical behavior by an employee: who takes the blame?
+    employee
+    manager
+    ceo
+Example2:
+You clic a graphical elemtn on a form
+    Button handles it, tops further processing
+    Underlying group box
+    underlying window

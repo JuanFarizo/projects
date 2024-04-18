@@ -12,8 +12,41 @@ Motivation:
 but it gives you entirely a different behavior behind the scenes.
 
 Example:
-    CommunicationProxy
-    VirtualProxy
-    SelectionProxy
-    LogginProxy
-    ProtectionProxy: Control access to a particula resource
+   - CommunicationProxy
+   - VirtualProxy
+   - SelectionProxy
+   - LogginProxy
+   - ProtectionProxy: Control access to a particula resource
+   - DynamicProxy: powerful but somewhat computationally costly approach, is it's a proxy which is constructed at runtime as opposed to compile time.
+   So at runtime you take an existing object and you make a wrapper around it.
+   - PropertyProxy is not exactly a proxy: the key is replace the field with something 
+    which forces you to perform the kind of checks that we want to do here, like logging, for example.
+
+
+
+DynamicProxy:
+ Dynamic proxy which takes an existing object of type person and counts the
+ number of methods inside person that have actually been called.
+ utility method here for constructing a dynamic proxy with logging on any kind
+ of object.
+ Target, which is the object for which the logging is required, and
+ we're going to specify as a class of T the interface
+ We actually want to get a particular interface and a dynamic proxy for that
+ interface. So you cannot simply just take the underlying class and get that
+ as the end result because that wouldn't work.
+
+
+Proxy vs Decoretor
+- Proxy tries to provide an identical interface, whereas the decorator tries to enhance that interface.
+Decorator tries to provide part or the whole of the interface that you're actually decorating, giving additional features as well(addition fields, additional member functions)
+- Decorator typically aggregate (or has reference to) what it is decorating; Proxy does not have to (All it has to do is just masquerade as that object that you've been working with.)
+- Proxy, unlike a decorated object, is it might not even be materialized.  It might not even exist.
+
+
+Summary:
+- A proxy has the same interface as the underlying object
+- To create a proxy, simply replicate the existing interface of an object
+- Add relevant functionality to the redefined member functions
+- There are differente proxies, with completely different behaviors
+
+So the goal of the proxy is to kind of change the behavior of an object behind the scenes, but preserve the interface that everyone is used to.

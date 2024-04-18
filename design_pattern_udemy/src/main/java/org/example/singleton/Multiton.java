@@ -32,6 +32,7 @@ class Printer {
 }
 
 public class Multiton {
+    @SuppressWarnings("unused")
     public static void main(String[] args) {
         Printer main = Printer.get(Subsystem.PRIMARY);
         Printer aux = Printer.get(Subsystem.AUXILIARY);

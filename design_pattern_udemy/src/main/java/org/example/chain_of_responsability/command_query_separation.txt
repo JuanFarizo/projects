@@ -1,0 +1,6 @@
+Command Query Separation
+So the idea is that whenever we operate on objects, we separate all of the invocations into two different concepts which are called query and command.
+
+Command: So a command is something that you send when you're asking for an action or a change. Example: asking for an action or change. Set your attack value to 2
+Query: is asking for information without necessarily changing anything. Give me your attack value
+CQS: which means that you have separate means of sending commands and queries. 

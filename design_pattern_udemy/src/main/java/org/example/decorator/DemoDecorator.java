@@ -61,6 +61,7 @@ class MagicString {
         string.getChars(srcBegin, srcEnd, dst, dstBegin);
     }
 
+    @SuppressWarnings("deprecation")
     public void getBytes(int srcBegin, int srcEnd, byte[] dst, int dstBegin) {
         string.getBytes(srcBegin, srcEnd, dst, dstBegin);
     }

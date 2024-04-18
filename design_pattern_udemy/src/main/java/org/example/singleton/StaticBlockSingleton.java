@@ -27,6 +27,7 @@ class StaticBlockSingleton {
 }
 
 class DemoStaticBlockSingleton {
+    @SuppressWarnings("unused")
     public static void main(String[] args) throws IOException {
         StaticBlockSingleton singleton = new StaticBlockSingleton();
 

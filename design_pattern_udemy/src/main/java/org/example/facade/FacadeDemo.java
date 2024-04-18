@@ -17,6 +17,7 @@ class Buffer {
     }
 }
 
+@SuppressWarnings("unused")
 class ViewPort {
     private final Buffer bf;
     private final int width;

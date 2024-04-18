@@ -71,6 +71,7 @@ class ShapeModule extends AbstractModule {
 
 // In this example we use google guice to inject dependencies
 class RenderShapDemo {
+    @SuppressWarnings("unused")
     public static void main(String[] args) {
         RasterRenderer rasterRenderer = new RasterRenderer();
         VectorRenderer vectorRenderer = new VectorRenderer();
