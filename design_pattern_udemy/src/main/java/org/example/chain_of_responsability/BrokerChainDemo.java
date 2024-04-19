@@ -7,22 +7,22 @@ import java.util.function.Consumer;
 //COR + Observer + Mediator + (-)Memento
 
 //CQS Command Query Separation
-class Event<Args> {
+class EventBC<Args> {
     // Observer (Suscribe an event, Unsuscribe an event, or Fire an event)
     private int index = 0;
 
-    private Map<Integer, Consumer<Args>> handlers = new HashMap<>(); // bunch of subscribers or handlers. These are
+    private final Map<Integer, Consumer<Args>> handlers = new HashMap<>(); // bunch of subscribers or handlers. These are
                                                                      // going to be effectively functions which handle
                                                                      // whenever a particular event is fired and it's
                                                                      // provided a certain number of arguments
 
-    public int suscribe(Consumer<Args> handler) {
+    public int subscribe(Consumer<Args> handler) {
         int i = index;
         handlers.put(index++, handler);
         return i;
     }
 
-    public void unsiscribe(int key) {
+    public void unsubscribe(int key) {
         handlers.remove(key);
     }
 
@@ -33,17 +33,17 @@ class Event<Args> {
     }
 }
 
-class Query {
+class QueryBC {
     public String creatureName;
 
-    enum Argument {
+    enum ArgumentBC {
         ATTACK, DEFENSE
     }
 
-    public Argument argument;
+    public ArgumentBC argument;
     public int result;
 
-    public Query(String creatureName, Argument argument, int result) {
+    public QueryBC(String creatureName, ArgumentBC argument, int result) {
         this.creatureName = creatureName;
         this.argument = argument;
         this.result = result;
@@ -52,20 +52,20 @@ class Query {
 }
 
 // Mediator
-class Game {
+class GameBC {
     // So the idea behind this is that we now have a central location where any
     // modifier can subscribe itself to queries on the creature and modify the
     // creatures, attack or defense value.
 
-    public Event<Query> queries = new Event<>();
+    public EventBC<QueryBC> queries = new EventBC<>();
 }
 
-class CreatureBase {
-    public Game game;
+class CreatureBaseBC {
+    public GameBC game;
     public String name;
     public int baseAttack, baseDefense;
 
-    public CreatureBase(Game game, String name, int baseAttack, int baseDefense) {
+    public CreatureBaseBC(GameBC game, String name, int baseAttack, int baseDefense) {
         this.game = game;
         this.name = name;
         this.baseAttack = baseAttack;
@@ -73,13 +73,13 @@ class CreatureBase {
     }
 
     public int getAttack() {
-        Query q = new Query(name, Query.Argument.ATTACK, baseAttack);
+        QueryBC q = new QueryBC(name, QueryBC.ArgumentBC.ATTACK, baseAttack);
         game.queries.fire(q);
         return q.result;
     }
 
     public int getDefense() {
-        Query q = new Query(name, Query.Argument.DEFENSE, baseDefense);
+        QueryBC q = new QueryBC(name, QueryBC.ArgumentBC.DEFENSE, baseDefense);
         game.queries.fire(q);
         return q.result;
     }
@@ -91,41 +91,41 @@ class CreatureBase {
 
 }
 
-class CreatureModifier {
-    protected Game game;
-    protected CreatureBase creature;
+class CreatureModifierBC {
+    protected GameBC game;
+    protected CreatureBaseBC creature;
 
-    public CreatureModifier(Game game, CreatureBase creature) {
+    public CreatureModifierBC(GameBC game, CreatureBaseBC creature) {
         this.game = game;
         this.creature = creature;
     }
 
 }
 
-class DoubleAttackModifier2 extends CreatureModifier implements AutoCloseable {
+class DoubleAttackModifierBC extends CreatureModifierBC implements AutoCloseable {
 
     private final int token;
 
-    public DoubleAttackModifier2(Game game, CreatureBase creature) {
+    public DoubleAttackModifierBC(GameBC game, CreatureBaseBC creature) {
         super(game, creature);
-        token = game.queries.suscribe(q -> {
-            if (q.creatureName.equals(creature.name) && q.argument == Query.Argument.ATTACK)
+        token = game.queries.subscribe(q -> {
+            if (q.creatureName.equals(creature.name) && q.argument == QueryBC.ArgumentBC.ATTACK)
                 q.result *= 2;
         });
     }
 
     @Override
     public void close() {
-        game.queries.unsiscribe(token);
+        game.queries.unsubscribe(token);
     }
 }
 
-class IncreaseDefenseModifier2 extends CreatureModifier {
+class IncreaseDefenseModifierBC extends CreatureModifierBC {
 
-    public IncreaseDefenseModifier2(Game game, CreatureBase creature) {
+    public IncreaseDefenseModifierBC(GameBC game, CreatureBaseBC creature) {
         super(game, creature);
-        game.queries.suscribe(q -> {
-            if (q.creatureName.equals(creature.name) && q.argument == Query.Argument.DEFENSE)
+        game.queries.subscribe(q -> {
+            if (q.creatureName.equals(creature.name) && q.argument == QueryBC.ArgumentBC.DEFENSE)
                 q.result += 3;
         });
     }
@@ -134,11 +134,11 @@ class IncreaseDefenseModifier2 extends CreatureModifier {
 
 public class BrokerChainDemo {
     public static void main(String[] args) {
-        Game game = new Game();
-        CreatureBase goblin = new CreatureBase(game, "Strong goblin", 2, 2);
+        GameBC game = new GameBC();
+        CreatureBaseBC goblin = new CreatureBaseBC(game, "Strong goblin", 2, 2);
         System.out.println(goblin);
-        IncreaseDefenseModifier2 idm = new IncreaseDefenseModifier2(game, goblin);
-        DoubleAttackModifier2 dam = new DoubleAttackModifier2(game, goblin);
+        IncreaseDefenseModifierBC idm = new IncreaseDefenseModifierBC(game, goblin);
+        DoubleAttackModifierBC dam = new DoubleAttackModifierBC(game, goblin);
         try (dam) {
             System.out.println(goblin);
         }

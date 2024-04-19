@@ -1,9 +1,9 @@
 package org.example.proxy;
 
-class Person {
+class PersonEP {
     private int age;
 
-    public Person(int age) {
+    public PersonEP(int age) {
         this.age = age;
     }
 
@@ -28,12 +28,12 @@ class Person {
     }
 }
 
-class ResponsiblePerson extends Person {
-    private Person person;
+class ResponsiblePersonProxy extends PersonEP {
+    private final PersonEP person;
 
-    public ResponsiblePerson(Person person) {
-        super(person.getAge());
-        this.person = person;
+    public ResponsiblePersonProxy(PersonEP Person) {
+        super(Person.getAge());
+        this.person = Person;
     }
 
     @Override

@@ -1,0 +1,31 @@
+Command:
+An object which represents an instruction to perform a particular action. Contains all the information necessary for the action to be taken.
+
+when you make any kind of statements in Java, ordinary Java statements are perishable, which means that you cannot just go ahead and undo a field assignment you just did because nobody bothered to save the previous value.
+
+Motivation
+- Ordinary Java statements are perishable
+    Can not undo a field assignment
+    Can not directly serialize a sequence of actions (calls)
+- Want an object that represents an operation
+    X should change its field Y to value Z
+    X should do w()
+
+The most common use is commands being sent from the graphic user interface.
+Another common functionality that's supported by commands is the idea of macros.
+
+UI:
+So for example, you might have a top level menu and a toolbar which both allow you to save a file.  So in both cases, the file save operation would be wrapped in a command that would be sent to some sort of command processor. Now, one of the things that commands allow you to do is they allow you to have level undo and redo functionality because essentially you're recording every single step with a command, and those commands can be stored somewhere, and they can be played back in reverse order
+
+Macros:
+That's where you record the sequence of steps that you make in the program and you play back that sequence later on.
+
+
+Summary:
+- Encapsulate all details of an operation in a separate object:
+So the idea is that you take an operation, and you encapsulate all the details of this operation into a separate object. And the great thing about having an object is you can serialize it, you can store it in memory, you can store it on disk. It's a lot easier to work with.
+
+- Define instructions for applying the command (either in the command itself or elsewhere)
+- Optionally define instructions for undoing the command
+
+And then of course, you can have all sorts of fun with commands. Like for example, you can create composite commands and this would typically be called macros in everyday speak.

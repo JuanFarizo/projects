@@ -1,11 +1,11 @@
 package org.example.chain_of_responsability;
 
 //Method chain
-class Creature {
+class CreatureCOR {
     public String name;
     public int attack, defense;
 
-    public Creature(String name, int attack, int defense) {
+    public CreatureCOR(String name, int attack, int defense) {
         this.name = name;
         this.attack = attack;
         this.defense = defense;
@@ -20,15 +20,15 @@ class Creature {
 
 // the reason why we're creating a creature modifier is because we want to have
 // a starting point upon which we add all those next elements to traverse.
-class CreatureModifier {
-    protected Creature creature;
-    protected CreatureModifier next;
+class CreatureModifierCOR {
+    protected CreatureCOR creature;
+    protected CreatureModifierCOR next;
 
-    public CreatureModifier(Creature creature) {
+    public CreatureModifierCOR(CreatureCOR creature) {
         this.creature = creature;
     }
 
-    public void add(CreatureModifier cm) {
+    public void add(CreatureModifierCOR cm) {
         if (next != null)
             next.add(cm);
         else
@@ -45,9 +45,9 @@ class CreatureModifier {
     }
 }
 
-class DoubleAttackmodifier extends CreatureModifier {
+class DoubleAttackmodifierCOR extends CreatureModifierCOR {
 
-    public DoubleAttackmodifier(Creature creature) {
+    public DoubleAttackmodifierCOR(CreatureCOR creature) {
         super(creature);
     }
 
@@ -61,9 +61,9 @@ class DoubleAttackmodifier extends CreatureModifier {
 
 }
 
-class IncreaseDefenseModifier extends CreatureModifier {
+class IncreaseDefenseModifierCOR extends CreatureModifierCOR {
 
-    public IncreaseDefenseModifier(Creature creature) {
+    public IncreaseDefenseModifierCOR(CreatureCOR creature) {
         super(creature);
     }
 
@@ -78,9 +78,9 @@ class IncreaseDefenseModifier extends CreatureModifier {
 // how to actually disrupt the chain of responsibility and how to cancel it
 // outright. So all the modifiers are inapplicable to that goblin. As soon as
 // apply this modifier all the other bonuses on the creature are disabled
-class NoBonusesModifier extends CreatureModifier {
+class NoBonusesModifierCOR extends CreatureModifierCOR {
 
-    public NoBonusesModifier(Creature creature) {
+    public NoBonusesModifierCOR(CreatureCOR creature) {
         super(creature);
     }
 
@@ -93,15 +93,15 @@ class NoBonusesModifier extends CreatureModifier {
 
 public class ChanOfResponsabilityDemo {
     public static void main(String[] args) {
-        Creature goblin = new Creature("goblin", 2, 2);
+        CreatureCOR goblin = new CreatureCOR("goblin", 2, 2);
         System.out.println(goblin);
-        CreatureModifier root = new CreatureModifier(goblin);
+        CreatureModifierCOR root = new CreatureModifierCOR(goblin);
 
-        root.add(new NoBonusesModifier(goblin));
+        root.add(new NoBonusesModifierCOR(goblin));
         System.out.println("Lets double goblins attack...");
-        root.add(new DoubleAttackmodifier(goblin));
+        root.add(new DoubleAttackmodifierCOR(goblin));
         System.out.println("Lets increase golbins defense");
-        root.add(new IncreaseDefenseModifier(goblin));
+        root.add(new IncreaseDefenseModifierCOR(goblin));
         root.handle();
         System.out.println(goblin);
     }

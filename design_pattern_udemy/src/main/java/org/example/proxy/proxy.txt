@@ -25,8 +25,8 @@ Example:
 
 
 DynamicProxy:
- Dynamic proxy which takes an existing object of type person and counts the
- number of methods inside person that have actually been called.
+ Dynamic proxy which takes an existing object of type personProxy and counts the
+ number of methods inside personProxy that have actually been called.
  utility method here for constructing a dynamic proxy with logging on any kind
  of object.
  Target, which is the object for which the logging is required, and

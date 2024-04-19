@@ -1,0 +1,22 @@
+Interpreter:
+The thing about interpreter is this design pattern is actually a reflection of an entire field of computer science called compiler theory.
+So the general idea of interpretation is that you have some textual input which needs to be processed. Means that input needs to be turned into object-oriented structures.
+
+Definition: Interpreter is typically a component which processes structured text data, and typically it does it in two stages.
+1. First of all, we have the Lexing stage. That's when the textual input gets decomposed into several tokens.
+So the textual input gets broken apart into several kind of groupings, several different tokens that you can subsequently take, and you can take the sequence of tokens and turn them into some sort of object-oriented structure.
+
+2. Second part of the interpretation process. And this part is called parsing.
+
+
+Some examples:
+    - Programming languages compilers, interpreters and IDEs
+    - HTML, XML and similar
+    - Numeric Expressions (3+4/5)
+    - Regular expressions
+Turning strings into  OOP based structures in a complicated process
+
+Motivation
+
+
+Summary:

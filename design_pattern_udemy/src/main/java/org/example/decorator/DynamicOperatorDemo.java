@@ -1,16 +1,16 @@
 package org.example.decorator;
 
-interface Shape {
+interface ShapeDynamicOperator {
     String info();
 }
 
-class Circle implements Shape {
+class CircleDynamicOperator implements ShapeDynamicOperator {
     private float radius;
 
-    public Circle() {
+    public CircleDynamicOperator() {
     }
 
-    public Circle(float radius) {
+    public CircleDynamicOperator(float radius) {
         this.radius = radius;
     }
 
@@ -30,13 +30,13 @@ class Circle implements Shape {
 
 }
 
-class Square implements Shape {
+class SquareDynamicOperator implements ShapeDynamicOperator {
     private float side;
 
-    public Square() {
+    public SquareDynamicOperator() {
     }
 
-    public Square(float side) {
+    public SquareDynamicOperator(float side) {
         this.side = side;
     }
 
@@ -53,46 +53,46 @@ class Square implements Shape {
 }
 
 // Decorator of shape
-class ColoredShape implements Shape {
-    private Shape shape;
-    private String color;
+class ColoredShapeDynamicOperator implements ShapeDynamicOperator {
+    private final ShapeDynamicOperator shapeDynamicOperator;
+    private final String color;
 
-    public ColoredShape(Shape shape, String color) {
-        this.shape = shape;
+    public ColoredShapeDynamicOperator(ShapeDynamicOperator shapeDynamicOperator, String color) {
+        this.shapeDynamicOperator = shapeDynamicOperator;
         this.color = color;
     }
 
     @Override
     public String info() {
-        return shape.info() + " Has the color" + color;
+        return shapeDynamicOperator.info() + " Has the color" + color;
     }
 
 }
 
-class TransparentShape implements Shape {
-    private Shape shape; //Original object in the constructor
-    private int trasparency;
+class TransparentShapeDynamicOperator implements ShapeDynamicOperator {
+    private final ShapeDynamicOperator shapeDynamicOperator; //Original object in the constructor
+    private final int transparency;
 
-    public TransparentShape(Shape shape, int trasparency) {
-        this.shape = shape;
-        this.trasparency = trasparency;
+    public TransparentShapeDynamicOperator(ShapeDynamicOperator shapeDynamicOperator, int transparency) {
+        this.shapeDynamicOperator = shapeDynamicOperator;
+        this.transparency = transparency;
     }
 
     @Override
     public String info() {
-        return shape.info() + " has transperancy %" + trasparency;
+        return shapeDynamicOperator.info() + " has transperancy %" + transparency;
     }
 
 }
 
 public class DynamicOperatorDemo {
     public static void main(String[] args) {
-        Circle circle = new Circle(10);
-        System.out.println(circle.info());
-        ColoredShape coloredShape = new ColoredShape(new Square(20), "blue");
+        CircleDynamicOperator circleDynamicOperator = new CircleDynamicOperator(10);
+        System.out.println(circleDynamicOperator.info());
+        ColoredShapeDynamicOperator coloredShape = new ColoredShapeDynamicOperator(new SquareDynamicOperator(20), "blue");
         System.out.println(coloredShape.info());
 
-        TransparentShape myCircle = new TransparentShape(new ColoredShape(new Circle(5), "green"), 25);
+        TransparentShapeDynamicOperator myCircle = new TransparentShapeDynamicOperator(new ColoredShapeDynamicOperator(new CircleDynamicOperator(5), "green"), 25);
         System.out.println(myCircle.info());
     }
 }

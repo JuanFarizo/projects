@@ -12,7 +12,7 @@ interface Human {
     void talk();
 }
 
-class Person implements Human {
+class PersonProxy implements Human {
 
     @Override
     public void walk() {
@@ -28,11 +28,11 @@ class Person implements Human {
 
 // Dynamic proxy which takes an existing object of type person and counts the
 // number of methods inside person that have actually been called.
-class LogginHandler implements InvocationHandler {
+class LoggingHandler implements InvocationHandler {
     private final Object target;
-    private Map<String, Integer> calls = new HashMap<>();
+    private final Map<String, Integer> calls = new HashMap<>();
 
-    public LogginHandler(Object target) {
+    public LoggingHandler(Object target) {
         this.target = target;
     }
 
@@ -58,16 +58,16 @@ public class DynamicProxyDemo {
     // interface. So you cannot simply just take the underlying class and get that
     // as the end result because that wouldn't work.
     @SuppressWarnings("unchecked")
-    public static <T> T withLoggin(T target, Class<T> interf) {
+    public static <T> T withLogin(T target, Class<T> interfaceVar) {
         return (T) Proxy.newProxyInstance(
-                interf.getClassLoader(),
-                new Class<?>[] { interf },
-                new LogginHandler(target));
+                interfaceVar.getClassLoader(),
+                new Class<?>[] { interfaceVar },
+                new LoggingHandler(target));
     }
 
     public static void main(String[] args) {
-        Person person = new Person();
-        Human logged = withLoggin(person, Human.class);
+        PersonProxy personProxy = new PersonProxy();
+        Human logged = withLogin(personProxy, Human.class);
         logged.talk();
         logged.walk();
         logged.walk();

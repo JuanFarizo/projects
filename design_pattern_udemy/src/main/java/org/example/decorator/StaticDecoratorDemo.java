@@ -2,17 +2,17 @@ package org.example.decorator;
 
 import java.util.function.Supplier;
 
-interface Shape {
+interface ShapeSD {
     String info();
 }
 
-class Circle implements Shape {
+class CircleSD implements ShapeSD {
     private float radius;
 
-    public Circle() {
+    public CircleSD() {
     }
 
-    public Circle(float radius) {
+    public CircleSD(float radius) {
         this.radius = radius;
     }
 
@@ -27,13 +27,13 @@ class Circle implements Shape {
 
 }
 
-class Square implements Shape {
+class SquareSD implements ShapeSD {
     private float side;
 
-    public Square() {
+    public SquareSD() {
     }
 
-    public Square(float side) {
+    public SquareSD(float side) {
         this.side = side;
     }
 
@@ -43,46 +43,46 @@ class Square implements Shape {
     }
 }
 
-class ColoredShape<T extends Shape> implements Shape {
-    private Shape shape;
+class ColoredShapeSD<T extends ShapeSD> implements ShapeSD {
+    private ShapeSD shapeDynamicOperator;
     private String color;
 
-    public ColoredShape(Supplier<? extends T> ctor, String color) {
-        this.shape = ctor.get();
+    public ColoredShapeSD(Supplier<? extends T> ctor, String color) {
+        this.shapeDynamicOperator = ctor.get();
         this.color = color;
     }
 
     @Override
     public String info() {
-        return shape.info() + " has the color  " + color;
+        return shapeDynamicOperator.info() + " has the color  " + color;
     }
 }
 
-class TransparentShape<T extends Shape> implements Shape {
-    private Shape shape;
+class TransparentShapeSD<T extends ShapeSD> implements ShapeSD {
+    private ShapeSD shapeDynamicOperator;
     private int transperancy;
 
-    public TransparentShape(Supplier<? extends T> ctor, int transperancy) {
-        this.shape = ctor.get();
+    public TransparentShapeSD(Supplier<? extends T> ctor, int transperancy) {
+        this.shapeDynamicOperator = ctor.get();
         this.transperancy = transperancy;
     }
 
     @Override
     public String info() {
-        return shape.info() + " has the transparency " + transperancy;
+        return shapeDynamicOperator.info() + " has the transparency " + transperancy;
     }
 
 }
 
 public class StaticDecoratorDemo {
     public static void main(String[] args) {
-        ColoredShape<Square> blueSquare = new ColoredShape<>(
-            () -> new Square(20), 
+        ColoredShapeSD<SquareSD> blueSquare = new ColoredShapeSD<>(
+            () -> new SquareSD(20),
             "blue"
         );
         System.out.println(blueSquare.info());
-        TransparentShape<ColoredShape<Circle>> myCircle = new TransparentShape<>(
-                () -> new ColoredShape<>(() -> new Circle(5), "blue"), 50);
+        TransparentShapeSD<ColoredShapeSD<CircleSD>> myCircle = new TransparentShapeSD<>(
+                () -> new ColoredShapeSD<>(() -> new CircleSD(5), "blue"), 50);
 
         System.out.println(myCircle.info());
     }
