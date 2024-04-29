@@ -20,3 +20,6 @@ Motivation
 
 
 Summary:
+An interpreter acts in two stages. So first of all, we have the Lexing process. So this takes a chunk of text, and it turns it into a set of tokens.
+And then the second stage is parsing, and that is where you take the sequence of tokens and you turn it into meaningful constructs. So you can see that there is a multiplication here with the left and right hand sides.
+And then of course this parse data can be traversed, it can be interpreted, it can be transformed, and you can do whatever you want with it.

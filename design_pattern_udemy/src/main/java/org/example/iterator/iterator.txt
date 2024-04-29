@@ -1,0 +1,13 @@
+Iterator:
+The iterator design pattern is designed specifically to help you traverse data structures, to help you walk data structures and help you iterate their elements.
+
+
+Motivation:
+- Iterator (traversal) is a core functionality of various data structure
+- An Iterator is a class that facilitates the traversal:
+    Keep the reference to the current element
+    Know how to move to a different element
+- Java has an Iterator<T> and an Iterable<T>
+    Iterator<T>: Specifies the iterator API
+    Iterable<T>: A class need to be an iterable in order to support for loops
+
