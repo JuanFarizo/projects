@@ -1,0 +1,19 @@
+Memento:
+The goal  is to keep some sort of token/handle representing the system state, which then allows you to return an object to a particular state. May or may not directly expose state information.
+
+
+Motivation:
+- An object or system goes through changes
+- There are different ways of navigation those changes. One way is to record every change (Command) and teach a command the "undo" itself
+Another approach is to simply save snapshots of the system in particular points in time, then allow the user to rollback the system to a particular snapshot.
+
+
+So typically the memento should be a read only structure, because otherwise you can restore the system to a state that the system was never in, which seems a bit unfair and can be used maliciously and whatnot. So it's best to keep the memento as an immutable kind of construct.
+Another limitation to Memento is the amount of memory that you're going to occupy.
+And this is precisely the case where you might want to use the command design pattern instead, because the command just lists the set of changes, not the set of states. And changes are typically much smaller than the overall number of states, especially if you have lots of states.
+
+Summary:
+- Memento are used to roll back states arbitrarily
+- A memento is simple a token/handle class with (typically) no functions of its own
+- A memento is not required to expose directly the state(s) to which it reverts the system
+- Can be used to implement undo/redo

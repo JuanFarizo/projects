@@ -7,3 +7,10 @@ Motivation:
 Solution: have all the referer to some central component that facilitates communication and that component is the mediator.
 
 A clear example of an mediator is a ChatRoom
+
+
+Summary:
+- Create the mediator and have each object in the system refer to it (ej. in a field) a possibility is a constructor injection
+- Mediator engages in bidirectional communication with its connected components.
+- Mediator has function the components can call
+- Components have functions the mediator can call and they can sort of enlist themselves in the process of being notified about something happening.
