@@ -1,6 +1,6 @@
 Iterator:
 The iterator design pattern is designed specifically to help you traverse data structures, to help you walk data structures and help you iterate their elements.
-
+Iterator cannot be recursive (no coroutines)
 
 Motivation:
 - Iterator (traversal) is a core functionality of various data structure

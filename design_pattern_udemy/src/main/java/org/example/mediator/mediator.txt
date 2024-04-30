@@ -1,0 +1,9 @@
+Mediator
+A component that facilitates communication between other components without them necessarily being aware of each other or having direct (reference) access to each other.
+
+Motivation:
+- Components may go in and out of a system in any time
+- So it makes no sense for the different participants to have direct references to one another because those references can go dead at any time.
+Solution: have all the referer to some central component that facilitates communication and that component is the mediator.
+
+A clear example of an mediator is a ChatRoom
