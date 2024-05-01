@@ -1,0 +1,13 @@
+Observer:
+Is an object that wishes to be informed about events happening in the system. The entity generating the events is an observable
+
+Motivation:
+- We need to be informed when certain things happen. ie:
+    Object's fields change
+    Object do something
+    Some external events occurs
+- We want to listen to events and notified when they occur
+- Typical pattern involves addXXXListener()
+- Java has functional objects like Supplier<T> Consumer<T> Function<T>
+
+Summary

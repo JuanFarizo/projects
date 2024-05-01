@@ -1,6 +1,7 @@
 Null Object:
-A behavioral design pattern with no behaviors
-A no-op object that conforms to the required interface, satisfying a dependency requirement of some other object
+NullObject are stateless.
+A behavioral design pattern with no behaviors. Maybe is useful in testing and there is no option to use dependency injection.
+A no-op object that conforms to the required interface, satisfying a dependency requirement of some other object.
 
 Motivation:
 - When component A uses component B, it typically assumes that B is non-null
@@ -11,4 +12,10 @@ Motivation:
     Its use is hard-coded
 - Thus we build a no-op, non-functioning inheritor of B(or some interface that B implements) and pass it into A
 
-
+Summary:
+- Implement the required interface
+- Rewrite the methods with empty bodies
+    - If method is non-void return default value for given type
+    - If these value are ever used, you are in trouble
+- Supply an instance of Null object in place of actual object
+- Cross fingers xD
