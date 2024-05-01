@@ -1,0 +1,16 @@
+Recursion
+. recursion is a method where the solution to a problem depends on solution to smaller instances of the same problem
+. so we break the tasks into smaller and smaller subtasks
+· this approach can be applied to several types of problems - this is why recursion is in the center of computer science
+. we have to define base-cases to avoid infinite loops
+· every problem can be solved either with iteration(this is preferred) or with recursion.
+
+TAIL RECURSION
+- if the recursive function call occurs at the end of the function then it is called tail recursion
+- tail recursion is similar to a loop (for loop or while loop)
+- this method executes all the statements before jumping to the next recursive call
+
+HEAD RECURSION
+- if the recursive function call occurs at the beginning of the function then it is called head recursion
+- This approach saves the state of the function call before jumping into the next recursive call
+- It means that head recursion needs more memory because of the states it stores
