@@ -61,8 +61,7 @@ class PropertyChangedEventsArgs2 {
     public Object source;
     public String propertyName;
 
-    public PropertyChangedEventsArgs2(Object source,
-            String propertyName) {
+    public PropertyChangedEventsArgs2(Object source, String propertyName) {
         this.source = source;
         this.propertyName = propertyName;
     }

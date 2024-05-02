@@ -11,7 +11,8 @@ class PropertyChangedEventsArgs<T> {
     public String propertyName;
     public Object newValue;
 
-    public PropertyChangedEventsArgs(T source,
+    public PropertyChangedEventsArgs(
+            T source,
             String propertyName,
             Object newValue) {
         this.source = source;
@@ -31,7 +32,8 @@ class ObservableOb<T> {
         observers.add(observer);
     }
 
-    protected void propertyChanged(T source,
+    protected void propertyChanged(
+            T source,
             String propertyName,
             Object newValue) {
         for (ObserverOb<T> o : observers) {
