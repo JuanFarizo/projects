@@ -10,4 +10,7 @@ Motivation:
 - Typical pattern involves addXXXListener()
 - Java has functional objects like Supplier<T> Consumer<T> Function<T>
 
-Summary
+Summary:
+So first of all, we saw that the Observer is generally an intrusive approach, So the observable object must provide some sort of event or some sort of API to subscribe to.
+You also need to take special care when it comes to multithreading and using an observable object from
+multiple threads, particularly when it comes to unsubscribing from particular event.
