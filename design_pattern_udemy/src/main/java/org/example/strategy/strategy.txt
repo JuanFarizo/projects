@@ -1,0 +1,11 @@
+Strategy
+Allows you to partially specify the behavior of the system and then augment it later on.
+So the strategy design pattern essentially enables the exact behavior of a system to be selected either at runtime (dynamic strategy) or compile-time (static strategy).
+
+Example:
+So many algorithms can actually be decomposed into what I would call the higher and lower level parts.
+So the process of making tea can be decomposed into something high level, like the process of making a hot beverage, you have to boil the water, and you have to pour the water into the cup.
+So the high level algorithm, which we specified up above the process of boiling water and pouring it into a cup can then be reused. for making something else like coffee or hot chocolate, for example.
+
+Motivation
+- Many algorithms can be decomposed into higher and lower level parts
