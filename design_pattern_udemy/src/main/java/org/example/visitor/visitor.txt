@@ -1,0 +1,8 @@
+Visitor: Allows adding extra behaviors to entire hierarchies of classes. Not just to individual classes like you would if you were building just an ordinary decorator.
+Definition: A pattern where a component (visitor) is allowed to traverse the entire inheritance hierarchy (and add functionality to each member of that inheritance hierarchy). Implemented by a propagating a single visit() method throughout the entire hierarchy.
+
+Motivation:
+- Need to define a new operation on an entire class hierarchy
+- Do not want to keep modifying every class in the hierarchy
+- Need access to the non-common aspects of classes in the hierarchy
+So we cannot just extract a single interface and go through that interface for every single class. We need access to the actual members.

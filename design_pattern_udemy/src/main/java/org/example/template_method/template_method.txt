@@ -41,3 +41,8 @@ class ChessTM extends GameTM { we have the implementation
     protected void start() {
         System.out.println("Starting a game of chess.");
     }
+
+Summary:
+Define an algorithm at a high level
+Define constituent parts as abstract methods/properties
+Inherit the algorithm class, providing necessary overrides

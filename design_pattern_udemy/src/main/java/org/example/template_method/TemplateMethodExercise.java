@@ -27,7 +27,7 @@ abstract class CardGameTME
         CreatureTME second = creatureTMES[creature2];
         hit(first, second);
         hit(second, first);
-        return winner(creature1, creature1)
+        return winner(creature1, creature1);
         // todo: determine who won and return either creature1 or creature2
     }
 
