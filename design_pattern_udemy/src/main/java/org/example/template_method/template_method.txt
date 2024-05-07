@@ -1,0 +1,43 @@
+Template Method: Allows us to define the "skeleton" of the algorithm, with concrete implementations defined in subclasses.
+A high-level blueprint for an algorithm to be complete by inheritors.
+So essentially we know that algorithms generally can be decomposed into the common parts or the high level parts, as well as the specifics.
+The strategy pattern does this through composition, so essentially you have the high level algorithm which uses some interface, and then the concrete implementations actually implement this interface and then you stick them in and it works.
+
+The template method is very similar, except it does this through inheritance instead. So the overall algorithm would typically be an abstract base class. And then of course what you have is you have inheritance of this algorithm which overrides certain key abstract members.
+But the base class actually keeps the template for the actual algorithm. So the parent template method, the method, which is non abstract, is then invoked to actually orchestrate the algorithm at the high level.
+
+
+In the abstract class we have the steps (in the run method):
+abstract class GameTM {
+    public void run() {
+        start();
+        while(!haveWinner()) takeTurn();
+        System.out.println("Player" + getWinningPlayer() + " wins");
+    }
+    protected abstract int getWinningPlayer();
+    protected abstract void takeTurn();
+    protected abstract boolean haveWinner();
+    protected abstract void start();
+
+In the child class:
+class ChessTM extends GameTM { we have the implementation
+    @Override
+    protected int getWinningPlayer() {
+        return 0;
+    }
+
+    @Override
+    protected void takeTurn() {
+        System.out.println("Turn " + (turn++) + " taken by player " + currentPlayer);
+        currentPlayer = (currentPlayer + 1) % numberOfPlayer;
+    }
+
+    @Override
+    protected boolean haveWinner() {
+        return turn == maxTurns;
+    }
+
+    @Override
+    protected void start() {
+        System.out.println("Starting a game of chess.");
+    }
