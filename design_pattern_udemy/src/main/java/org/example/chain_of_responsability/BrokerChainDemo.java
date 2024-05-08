@@ -8,7 +8,7 @@ import java.util.function.Consumer;
 
 //CQS Command Query Separation
 class EventBC<Args> {
-    // Observer (Suscribe an event, Unsuscribe an event, or Fire an event)
+    // Observer (Subscribe an event, Unsubscribe an event, or Fire an event)
     private int index = 0;
 
     private final Map<Integer, Consumer<Args>> handlers = new HashMap<>(); // bunch of subscribers or handlers. These are

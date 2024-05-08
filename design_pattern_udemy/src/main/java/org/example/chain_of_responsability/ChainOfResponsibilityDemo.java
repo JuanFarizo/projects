@@ -13,7 +13,8 @@ class CreatureCOR {
 
     @Override
     public String toString() {
-        return "Creature [name=" + name + ", attack=" + attack + ", defense=" + defense + "]";
+        return "Creature [name=" + name + ", attack=" + attack + ", defense="
+                + defense + "]";
     }
 
 }
@@ -33,11 +34,10 @@ class CreatureModifierCOR {
             next.add(cm);
         else
             next = cm;
-
     }
 
-    // So here is handle and we're going to basically check that the modifier is in
-    // fact available. If it is available, then what we're going to do is we're
+    // Check that the modifier is in fact available.
+    // If it is available, then what we're going to do is we're
     // going to say that if next is not equal to null, we're going to call handle.
     public void handle() {
         if (next != null)
@@ -45,9 +45,9 @@ class CreatureModifierCOR {
     }
 }
 
-class DoubleAttackmodifierCOR extends CreatureModifierCOR {
+class DoubleAttackModifierCOR extends CreatureModifierCOR {
 
-    public DoubleAttackmodifierCOR(CreatureCOR creature) {
+    public DoubleAttackModifierCOR(CreatureCOR creature) {
         super(creature);
     }
 
@@ -56,7 +56,7 @@ class DoubleAttackmodifierCOR extends CreatureModifierCOR {
         System.out.println("Doubling " + creature.name + "'s attack");
         creature.attack *= 2;
         super.handle(); // is designed specifically for the traversal of the entire chain of
-                        // responsibility.
+        // responsibility.
     }
 
 }
@@ -85,22 +85,23 @@ class NoBonusesModifierCOR extends CreatureModifierCOR {
     }
 
     @Override
-    public void handle() { // The chain of responsability is cut
+    public void handle() { // The chain of responsibility is cut
         System.out.println("No bonuses can be applied");
     }
 
 }
 
-public class ChanOfResponsabilityDemo {
+public class ChainOfResponsibilityDemo {
     public static void main(String[] args) {
         CreatureCOR goblin = new CreatureCOR("goblin", 2, 2);
         System.out.println(goblin);
         CreatureModifierCOR root = new CreatureModifierCOR(goblin);
 
-        root.add(new NoBonusesModifierCOR(goblin));
         System.out.println("Lets double goblins attack...");
-        root.add(new DoubleAttackmodifierCOR(goblin));
-        System.out.println("Lets increase golbins defense");
+        root.add(new DoubleAttackModifierCOR(goblin));
+        System.out.println("Disabling creature bonuses");
+        root.add(new NoBonusesModifierCOR(goblin));
+        System.out.println("Lets increase goblins defense");
         root.add(new IncreaseDefenseModifierCOR(goblin));
         root.handle();
         System.out.println(goblin);

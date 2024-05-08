@@ -4,12 +4,14 @@ class Person {
     public String name;
 
     public String position;
+    public String address;
 
     @Override
     public String toString() {
         return "Person{" +
                 "name='" + name + '\'' +
                 ", position='" + position + '\'' +
+                ", address='" + address + '\'' +
                 '}';
     }
 }
@@ -48,6 +50,17 @@ class EmployeeBuilder
 
     @Override
     protected EmployeeBuilder self() {
+        return this;
+    }
+}
+
+class AddressBuilder extends PersonBuilder<AddressBuilder> {
+    public AddressBuilder livesAt(String address) {
+        person.address = address;
+        return self();
+    }
+    @Override
+    protected AddressBuilder self() {
         return this;
     }
 }
