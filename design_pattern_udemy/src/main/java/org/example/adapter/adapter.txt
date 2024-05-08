@@ -1,12 +1,16 @@
 Basis:
 - Different interface requirements
 - Can not modify our objects to support every possible interface
-- Thus, we use an Adapter, to give us the interface we requiere from the
-interface we have
+- Thus, we use an Adapter, to give us the interface we require from the interface we have (use object composition principle, the adapter implements the interface of one object and wrap the other one)
 
 Adapter:
-    A construct which adapts an existing 
-    interface X to conform to the required interface Y
+    A construct which adapts an existing interface X to conform to the required interface Y. This is a special object that converts the interface of one object so that another object can understand it
+
+An adapter wraps one of the objects to hide the complexity of conversion happening behind the scenes. The wrapped object isn’t even aware of the adapter. For example, you can wrap an object that operates in meters and kilometers with an adapter that converts all the data to imperial units such as feet and miles.
+1. The adapter gets an interface, compatible with one of the existing objects.
+2. Using this interface, the existing object can safely call the adapter’s methods.
+3. Upon receiving a call, the adapter passes the request to the second object, but in a format and order that the second object expects.
+
 
 Adapter Caching:
 Fix the problem of generation temporary objects.
