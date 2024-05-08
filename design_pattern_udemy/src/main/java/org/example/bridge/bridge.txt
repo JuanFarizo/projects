@@ -1,7 +1,5 @@
-The bridge design pattern is all 
-about connecting components together through abstractions.
-decouples the interface or the hierarchy from the implementation.
-And both of these can be hierarchies, but they don't have to engage in one big inheritance relationship.
+The bridge design pattern is all  about connecting components together through abstractions.
+Decouples the interface or the hierarchy from the implementation. And both of these can be hierarchies, but they don't have to engage in one big inheritance relationship.
 
 Bridge: a mechanism that decouples an interface (hierarchy) from an implementation (hierarchy)
 
