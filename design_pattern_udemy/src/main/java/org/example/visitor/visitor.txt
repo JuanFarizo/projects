@@ -6,3 +6,18 @@ Motivation:
 - Do not want to keep modifying every class in the hierarchy
 - Need access to the non-common aspects of classes in the hierarchy
 So we cannot just extract a single interface and go through that interface for every single class. We need access to the actual members.
+
+
+Acyclic Visitor: is you end up instead of just having a single interface, you end up making lots of different interfaces for visiting the different parts of the component. So essentially it's kind of like the interface segregation principle in practice. The argument is that instead of sticking the visitation for every single kind of element in the hierarchy, you don't concern yourself with hierarchies anymore.
+
+So even though we have the base interface called Visitor, it doesn't have visit in it. So each of these visit implementations is actually kind of voluntary. We're actually kind of this visit is not related to this visit, which is in turn not related to this visit in any way. They're all independent. So now what happens is that every single class and this includes, by the way, the expression class has a possibility of implementing an accept method which actually takes a visitor.
+
+
+Now, the only real price of this implementation is that you end up following the interface segregation principle a bit too much perhaps because you end up splitting the interfaces into the separate interfaces for visiting each of the elements separately. And this might be a bit tedious, but once again remember that you only need these interfaces for the elements that you're actually going to visit. If you're never going to visit a particular class, you don't need the interface for it.
+
+Summary:
+- Propagate an accept(Visitor v) method throughout the entire hierarchy.
+- Create a visitor with visit(Foo), visit(Bar) which has lots of these visit overloads... for each element in the hierarchy.
+- Each accept() simply call visitor.visit(this) in each of the elements of the hierarchy simply calls visitor.
+- DD approach provide us with strong typing as we kind of navigate and propagate this functionality, new functionality throughout the entire hierarchy.
+- Acyclic visitor allows greater flexibility at a cost to performance
