@@ -1,10 +1,10 @@
 package org.example;
 
-import org.example.recursion.SumAlgorithm;
+import org.example.recursion.FibonacciNumberAlgorithm;
 
 public class Main {
     public static void main(String[] args) {
-        SumAlgorithm algorithm = new SumAlgorithm();
-        System.out.println(algorithm.recursion(5));
+        int head = FibonacciNumberAlgorithm.head(10);
+        System.out.println(head);
     }
 }

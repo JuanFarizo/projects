@@ -14,3 +14,20 @@ HEAD RECURSION
 - if the recursive function call occurs at the beginning of the function then it is called head recursion
 - This approach saves the state of the function call before jumping into the next recursive call
 - It means that head recursion needs more memory because of the states it stores
+
+During the recursion we have to track what functions calls occurred and what argument are to be handed over. Function calls are pushed onto the stack memory (in the stack frame) and popped when needed.
+
+Problem with HEAD recursion:
+There may be too many recursive calls anda the stack frames on the stack, and we end ip with a stack overflow error.
+Solution: transform from HEAD recursion to TAIL recursion, tail recursion is very similar to standard iteration to avoid stack overflow. We can reuse the same stack frame because essentially there are no unknown variables in the stack frames. Whenever we hit the base case, we know the value that we are looking for.
+
+Optimization explained
+WHY IS IT POSSIBLE TO USE TAIL RECURSION OPTIMIZATION?
+Because there is a fundamental difference between head recursion and tail recursion:
+- tail recursion related function calls (and the stack frames) do not depend on each other - there is no so-called "downward dependence" in the stack memory regarding the stack frames
+- head recursion related function calls DO depend on each other - they use values returned from other function calls
+
+This is exactly why we can optimise tail recursion because the function calls and stack frames are totally independent of each other.
+
+
+Backtracking Phase: when we keep returning from the recursive methods call and continue with other parts of the method
