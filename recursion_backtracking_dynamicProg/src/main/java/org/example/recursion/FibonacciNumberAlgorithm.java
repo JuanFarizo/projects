@@ -14,4 +14,14 @@ public class FibonacciNumberAlgorithm {
         // Make some operations and return
         return fib1+fib2;
     }
+
+    public static int tail(int n, int acc) {
+        if(n == 0) return acc;
+        if(n == 1) return acc + 1;
+
+        int fib1 = tail(n - 1, acc);
+        int fib2 = tail(n - 2, acc);
+        acc = fib1 + fib2;
+        return  acc;
+    }
 }

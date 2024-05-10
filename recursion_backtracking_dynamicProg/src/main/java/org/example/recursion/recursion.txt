@@ -29,5 +29,4 @@ Because there is a fundamental difference between head recursion and tail recurs
 
 This is exactly why we can optimise tail recursion because the function calls and stack frames are totally independent of each other.
 
-
-Backtracking Phase: when we keep returning from the recursive methods call and continue with other parts of the method
+Backtracking Phase: when we keep returning from the recursive methods call and continue with other parts of the method. Whenever we use the return keyword, then basically the programming language is going to remove the actual stack frame from the stack memory, and it is going to return to the previous function call.
