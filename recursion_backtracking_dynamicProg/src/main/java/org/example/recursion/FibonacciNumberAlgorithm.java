@@ -24,4 +24,10 @@ public class FibonacciNumberAlgorithm {
         acc = fib1 + fib2;
         return  acc;
     }
+
+    public static int tailExercise(int n, int a, int b) {
+        if(n == 0) return a;
+        if(b == 0) return b;
+        return tailExercise(n-1, b, a+b);
+    }
 }
