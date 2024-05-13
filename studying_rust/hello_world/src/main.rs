@@ -5,7 +5,7 @@
 use std::mem;
 //Entry point
 fn main() {
-    operators();
+    memory_management();
 }
 fn operators() {
     //Arithmetic
@@ -54,4 +54,19 @@ fn variables() {
 
     let g: bool = false;
     println!("{} is a bool, size = {} bytes", g, mem::size_of_val(&g));
+}
+
+fn memory_management() {
+    let a = 2;
+    let result = stack_only(a);
+    dbg!(result);
+}
+fn stack_only(b: i32) -> i32 {
+    let c = 3;
+    return b + c + stack_and_heal();
+}
+fn stack_and_heal() -> i32 {
+    let d = 5;
+    let e = Box::new(7);
+    return d + *e;
 }
