@@ -1,9 +1,14 @@
 // In this file we can actually specify the public interface for our model.
 
 pub use method::Method;
+pub use query_string::QueryString;
 pub use request::ParseError;
 pub use request::Request;
+pub use response::Response;
+pub use status_code::StatusCode;
 
-mod method;
+pub mod method;
 pub mod query_string;
-mod request;
+pub mod request;
+pub mod response;
+pub mod status_code;
