@@ -3,6 +3,7 @@ use std::cmp::Ordering;
 use std::io;
 
 fn main() {
+    let string_algo = "some string";
     let secret_number = rand::thread_rng().gen_range(1..=100);
     let mut chances: u8 = 0;
     loop {

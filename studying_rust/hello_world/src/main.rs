@@ -5,8 +5,28 @@
 use std::mem;
 //Entry point
 fn main() {
-    memory_management();
+    println!("result {}", exercise1());
 }
+
+fn exercise1() -> i32 {
+    let mut n = String::new();
+    std::io::stdin()
+        .read_line(&mut n)
+        .expect("failed to read input.");
+    let mut n: i32 = n.trim().parse().expect("invalid input");
+
+    let mut square_of_sum = 0;
+    let mut sum_of_squares = 0;
+
+    while n <= 1 {
+        square_of_sum = square_of_sum + n;
+        sum_of_squares = sum_of_squares + (n * n);
+        n = n - 1;
+    }
+    println!("{}", (square_of_sum * square_of_sum) - sum_of_squares);
+    return (square_of_sum * square_of_sum) - sum_of_squares;
+}
+
 fn operators() {
     //Arithmetic
     let a = 2 + 3 * 4;
