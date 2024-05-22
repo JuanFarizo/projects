@@ -10,7 +10,7 @@ Motivation:
 - API consumers want it to just work
 
 Example:
-    Buffer buffer = new Buffer(30, 20);
+    Buffer buffer =1 new Buffer(30, 20);
     ViewPort viewPort = new ViewPort(buffer, 30, 20, 0, 0);
     Console console = new Console(30, 20);
     console.addViewport(viewPort);
