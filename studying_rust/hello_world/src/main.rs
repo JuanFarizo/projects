@@ -5,8 +5,65 @@
 use std::mem;
 //Entry point
 fn main() {
-    exercise4();
+    exercise6();
     //println!("result {}", exercise3());
+}
+/*
+Write a function that implements the logic,
+'You can see the movie if you are 17 or older, or if you are 13 or older and have a parent's permission.'
+*/
+fn exercise6() {
+    println!("The boy can see the movie: {}", can_see_movie(14, false))
+}
+fn can_see_movie(age: i32, permission: bool) -> bool {
+    if age >= 17 || age >= 13 && permission {
+        return true;
+    }
+    // Write your code here to implement the logic
+    return false; // Remove 'return false' once you have written the code
+}
+
+/*
+A Pythagorean triple consists of three positive integers a, b, and c, satisfying the condition a^2 + b^2 = c^2.
+These triples are commonly written as (a, b, c), and a well-known example is (3, 4, 5).
+
+Write a program that computes the Pythagorean triplet such that a < b < c and a + b + c = 1000.
+*/
+fn exercise5() {
+    // println!("Start the search");
+    // 'outer: for a in 1u32..=1000u32 {
+    //     for b in a + 1u32..=1000u32 {
+    //         for c in b + 1u32..=1000u32 {
+    //             if a.pow(2) + a.pow(2) == c.pow(2) && a + b + c == 1000 {
+    //                 println!("The solutions is: a:{}, b:{}, c:{}", a, b, c);
+    //                 break 'outer;
+    //             }
+    //         }
+    //     }
+    // }
+    let mut flag = true;
+    for a in 1..=1000 {
+        for b in a + 1..1000 {
+            // this ensures that a < b
+            for c in b + 1..1000 {
+                //  this ensure that b < c
+                if a * a + b * b == c * c && a + b + c == 1000 {
+                    println!(
+                        "\n\n The required pathagorian triplet are ({}, {}, {}) \n\n",
+                        a, b, c
+                    );
+                    flag = false;
+                    break;
+                }
+            }
+            if !flag {
+                break;
+            }
+        }
+        if !flag {
+            break;
+        }
+    }
 }
 /*
 A palindrome is a word, verse, or sentence that reads the same backward or forward,
@@ -16,16 +73,30 @@ Write a function named is_palindrome() that checks whether a given string is a p
 The function should take a string as input and return a boolean value indicating whether the string is a palindrome or not.
 */
 fn exercise4() {
-    let input = String::from("1211");
+    let input = String::from("1881");
     println!(
         "It is {:?} that the given string is palindrome",
         palindrome(input)
     );
 }
 fn palindrome(input: String) -> bool {
-    input.
-    /* Your Code here */
-    false
+    let mut is_palindrome = true;
+    if input.len() == 0 {
+        return is_palindrome;
+    } else {
+        let mut first = 0;
+        let mut last = input.len() - 1;
+        let my_vec = input.as_bytes();
+        while first < last {
+            if my_vec[first] != my_vec[last] {
+                is_palindrome = false;
+                break;
+            }
+            first = first + 1;
+            last = last - 1;
+        }
+    }
+    is_palindrome
 }
 
 /*
