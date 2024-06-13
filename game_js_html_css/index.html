@@ -1,17 +1,37 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Js Game</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Bangers&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="style.css">
 </head>
+
 <body>
     <canvas id="canvas1"></canvas>
 
     <!-- characters -->
-
+    <img src="assets/player.png" id="player">
+    <img src="assets/angler1.png" id="angler1">
+    <img src="assets/angler2.png" id="angler2">
+    <img src="assets/lucky.png" id="lucky">
+    <img src="assets/hivewhale.png" id="hivewhale">
+    <img src="assets/drone.png" id="drone">
+    <img src="assets/bulbwhale.png" id="bulbwhale">
+    <img src="assets/moonfish.png" id="moonfish">
+    <img src="assets/stalker.png" id="stalker">
+    <img src="assets/razorfin.png" id="razorfin">
     <!-- props -->
+    <img src="assets/projectile.png" id="projectile">
+    <img src="assets/fireball.png" id="fireball">
+    <img src="assets/gears.png" id="gears">
+    <img src="assets/smokeExplosion.png" id="smokeExplosion">
+    <img src="assets/fireExplosion.png" id="fireExplosion">
+    <img src="assets/shield.png" id="shield">
 
     <!-- environment -->
     <img id="layer1" alt="" src="assets/layer1.png">
@@ -19,6 +39,15 @@
     <img id="layer3" alt="" src="assets/layer3.png">
     <img id="layer4" alt="" src="assets/layer4.png">
 
+    <!-- sound -->
+    <audio src="assets/powerup.wav" id="powerup"></audio>
+    <audio src="assets/powerdown.wav" id="powerdown"></audio>
+    <audio src="assets/explosion.wav" id="explosion"></audio>
+    <audio src="assets/shot.wav" id="shot"></audio>
+    <audio src="assets/hit.wav" id="hit"></audio>
+    <audio src="assets/shield.wav" id="shieldSound"></audio>
+
     <script src="script.js"></script>
 </body>
+
 </html>
