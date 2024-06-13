@@ -6,7 +6,16 @@ use std::mem;
 //Entry point
 fn main() {
     exercise6();
+
+    let vec1 = vec![1, 2, 3];
+    let ref1 = &vec1;
+    takes_ownership(ref1);
+    println!("vec 1 is: {:?}", vec1);
+
     //println!("result {}", exercise3());
+}
+fn takes_ownership(vec1: &Vec<i32>) {
+    println!("vec 1 is: {:?}", vec1);
 }
 /*
 Write a function that implements the logic,
