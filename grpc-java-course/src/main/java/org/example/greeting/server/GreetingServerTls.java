@@ -5,6 +5,7 @@ import java.io.IOException;
 
 import io.grpc.Server;
 import io.grpc.ServerBuilder;
+import io.grpc.protobuf.services.ProtoReflectionService;
 
 public class GreetingServerTls {
     public static void main(String[] args) throws IOException, InterruptedException {
@@ -14,6 +15,7 @@ public class GreetingServerTls {
                 .useTransportSecurity(new File("ssl/server.crt"), new File("ssl/server.pem"))
                 .addService(new GreetingServerImpl())
                 .addService(new CalculatorServiceImpl())
+                .addService(ProtoReflectionService.newInstance())
                 .build();
         server.start();
 

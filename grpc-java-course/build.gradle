@@ -33,6 +33,10 @@ dependencies {
     runtimeOnly 'io.grpc:grpc-netty-shaded:1.64.0'
     implementation 'io.grpc:grpc-protobuf:1.64.0'
     implementation 'io.grpc:grpc-stub:1.64.0'
+    implementation 'io.grpc:grpc-services:1.44.1'
+    // https://mvnrepository.com/artifact/org.mongodb/mongodb-driver-sync
+    implementation group: 'org.mongodb', name: 'mongodb-driver-sync', version: '4.5.1'
+
     compileOnly 'org.apache.tomcat:annotations-api:6.0.53'
     testImplementation platform('org.junit:junit-bom:5.10.0')
     testImplementation 'org.junit.jupiter:junit-jupiter'
