@@ -22,7 +22,6 @@ public class OptimizationThroughput {
     public static void main(String[] args) throws IOException {
         String text = new String(Files.readAllBytes(Path.of(INPUT_FILE)));
         startServer(text);
-
     }
 
     private static void startServer(String text) throws IOException {
@@ -70,6 +69,5 @@ public class OptimizationThroughput {
             }
             return count;
         }
-
     }
 }
