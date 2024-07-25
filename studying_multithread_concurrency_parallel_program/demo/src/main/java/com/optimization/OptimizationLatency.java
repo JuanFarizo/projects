@@ -77,7 +77,7 @@ public class OptimizationLatency {
         int newRed;
         int newGren;
         int newBlue;
-        if (isShadeOfGrat(red, green, blue)) {
+        if (isShadeOfGray(red, green, blue)) {
             // Arbitrary values based on experience only for achive purple color (reducing
             // green)
             newRed = Math.min(255, red + 10);
@@ -96,7 +96,7 @@ public class OptimizationLatency {
         image.getRaster().setDataElements(x, y, image.getColorModel().getDataElements(rgb, null));
     }
 
-    public static boolean isShadeOfGrat(int red, int green, int blue) {
+    public static boolean isShadeOfGray(int red, int green, int blue) {
         return Math.abs(red - green) < 30 &&
                 Math.abs(red - blue) < 30 &&
                 Math.abs(green - blue) < 30;
