@@ -4,12 +4,12 @@ import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
 import java.util.Arrays;
 
-public class Main {
+public class MainConstructor {
     public static void main(String[] args)
             throws InstantiationException, IllegalAccessException, IllegalArgumentException, InvocationTargetException {
         // printConstructorData(Person.class);
         // printConstructorData(Address.class);
-        Person person = createInstanceWithArgeumtns(Person.class, "Pepe Trueno");
+        Address person = createInstanceWithArgeumtns(Address.class, "Falsa", 123);
         System.out.println(person);
     }
 
