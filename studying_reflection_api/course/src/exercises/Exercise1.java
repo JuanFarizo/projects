@@ -22,14 +22,14 @@ public class Exercise1 {
 
     /*********** Helper Methods ***************/
 
-    public static boolean isJdkClass(Class<?> inputClass) {
-        String packageName = inputClass.getPackageName();
+    // public static boolean isJdkClass(Class<?> inputClass) {
+    // // String packageName = inputClass.getPackageName();
 
-        /** Complete the code to assign a value to packageName **/
+    // /** Complete the code to assign a value to packageName **/
 
-        return JDK_PACKAGE_PREFIXES.stream()
-                .anyMatch(packagePrefix -> packageName.startsWith(packagePrefix));
-    }
+    // return JDK_PACKAGE_PREFIXES.stream()
+    // .anyMatch(packagePrefix -> packageName.startsWith(packagePrefix));
+    // }
 
     public static void main(String[] args) {
 
