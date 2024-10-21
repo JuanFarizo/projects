@@ -57,6 +57,30 @@ public class FluxAndMonoGenerateServiceTest {
     }
 
     @Test
+    void testexplore_concat() {
+        Flux<String> namesFlux = service.explore_concat();
+        StepVerifier.create(namesFlux)
+                .expectNext("A", "B", "C", "D", "E", "F")
+                .verifyComplete();
+    }
+
+    @Test
+    void testexplore_concatwith() {
+        Flux<String> namesFlux = service.explore_concatwith();
+        StepVerifier.create(namesFlux)
+                .expectNext("A", "B", "C", "D", "E", "F")
+                .verifyComplete();
+    }
+
+    @Test
+    void testmono_concatwith() {
+        Flux<String> namesFlux = service.concat_with_mono();
+        StepVerifier.create(namesFlux)
+                .expectNext("A", "B")
+                .verifyComplete();
+    }
+
+    @Test
     void testMonoName_flatMap() {
         Mono<List<String>> monoListString = service.nameMono_flatMap();
         StepVerifier.create(monoListString)
