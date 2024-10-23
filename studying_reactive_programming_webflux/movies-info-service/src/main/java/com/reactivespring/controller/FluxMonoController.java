@@ -1,4 +1,4 @@
-package com.reactivespring.movies_info_service.controller;
+package com.reactivespring.controller;
 
 import java.time.Duration;
 
@@ -20,7 +20,8 @@ public class FluxMonoController {
 
     @GetMapping("/mono")
     public Mono<String> helloWorldMono() {
-        return Mono.just("Hello World!");
+        return Mono.just("Hello World!")
+                .log();
     }
 
     @GetMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
