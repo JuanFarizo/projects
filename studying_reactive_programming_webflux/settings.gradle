@@ -13,3 +13,5 @@ plugins {
 rootProject.name = 'studying_reactive_programming_webflux'
 include('app')
 include('movies-info-service')
+include('movies-review-service')
+

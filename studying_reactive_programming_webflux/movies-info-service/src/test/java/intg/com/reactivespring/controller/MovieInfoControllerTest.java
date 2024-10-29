@@ -1,5 +1,6 @@
 package com.reactivespring.controller;
 
+import java.net.URI;
 import java.time.LocalDate;
 import java.util.List;
 
@@ -12,6 +13,7 @@ import org.springframework.boot.test.autoconfigure.web.reactive.AutoConfigureWeb
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.reactive.server.WebTestClient;
+import org.springframework.web.util.UriComponentsBuilder;
 
 import com.reactivespring.domain.MovieInfo;
 import com.reactivespring.repository.MovieInfoRepository;
@@ -94,6 +96,20 @@ public class MovieInfoControllerTest {
     }
 
     @Test
+    void getAllMovieInfosByYear() {
+        URI uri = UriComponentsBuilder.fromUriString(MOVIE_INFO_URI)
+                .queryParam("year", 2005).buildAndExpand().toUri();
+
+        webTestClient.get()
+                .uri(uri)
+                .exchange()
+                .expectStatus()
+                .is2xxSuccessful()
+                .expectBodyList(MovieInfo.class)
+                .hasSize(1);
+    }
+
+    @Test
     void getMovieInfoById() {
         String movieInfoId = "abc";
         webTestClient.get()
@@ -118,6 +134,16 @@ public class MovieInfoControllerTest {
     }
 
     @Test
+    void getMovieInfoById_notFound() {
+        String movieInfoId = "def";
+        webTestClient.get()
+                .uri(MOVIE_INFO_URI + "/{id}", movieInfoId)
+                .exchange()
+                .expectStatus()
+                .isNotFound();
+    }
+
+    @Test
     void updateMovieInfoById() {
         String newMovieName = "Just Updated";
         String movieInfoId = "abc";
@@ -135,6 +161,20 @@ public class MovieInfoControllerTest {
                     Assertions.assertEquals(newMovieName, movieInfoResponse.getName());
                     Assertions.assertEquals(movieInfoId, movieInfoResponse.getMovieInfoId());
                 });
+    }
+
+    @Test
+    void updateMovieInfoById_notFound() {
+        String movieInfoId = "def";
+        MovieInfo movieInfo = new MovieInfo(null, "newMovieName", 2222, List.of("Cris", "Miguel"),
+                LocalDate.parse("2020-06-15"));
+
+        webTestClient.put()
+                .uri(MOVIE_INFO_URI + "/{id}", movieInfoId)
+                .bodyValue(movieInfo)
+                .exchange()
+                .expectStatus()
+                .isNotFound();
     }
 
     @Test

@@ -60,7 +60,24 @@ class MovieInfoRepositoryTest {
                     assertEquals("Batman Ends", movieInfo.getName());
                 })
                 .verifyComplete();
+    }
 
+    @Test
+    void findByYearTest() {
+        Flux<MovieInfo> fluxMovieInfo = movieInfoRepository.findByYear(2005).log();
+
+        StepVerifier.create(fluxMovieInfo)
+                .expectNextCount(1)
+                .verifyComplete();
+    }
+
+    @Test
+    void findByNameTest() {
+        Mono<MovieInfo> fluxMovieInfo = movieInfoRepository.findByName("Batman Begins").log();
+
+        StepVerifier.create(fluxMovieInfo)
+                .expectNextCount(1)
+                .verifyComplete();
     }
 
     @Test
@@ -75,7 +92,6 @@ class MovieInfoRepositoryTest {
                     assertEquals("Batman el malote", movieInfo.getName());
                 })
                 .verifyComplete();
-
     }
 
     @Test
@@ -100,7 +116,6 @@ class MovieInfoRepositoryTest {
         StepVerifier.create(fluxMovieInfo)
                 .expectNextCount(2)
                 .verifyComplete();
-
     }
 
 }
