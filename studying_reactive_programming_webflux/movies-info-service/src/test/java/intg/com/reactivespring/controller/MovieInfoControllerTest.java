@@ -10,20 +10,19 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.reactive.AutoConfigureWebTestClient;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.reactive.server.WebTestClient;
 import org.springframework.web.util.UriComponentsBuilder;
 
 import com.reactivespring.domain.MovieInfo;
 import com.reactivespring.repository.MovieInfoRepository;
 
-//This allow us to load the context and use a random port to it
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+import reactor.core.publisher.Flux;
+import reactor.test.StepVerifier;and use a random port to it @SpringBootTest(webEnvironment=SpringBootTest.WebEnvironment.RANDOM_PORT)
 // So make sure you provide active profile and make sure this profile is
 // different from all the profiles
 // that you have provided in the application dot Yaml file.
 @ActiveProfiles("Test")
+
 @AutoConfigureWebTestClient
 public class MovieInfoControllerTest {
 
@@ -186,5 +185,34 @@ public class MovieInfoControllerTest {
                 .exchange()
                 .expectStatus().isNoContent()
                 .expectBody(Void.class);
+    }
+
+    @Test
+    void getAllMovieInfos_stream() {
+        MovieInfo movieInfo = new MovieInfo(null, "", 2005, List.of(""),
+                LocalDate.parse("2005-06-15"));
+
+        webTestClient.post()
+                .uri(MOVIE_INFO_URI)
+                .bodyValue(movieInfo)
+                .exchange()
+                .expectStatus().isBadRequest()
+                .expectBody(String.class)
+                .consumeWith(exchangeResult -> {
+                    String responseBody = exchangeResult.getResponseBody();
+                    Assertions.assertEquals("Movie cast must not be empty, The name must be present", responseBody);
+                });
+
+        Flux<MovieInfo> moviesInfoStreamFlux = webTestClient.get()
+                .uri(MOVIE_INFO_URI + "/stream")
+                .exchange()
+                .expectStatus()
+                .is2xxSuccessful()
+                .returnResult(MovieInfo.class)
+                .getResponseBody();
+
+        StepVerifier.create(moviesInfoStreamFlux)
+                .assertNext(Assertions::assertNotNull)
+                .thenCancel().verify();
     }
 }

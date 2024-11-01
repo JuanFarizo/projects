@@ -83,13 +83,15 @@ STREAM-MOVIE-INFO
 
 POST-REVIEW:
 ------------
-```curl -i \
+```
+curl -i \
 -d '{"reviewId":1, "movieInfoId":1, "comment": "Excellent Movie", "rating":8.0}' \
 -H "Content-Type: application/json" \
 -X POST http://localhost:8081/v1/reviews
 ```
 
-```curl -i \
+```
+curl -i \
 -d '{"reviewId":null, "movieInfoId":1, "comment": "Awesome Movie", "rating":9.0}' \
 -H "Content-Type: application/json" \
 -X POST http://localhost:8081/v1/reviews
@@ -102,7 +104,8 @@ GET-ALL-REVIEWS:
 
 UPDATE-REVIEW:
 ----------------
-```curl -i \
+```
+curl -i \
 -d '{"reviewId":1, "movieInfoId":1, "comment": "Excellent Movie Update", "rating":8.5}' \
 -H "Content-Type: application/json" \
 -X PUT http://localhost:8081/v1/reviews/1
@@ -111,3 +114,36 @@ UPDATE-REVIEW:
 DELETE-MOVIE-INFO
 -----------------------
 `curl -i -X DELETE http://localhost:8081/v1/reviews/1`
+
+
+POST-CREATE-MOVIE-INFO
+-----------------------
+```
+curl -i \
+-d '{"movieInfoId":1, "name": "Batman Begins", "year":2005,"cast":["Christian Bale", "Michael Cane"],"release_date": "2005-06-15"}' \
+-H "Content-Type: application/json" \
+-X POST http://localhost:8080/v1/movieinfos
+```
+
+```
+curl -i \
+-d '{"movieInfoId":2, "name": "The Dark Knight", "year":2008,"cast":["Christian Bale", "HeathLedger"],"release_date": "2008-07-18"}' \
+-H "Content-Type: application/json" \
+-X POST http://localhost:8080/v1/movieinfos
+```
+
+POST-REVIEW
+-------------
+```
+curl -i \
+-d '{"reviewId":1, "movieInfoId":1, "comment": "Awesome Movie", "rating":9.0}' \
+-H "Content-Type: application/json" \
+-X POST http://localhost:8081/v1/reviews
+```
+
+```
+curl -i \
+-d '{"reviewId":2, "movieInfoId":1, "comment": "Excellent Movie", "rating":8.0}' \
+-H "Content-Type: application/json" \
+-X POST http://localhost:8081/v1/reviews
+```

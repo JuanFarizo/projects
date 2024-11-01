@@ -6,6 +6,7 @@ import java.util.stream.Collectors;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.server.ServerRequest;
 import org.springframework.web.reactive.function.server.ServerResponse;
@@ -20,10 +21,13 @@ import jakarta.validation.Validator;
 import lombok.extern.slf4j.Slf4j;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.core.publisher.Sinks;
 
 @Component
 @Slf4j
 public class ReviewHandler {
+
+    private Sinks.Many<Review> reviewSink = Sinks.many().replay().latest();
 
     @Autowired
     private Validator validator;
@@ -38,6 +42,7 @@ public class ReviewHandler {
         return req.bodyToMono(Review.class)
                 .doOnNext(this::validate) // Allow us to perform validations
                 .flatMap(reactiveReviewRepository::save)
+                .doOnNext(reviewSink::tryEmitNext)
                 .flatMap(ServerResponse.status(HttpStatus.CREATED)::bodyValue);
     }
 
@@ -87,6 +92,13 @@ public class ReviewHandler {
 
         return existingReview.flatMap(review -> reactiveReviewRepository.deleteById(reviewId))
                 .then(ServerResponse.noContent().build());
+    }
+
+    public Mono<ServerResponse> getReviewsStream(ServerRequest req) {
+        return ServerResponse.ok()
+                .contentType(MediaType.APPLICATION_NDJSON)
+                .body(reviewSink.asFlux(), Review.class)
+                .log();
     }
 
 }

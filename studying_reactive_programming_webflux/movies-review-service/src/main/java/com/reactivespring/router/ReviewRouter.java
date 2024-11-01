@@ -19,7 +19,8 @@ public class ReviewRouter {
                     builder.POST("", req -> reviewHandler.addReview(req))
                             .GET("", req -> reviewHandler.getReviews(req))
                             .PUT("/{id}", req -> reviewHandler.updateReview(req))
-                            .DELETE("/{id}", req -> reviewHandler.deleteReview(req));
+                            .DELETE("/{id}", req -> reviewHandler.deleteReview(req))
+                            .GET("/stream", req -> reviewHandler.getReviewsStream(req));
                 })
                 .GET("/v1/helloworld", (req -> ServerResponse.ok().bodyValue("Hello World")))
                 .build();
