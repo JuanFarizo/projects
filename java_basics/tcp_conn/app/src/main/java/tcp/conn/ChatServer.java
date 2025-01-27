@@ -9,6 +9,8 @@ import java.net.Socket;
 import java.util.HashSet;
 import java.util.Set;
 
+import tcp.conn.domain.User;
+
 /**
  * TPC Chat Server
  */
@@ -18,11 +20,14 @@ public class ChatServer {
 
     public void startServer() 
     {
-        System.out.println("Chat Server Started");
         try (ServerSocket server = new ServerSocket(PORT)) 
         {
+            System.out.println("Chat Server Started on port " + PORT + " and IP Address " + server.getInetAddress());
+            System.out.println("Waiting for clients to connect...");
             while (true) {
-                new ClientHandler(server.accept()).start();
+                Socket clienSocket = server.accept();
+                System.out.println("Client connected: " + clienSocket.getInetAddress());
+                new ClientHandler(clienSocket).start();
             }
         } 
         catch (Exception e) 
@@ -31,41 +36,70 @@ public class ChatServer {
         }
     }
 
-    class ClientHandler extends Thread {
+    class ClientHandler extends Thread 
+    {
         private Socket socket;
         private PrintWriter out;
+        private User user;
 
-        public ClientHandler(Socket socket) {
+        public ClientHandler(Socket socket) 
+        {
             this.socket = socket;
         }
 
-        public void run() {
-            try (BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()))) {
+        public void run()
+        {
+            try (BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()))) 
+            {
                 out = new PrintWriter(socket.getOutputStream(), true);
-                synchronized (clientWriters) {
+                out.println("Welcome to the chat server. Please enter your username: ");
+                if(in.readLine() != null) {
+                    this.user = new User(in.readLine(), socket.getInetAddress().toString());
+                }
+                synchronized (clientWriters) 
+                {
                     clientWriters.add(out);
                 }
                 String message;
-                while ((message = in.readLine()) != null) {
+                while ((message = in.readLine()) != null) 
+                {
                     System.out.println("Received: " + message);
-                    synchronized (clientWriters) {
-                        for (PrintWriter writer : clientWriters) {
-                            writer.println(message);
+                    synchronized (clientWriters) 
+                    {
+                        for (PrintWriter writer : clientWriters) 
+                        {
+                            if(this.out != writer)
+                            {
+                                writer.println(this.user.getUsername() + ": " + message);
+                            }
                         }
                     }
                 }
-            } catch (IOException e) {
+            } 
+            catch (IOException e) 
+            {
                 System.out.println("Connection error: " + e.getMessage());
-            } finally {
-                synchronized (clientWriters) {
+            } 
+            finally 
+            {
+                synchronized (clientWriters) 
+                {
                     clientWriters.remove(out);
                 }
             }
-            try {
+            try 
+            {
                 socket.close();
-            } catch (Exception e) {
+            } 
+            catch (Exception e) 
+            {
                 e.printStackTrace();
             }
+        }
+
+
+        private void logInUser() {
+            
         }
     }
 }
