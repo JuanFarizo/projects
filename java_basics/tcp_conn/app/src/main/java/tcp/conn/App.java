@@ -1,14 +1,20 @@
 package tcp.conn;
 
-import java.io.IOException;
+import tcp.conn.repository.ServerRepository;
 
 // import tcp.conn.config.SQLiteConfig;
 
 public class App {
-    public static void main(String[] args) throws IOException 
+
+    public static void main(String[] args) throws Exception 
     {
         ChatServer chatServer = new ChatServer();
-        // SQLiteConfig.connect();
-        chatServer.startServer();
+        try {
+            chatServer.startServer();
+            ServerRepository.initDB();
+        } catch (Exception e) {
+            System.out.println("Error initializing the application" + e.getMessage());
+            throw e;
+        }
     }
 }

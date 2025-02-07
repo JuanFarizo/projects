@@ -18,7 +18,7 @@ repositories {
 dependencies {
     //SQL Lite
     implementation("org.xerial:sqlite-jdbc:3.48.0.0")
-
+    implementation("com.zaxxer:HikariCP:6.2.1")
     // Use JUnit Jupiter for testing.
     testImplementation(libs.junit.jupiter)
 
