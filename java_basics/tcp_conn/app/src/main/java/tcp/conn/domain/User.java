@@ -25,8 +25,6 @@ public class User {
         return address;
     }
 
-
-
     public UUID getId() {
         return id;
     }

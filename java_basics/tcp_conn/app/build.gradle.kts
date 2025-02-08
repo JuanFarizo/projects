@@ -16,16 +16,14 @@ repositories {
 }
 
 dependencies {
-    //SQL Lite
     implementation("org.xerial:sqlite-jdbc:3.48.0.0")
     implementation("com.zaxxer:HikariCP:6.2.1")
-    // Use JUnit Jupiter for testing.
+    implementation("org.slf4j:slf4j-api:2.0.16")
+    implementation("ch.qos.logback:logback-classic:1.5.16")
+
     testImplementation(libs.junit.jupiter)
 
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
-
-    // This dependency is used by the application.
-    implementation(libs.guava)
 }
 
 // Apply a specific Java toolchain to ease working on different environments.

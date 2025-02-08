@@ -3,20 +3,25 @@ package tcp.conn.repository;
 import java.sql.Connection;
 import java.sql.SQLException;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import tcp.conn.config.DataSourceConfig;
 
 public class ServerRepository 
 {
+    private static final Logger LOGGER = LoggerFactory.getLogger(ServerRepository.class); 
     public static void initDB() throws Exception
     {
         try (Connection conn = DataSourceConfig.getConnection()) 
         {
-            System.out.println("Connection to SQLite has been established.");
+            LOGGER.info("Connection to SQLite has been established.");
             createTables(conn);
-        } 
+            LOGGER.info("Tables create successfully");
+        }
         catch (Exception e) 
         {
-            System.out.println(e.getMessage());
+            LOGGER.error("Exception durin the table creation {}", e.getMessage());
             throw e;
         }
     }
@@ -60,11 +65,12 @@ public class ServerRepository
                 );
                 """;
        
-        boolean userResult = conn.createStatement().execute(userSchema);
-        if(userResult) System.out.println("User table created");
-        boolean messageResult = conn.createStatement().execute(messageSchema);
-        if(messageResult) System.out.println("Message table created");
-        boolean lastSeenResult = conn.createStatement().execute(lastSeenSchema);
-        if(lastSeenResult) System.out.println("Last Seen table created");
+        conn.createStatement().execute(userSchema);
+        LOGGER.info("User table created");
+
+        conn.createStatement().execute(messageSchema);
+        LOGGER.info("Message table created");
+        conn.createStatement().execute(lastSeenSchema);
+        LOGGER.info("Last seen table created");
     }
 }
