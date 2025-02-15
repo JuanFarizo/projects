@@ -29,9 +29,9 @@ public class ChatServer {
         {
             LOGGER.info("Chat Server Started on port {} and IP Address {}", PORT, server.getInetAddress());
             while (true) {
-                Socket clienSocket = server.accept();
-                LOGGER.info("Client connected: {}", clienSocket.getInetAddress());
-                new ClientHandler(clienSocket).start();
+                Socket clientSocket = server.accept();
+                LOGGER.info("Client connected: {}", clientSocket.getInetAddress());
+                new ClientHandler(clientSocket).start();
             }
         } 
         catch (Exception e)
