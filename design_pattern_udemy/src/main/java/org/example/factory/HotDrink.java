@@ -39,7 +39,7 @@ class TeaFactory implements HotDrinkFactory {
 
     @Override
     public HotDrink prepare(int amount) {
-        System.out.println("        hago algo algo bup bup");
+        System.out.println("Hago un te");
         return new Tea();
     }
 }
@@ -47,7 +47,7 @@ class TeaFactory implements HotDrinkFactory {
 class CoffeeFactory implements HotDrinkFactory {
     @Override
     public HotDrink prepare(int amount) {
-        System.out.println("Hago un cafe gato");
+        System.out.println("Hago un cafe");
         return new Coffee();
     }
 }

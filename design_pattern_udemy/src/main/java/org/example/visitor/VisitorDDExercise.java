@@ -88,8 +88,7 @@ class ExpressionPrinterEx extends ExpressionVisitorEx {
 
 public class VisitorDDExercise {
     public static void main(String[] args) {
-        AdditionExpressionEx simple = new AdditionExpressionEx(new ValueEx(2),
-                new ValueEx(3));
+        AdditionExpressionEx simple = new AdditionExpressionEx(new ValueEx(2), new ValueEx(3));
         ExpressionPrinterEx ep = new ExpressionPrinterEx();
         ep.visit(simple);
         assertEquals("(2+3)", ep.toString());
