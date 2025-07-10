@@ -10,8 +10,8 @@ import org.example.entity.Book.BookBuilder;
 
 @Generated(
     value = "org.mapstruct.ap.MappingProcessor",
-    date = "2024-08-17T12:03:27-0300",
-    comments = "version: 1.4.2.Final, compiler: Eclipse JDT (IDE) 3.39.0.v20240725-1906, environment: Java 17.0.11 (Eclipse Adoptium)"
+    date = "2025-07-10T16:24:54-0300",
+    comments = "version: 1.4.2.Final, compiler: Eclipse JDT (IDE) 3.42.50.v20250628-1110, environment: Java 21.0.7 (Eclipse Adoptium)"
 )
 public class BookMapperImpl implements BookMapper {
 
