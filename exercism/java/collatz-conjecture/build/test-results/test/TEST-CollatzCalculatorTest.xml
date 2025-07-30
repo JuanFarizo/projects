@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="CollatzCalculatorTest" tests="6" skipped="5" failures="0" errors="0" timestamp="2025-07-30T18:39:53" hostname="AR-IT23543" time="0.035">
+  <properties/>
+  <testcase name="testCorrectNumberOfStepsWhenBothStepTypesAreNeeded()" classname="CollatzCalculatorTest" time="0.0">
+    <skipped/>
+  </testcase>
+  <testcase name="testAVeryLargeInput()" classname="CollatzCalculatorTest" time="0.0">
+    <skipped/>
+  </testcase>
+  <testcase name="testZeroIsConsideredInvalidInput()" classname="CollatzCalculatorTest" time="0.0">
+    <skipped/>
+  </testcase>
+  <testcase name="testCorrectNumberOfStepsWhenAllStepsAreDivisions()" classname="CollatzCalculatorTest" time="0.0">
+    <skipped/>
+  </testcase>
+  <testcase name="testZeroStepsRequiredWhenStartingFrom1()" classname="CollatzCalculatorTest" time="0.031"/>
+  <testcase name="testNegativeIntegerIsConsideredInvalidInput()" classname="CollatzCalculatorTest" time="0.0">
+    <skipped/>
+  </testcase>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>
