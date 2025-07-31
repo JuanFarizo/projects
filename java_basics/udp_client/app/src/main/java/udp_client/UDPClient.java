@@ -1,4 +1,4 @@
-package main.java.udp_client;
+package udp_client;
 
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
