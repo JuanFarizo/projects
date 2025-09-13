@@ -1,0 +1,116 @@
+[
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "exercism.collatz.CollatzCalculatorBenchmark.computeStepCount",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/home/farins/.sdkman/candidates/java/21.0.7-amzn/bin/java",
+        "jvmArgs" : [
+            "-Dfile.encoding=UTF-8",
+            "-Djava.io.tmpdir=/home/farins/Documents/projects/exercism/java/collatz-conjecture/build/tmp/jmh",
+            "-Duser.country=US",
+            "-Duser.language=en",
+            "-Duser.variant"
+        ],
+        "jdkVersion" : "21.0.7",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.7+6-LTS",
+        "warmupIterations" : 5,
+        "warmupTime" : "10 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 5,
+        "measurementTime" : "10 s",
+        "measurementBatchSize" : 1,
+        "primaryMetric" : {
+            "score" : 79.68579516663132,
+            "scoreError" : 6.968078580929561,
+            "scoreConfidence" : [
+                72.71771658570177,
+                86.65387374756088
+            ],
+            "scorePercentiles" : {
+                "0.0" : 77.88139525757288,
+                "50.0" : 79.02871100592841,
+                "90.0" : 82.63188383594877,
+                "95.0" : 82.63188383594877,
+                "99.0" : 82.63188383594877,
+                "99.9" : 82.63188383594877,
+                "99.99" : 82.63188383594877,
+                "99.999" : 82.63188383594877,
+                "99.9999" : 82.63188383594877,
+                "100.0" : 82.63188383594877
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    78.88943723319173,
+                    77.88139525757288,
+                    79.02871100592841,
+                    79.99754850051487,
+                    82.63188383594877
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "exercism.collatz.CollatzCalculatorRecursiveBenchmark.computeStepCount",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/home/farins/.sdkman/candidates/java/21.0.7-amzn/bin/java",
+        "jvmArgs" : [
+            "-Dfile.encoding=UTF-8",
+            "-Djava.io.tmpdir=/home/farins/Documents/projects/exercism/java/collatz-conjecture/build/tmp/jmh",
+            "-Duser.country=US",
+            "-Duser.language=en",
+            "-Duser.variant"
+        ],
+        "jdkVersion" : "21.0.7",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.7+6-LTS",
+        "warmupIterations" : 5,
+        "warmupTime" : "10 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 5,
+        "measurementTime" : "10 s",
+        "measurementBatchSize" : 1,
+        "primaryMetric" : {
+            "score" : 108.0519730187547,
+            "scoreError" : 49.18312823389607,
+            "scoreConfidence" : [
+                58.868844784858624,
+                157.23510125265076
+            ],
+            "scorePercentiles" : {
+                "0.0" : 99.38688697579666,
+                "50.0" : 100.27418049492027,
+                "90.0" : 128.59300046387773,
+                "95.0" : 128.59300046387773,
+                "99.0" : 128.59300046387773,
+                "99.9" : 128.59300046387773,
+                "99.99" : 128.59300046387773,
+                "99.999" : 128.59300046387773,
+                "99.9999" : 128.59300046387773,
+                "100.0" : 128.59300046387773
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    100.27418049492027,
+                    128.59300046387773,
+                    99.38688697579666,
+                    99.42039547808709,
+                    112.58540168109164
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    }
+]
+
+

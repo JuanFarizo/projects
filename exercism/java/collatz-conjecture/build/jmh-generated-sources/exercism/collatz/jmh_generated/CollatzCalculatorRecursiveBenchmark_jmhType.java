@@ -1,0 +1,4 @@
+package exercism.collatz.jmh_generated;
+public class CollatzCalculatorRecursiveBenchmark_jmhType extends CollatzCalculatorRecursiveBenchmark_jmhType_B3 {
+}
+

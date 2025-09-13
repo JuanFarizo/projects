@@ -1,0 +1,2 @@
+JMH S 43 exercism.collatz.CollatzCalculatorBenchmark S 82 exercism.collatz.jmh_generated.CollatzCalculatorBenchmark_computeStepCount_jmhTest S 16 computeStepCount S 11 AverageTime E A 1 1 1 E E E E E E E E E E E E E E U 11 NANOSECONDS E E 
+JMH S 52 exercism.collatz.CollatzCalculatorRecursiveBenchmark S 91 exercism.collatz.jmh_generated.CollatzCalculatorRecursiveBenchmark_computeStepCount_jmhTest S 16 computeStepCount S 11 AverageTime E A 1 1 1 E E E E E E E E E E E E E E U 11 NANOSECONDS E E 
