@@ -1,4 +1,4 @@
-package org.example.adapter;
+ // todopackage org.example.adapter;
 
 import java.util.ArrayList;
 import java.util.Arrays;
