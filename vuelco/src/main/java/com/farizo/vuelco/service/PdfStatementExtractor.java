@@ -15,6 +15,7 @@ import org.springframework.stereotype.Service;
 
 import com.farizo.vuelco.pojo.Transaction;
 import com.farizo.vuelco.pojo.TransactionType;
+import com.farizo.vuelco.utils.ImputationResolver;
 
 @Service
 public class PdfStatementExtractor {
@@ -48,6 +49,7 @@ public class PdfStatementExtractor {
         String[] lines = text.split("\\R");
 
         LocalDate currentDate = null;
+        String testData = "";
         StringBuilder description = new StringBuilder();
 
         for (String raw : lines) {
@@ -63,31 +65,33 @@ public class PdfStatementExtractor {
                 continue;
             }
 
-            // 1️⃣ Date line → start transaction
+            // 1 Date line → start transaction
             Matcher dateMatcher = DATE_LINE.matcher(line);
             if (dateMatcher.matches()) {
-                currentDate = LocalDate.parse(dateMatcher.group(1), DATE_FORMAT);
+                testData = dateMatcher.group(1);
+                currentDate = LocalDate.parse(testData, DATE_FORMAT);
                 description.setLength(0);
                 description.append(dateMatcher.group(2));
                 continue;
             }
 
-            // 2️⃣ Amount + saldo → close transaction
+            // 2 Amount + saldo → close transaction
             Matcher moneyMatcher = MONEY_LINE.matcher(line);
-            if (moneyMatcher.matches() && currentDate != null) {
+            if (moneyMatcher.find() && currentDate != null) {
 
                 BigDecimal amount = parseMoney(moneyMatcher.group(1));
                 BigDecimal balance = parseMoney(moneyMatcher.group(2));
 
                 TransactionType type =
-                        amount.signum() >= 0 ? TransactionType.CREDIT : TransactionType.DEBIT;
+                        amount.signum() >= 0 ? TransactionType.credito : TransactionType.debito;
 
                 out.add(new Transaction(
-                        currentDate,
+                        testData,
                         description.toString().trim(),
                         amount,
                         balance,
-                        type
+                        type,
+                        ImputationResolver.resolver(description.toString().trim())
                 ));
 
                 // reset state
@@ -96,7 +100,7 @@ public class PdfStatementExtractor {
                 continue;
             }
 
-            // 3️⃣ Description continuation
+            // 3 Description continuation
             if (currentDate != null) {
                 description.append(" ").append(line);
             }

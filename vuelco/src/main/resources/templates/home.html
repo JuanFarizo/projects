@@ -1,27 +1,494 @@
 <!DOCTYPE html>
-<html lang="en" xmlns:th="http://www.thymeleaf.org">
-
+<html lang="es" xmlns:th="http://www.thymeleaf.org">
 <head>
-    <meta charset="UTF-8">
-    <title>Upload Bank Statement</title>
+    <meta charset="UTF-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>Vuelco — Extractor de Extractos Bancarios</title>
+
+    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&amp;family=Inter:wght@300;400;500;600&amp;display=swap" rel="stylesheet"/>
+    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+    <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+
+    <script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    colors: {
+                        "surface-container-lowest":  "#ffffff",
+                        "surface-container-highest": "#e1e3e4",
+                        "surface-container-high":    "#e7e8e9",
+                        "surface-container":         "#edeeef",
+                        "surface-container-low":     "#f3f4f5",
+                        "surface":                   "#f8f9fa",
+                        "on-surface":                "#191c1d",
+                        "on-surface-variant":        "#44474e",
+                        "on-background":             "#191c1d",
+                        "primary":                   "#031636",
+                        "primary-container":         "#1a2b4c",
+                        "on-primary":                "#ffffff",
+                        "secondary":                 "#006b5c",
+                        "secondary-container":       "#68fadd",
+                        "secondary-fixed":           "#68fadd",
+                        "secondary-fixed-dim":       "#44ddc1",
+                        "on-secondary-container":    "#007261",
+                        "on-secondary":              "#ffffff",
+                        "error":                     "#ba1a1a",
+                        "error-container":           "#ffdad6",
+                        "outline":                   "#75777f",
+                        "outline-variant":           "#c5c6cf",
+                        "background":                "#f8f9fa",
+                    },
+                    fontFamily: {
+                        headline: ["Manrope", "sans-serif"],
+                        body:     ["Inter", "sans-serif"],
+                        label:    ["Inter", "sans-serif"],
+                    },
+                    borderRadius: {
+                        DEFAULT: "0.125rem",
+                        lg:      "0.25rem",
+                        xl:      "0.5rem",
+                        "2xl":   "0.75rem",
+                        full:    "9999px",
+                    },
+                },
+            },
+        };
+    </script>
+
+    <style>
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+        }
+        body { font-family: 'Inter', sans-serif; -webkit-font-smoothing: antialiased; }
+        h1, h2, h3, .font-headline { font-family: 'Manrope', sans-serif; }
+        .glass-nav {
+            background: rgba(243, 244, 245, 0.85);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+        }
+        .cta-gradient { background: linear-gradient(135deg, #031636 0%, #1a2b4c 100%); }
+        .ambient-shadow { box-shadow: 0 20px 40px rgba(7, 27, 59, 0.06); }
+    </style>
 </head>
 
-<body>
-    <h2>Upload Bank Statement (PDF)</h2>
-    <form method="post" th:action="@{/upload}" enctype="multipart/form-data" required />
-    <input  type="file" name="file" accept="application/pdf" required>
-    <br /><br />
-    <button type="submit">Upload</button>
-    </form>
+<body class="bg-background text-on-background min-h-screen flex flex-col">
 
-    <div th:if="${message}">
-        <p th:text="${message}"></p>
+<!-- ══════════════════════════════════════
+     HEADER
+══════════════════════════════════════ -->
+<header class="sticky top-0 z-50 glass-nav">
+    <div class="flex justify-between items-center w-full px-6 py-4 max-w-7xl mx-auto">
+        <span class="text-2xl font-bold bg-gradient-to-br from-blue-900 to-slate-700 bg-clip-text text-transparent font-headline tracking-tight">Vuelco</span>
+        <span class="text-xs font-semibold text-on-secondary-container bg-secondary-container/40 px-3 py-1 rounded-full font-label uppercase tracking-widest">Beta</span>
+    </div>
+</header>
+
+<!-- ══════════════════════════════════════
+     MAIN
+══════════════════════════════════════ -->
+<main class="flex-1 w-full max-w-5xl mx-auto px-6 pt-8 pb-36 md:pb-16">
+
+    <!-- ── Progress Stepper — Mobile (bar) ── -->
+    <div class="md:hidden mb-8">
+        <div class="flex justify-between items-end mb-3">
+            <span class="text-xs font-bold uppercase tracking-widest text-secondary font-label"
+                  th:text="${step != 2} ? 'Paso 01' : 'Paso 02'">Paso 01</span>
+            <span class="text-sm font-medium text-on-surface-variant"
+                  th:text="${step != 2} ? 'Paso 1 de 2' : 'Paso 2 de 2'">Paso 1 de 2</span>
+        </div>
+        <div class="h-1.5 w-full bg-surface-container-highest rounded-full overflow-hidden">
+            <div class="h-full rounded-full bg-secondary-container transition-all duration-500"
+                 th:classappend="${step == 2} ? 'w-full' : 'w-1/2'"></div>
+        </div>
     </div>
 
-    <div th:if="${size}">
-        <p>File size: <span th:text="${size}"></span> bytes</p>
+    <!-- ── Progress Stepper — Desktop (dots) ── -->
+    <div class="hidden md:flex items-center justify-center mb-14">
+        <div class="relative flex items-center w-full max-w-xs">
+            <div class="absolute top-5 left-0 w-full h-0.5 bg-surface-container-highest z-0"></div>
+
+            <!-- Step 1 -->
+            <div class="relative z-10 flex flex-col items-center gap-2 flex-1">
+                <div th:class="${step != 2}
+                     ? 'w-11 h-11 rounded-full cta-gradient flex items-center justify-center text-on-primary shadow-lg border-4 border-background'
+                     : 'w-10 h-10 rounded-full bg-secondary-container flex items-center justify-center text-on-secondary-container shadow-sm border-2 border-background'">
+                    <span class="material-symbols-outlined text-xl"
+                          th:style="${step == 2} ? 'font-variation-settings: FILL 1' : ''"
+                          th:text="${step == 2} ? 'check_circle' : 'upload_file'">upload_file</span>
+                </div>
+                <span class="text-xs font-bold font-headline tracking-wide uppercase"
+                      th:class="${step != 2} ? 'text-primary' : 'text-on-surface-variant'">1. Cargar archivos</span>
+            </div>
+
+            <!-- Step 2 -->
+            <div class="relative z-10 flex flex-col items-center gap-2 flex-1">
+                <div th:class="${step == 2}
+                     ? 'w-11 h-11 rounded-full cta-gradient flex items-center justify-center text-on-primary shadow-lg border-4 border-background'
+                     : 'w-10 h-10 rounded-full bg-surface-container-highest flex items-center justify-center text-on-surface-variant border-2 border-background'">
+                    <span class="material-symbols-outlined text-xl">download</span>
+                </div>
+                <span class="text-xs font-bold font-headline tracking-wide uppercase"
+                      th:class="${step == 2} ? 'text-primary' : 'text-on-surface-variant'">2. Descargar</span>
+            </div>
+        </div>
     </div>
+
+    <!-- ══════════════════════════════════
+         PASO 1 — CARGA DE ARCHIVOS
+    ══════════════════════════════════ -->
+    <div th:if="${step != 2}">
+        <div class="grid grid-cols-1 lg:grid-cols-12 gap-10 items-start">
+
+            <!-- ── Left Column: Form ── -->
+            <div class="lg:col-span-7 space-y-8">
+
+                <div>
+                    <h1 class="text-3xl font-extrabold font-headline tracking-tight text-primary mb-2">Cargar extractos</h1>
+                    <p class="text-on-surface-variant text-sm leading-relaxed">Seleccione su institución bancaria y cargue uno o más extractos en PDF para procesar.</p>
+                </div>
+
+                <!-- Error -->
+                <div th:if="${error}" class="p-4 bg-error-container/40 rounded-xl">
+                    <p class="text-sm font-medium text-error" th:text="${error}"></p>
+                </div>
+
+                <form id="upload-form" th:action="@{/upload}" method="post" enctype="multipart/form-data" class="space-y-6">
+
+                    <!-- Bank selection -->
+                    <div>
+                        <label for="banco" class="block text-xs font-bold text-primary uppercase tracking-tighter ml-1 mb-2">Institución bancaria *</label>
+                        <div class="relative">
+                            <select id="banco" name="banco"
+                                class="w-full bg-surface-container-lowest border-0 border-b-2 border-outline-variant/30 focus:border-secondary focus:ring-0 focus:bg-white transition-all py-4 pl-4 pr-10 appearance-none text-on-surface font-medium rounded-t-xl">
+                                <!-- <option value="">Selecciona un banco</option> -->
+                                <option value="santander">Galicia</option>
+                                <!-- <option value="bbva">BBVA</option> -->
+                                <!-- <option value="caixabank">CaixaBank</option> -->
+                                <!-- <option value="sabadell">Sabadell</option> -->
+                                <!-- <option value="otro">Otro / Genérico</option> -->
+                            </select>
+                            <!-- <div class="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none text-outline"> -->
+                                <!-- <span class="material-symbols-outlined">expand_more</span> -->
+                            <!-- </div> -->
+                        </div>
+                    </div>
+
+                    <!-- Upload zone -->
+                    <div>
+                        <label class="block text-xs font-bold text-primary uppercase tracking-tighter ml-1 mb-2">Documentos PDF *</label>
+                        <label for="files" class="block cursor-pointer">
+                            <div id="drop-zone" class="flex flex-col items-center justify-center p-10 border-2 border-dashed border-outline-variant/40 bg-surface-container-lowest rounded-2xl hover:border-secondary transition-colors group">
+                                <div class="w-14 h-14 bg-secondary-container/30 rounded-full flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
+                                    <span class="material-symbols-outlined text-secondary text-3xl">cloud_upload</span>
+                                </div>
+                                <span class="font-headline font-bold text-primary">Subir archivos PDF</span>
+                                <p class="text-xs text-on-surface-variant mt-1">Arrastre o toque para seleccionar — Máx. 20 MB por archivo</p>
+                            </div>
+                            <input id="files" type="file" name="files" accept=".pdf,application/pdf" multiple class="hidden"/>
+                        </label>
+                    </div>
+
+                    <!-- Selected files (JS-rendered) -->
+                    <div id="file-list" class="hidden space-y-3">
+                        <h3 id="file-list-heading" class="text-xs font-bold text-primary uppercase tracking-tighter">Archivos seleccionados</h3>
+                        <div id="file-items" class="space-y-3"></div>
+                    </div>
+
+                    <!-- Processing options accordion -->
+                    <div class="bg-surface-container-low rounded-2xl p-5 space-y-4">
+                        <button type="button" id="toggle-options" class="w-full flex items-center justify-between text-left">
+                            <span class="flex items-center gap-2 text-sm font-semibold text-primary font-headline">
+                                <span class="material-symbols-outlined text-secondary text-base">tune</span>
+                                Opciones de procesamiento
+                            </span>
+                            <span class="material-symbols-outlined text-outline text-base" id="options-chevron">expand_more</span>
+                        </button>
+
+                        <div id="options-panel" class="hidden space-y-5 pt-2">
+
+                            <!-- Date format -->
+                            <div>
+                                <p class="text-xs font-semibold text-on-surface-variant mb-2 uppercase tracking-wider">Formato de fecha en el PDF</p>
+                                <div class="flex gap-5">
+                                    <label class="flex items-center gap-2 cursor-pointer">
+                                        <input type="radio" name="dateFormat" value="dd/MM/yy" checked class="accent-secondary"/>
+                                        <span class="text-sm text-on-surface">DD/MM/AA</span>
+                                    </label>
+                                    <label class="flex items-center gap-2 cursor-pointer">
+                                        <input type="radio" name="dateFormat" value="dd/MM/yyyy" class="accent-secondary"/>
+                                        <span class="text-sm text-on-surface">DD/MM/AAAA</span>
+                                    </label>
+                                </div>
+                            </div>
+
+                            <!-- Decimal separator -->
+                            <div>
+                                <p class="text-xs font-semibold text-on-surface-variant mb-2 uppercase tracking-wider">Separador decimal en el PDF</p>
+                                <div class="flex gap-5">
+                                    <label class="flex items-center gap-2 cursor-pointer">
+                                        <input type="radio" name="decimalSep" value="comma" checked class="accent-secondary"/>
+                                        <span class="text-sm text-on-surface">Coma (1.234,56)</span>
+                                    </label>
+                                    <label class="flex items-center gap-2 cursor-pointer">
+                                        <input type="radio" name="decimalSep" value="dot" class="accent-secondary"/>
+                                        <span class="text-sm text-on-surface">Punto (1,234.56)</span>
+                                    </label>
+                                </div>
+                            </div>
+
+                            <!-- Include headers -->
+                            <label class="flex items-center gap-3 cursor-pointer">
+                                <input type="checkbox" name="includeHeaders" value="true" checked class="accent-secondary rounded"/>
+                                <span class="text-sm text-on-surface">Incluir encabezados en el Excel</span>
+                            </label>
+
+                        </div>
+                    </div>
+
+                    <!-- Submit button — Desktop -->
+                    <div class="hidden md:block pt-2">
+                        <button type="submit"
+                            class="cta-gradient w-full py-5 rounded-xl font-headline font-bold text-lg text-on-primary shadow-xl hover:shadow-2xl hover:-translate-y-0.5 active:translate-y-0 transition-all flex items-center justify-center gap-3">
+                            Procesar extractos
+                            <span class="material-symbols-outlined">arrow_forward</span>
+                        </button>
+                    </div>
+
+                </form>
+            </div>
+
+            <!-- ── Right Column: Preview card (desktop only) ── -->
+            <div class="hidden lg:block lg:col-span-5">
+                <div class="sticky top-28 space-y-6">
+                    <div class="bg-surface-container-low p-6 rounded-2xl space-y-5">
+
+                        <div class="flex items-center gap-3 text-primary">
+                            <span class="material-symbols-outlined">visibility</span>
+                            <h2 class="font-headline font-bold">Ejemplo de extracto esperado</h2>
+                        </div>
+
+                        <!-- Simulated bank statement -->
+                        <div class="relative overflow-hidden rounded-xl bg-white ambient-shadow aspect-[3/4]">
+                            <div class="p-5 h-full flex flex-col gap-3">
+                                <!-- Simulated header rows -->
+                                <div class="h-5 w-3/4 bg-surface-container-highest rounded"></div>
+                                <div class="h-3 w-2/5 bg-surface-container-high rounded"></div>
+                                <div class="h-3 w-1/3 bg-surface-container-high rounded"></div>
+                                <!-- Simulated table header -->
+                                <div class="mt-3 grid grid-cols-5 gap-1">
+                                    <div class="col-span-1 h-3 bg-surface-container-highest rounded"></div>
+                                    <div class="col-span-2 h-3 bg-surface-container-highest rounded"></div>
+                                    <div class="col-span-1 h-3 bg-surface-container-highest rounded"></div>
+                                    <div class="col-span-1 h-3 bg-surface-container-highest rounded"></div>
+                                </div>
+                                <!-- Simulated data rows -->
+                                <div th:each="i : ${#numbers.sequence(1, 9)}" class="grid grid-cols-5 gap-1">
+                                    <div class="col-span-1 h-3 bg-surface-container-low rounded"></div>
+                                    <div class="col-span-2 h-3 bg-surface-container-low rounded"></div>
+                                    <div class="col-span-1 h-3 bg-surface-container-low rounded"></div>
+                                    <div class="col-span-1 h-3 bg-surface-container-low rounded"></div>
+                                </div>
+                            </div>
+
+                            <!-- Callout -->
+                            <div class="absolute top-1/3 right-3 bg-secondary-container/95 p-3 rounded-xl shadow-lg backdrop-blur-sm max-w-[170px]">
+                                <div class="flex items-center gap-1.5 mb-1">
+                                    <span class="material-symbols-outlined text-secondary text-sm"
+                                          style="font-variation-settings: 'FILL' 1">info</span>
+                                    <span class="text-[9px] font-bold text-on-secondary-container uppercase tracking-widest">Dato crítico</span>
+                                </div>
+                                <p class="text-xs text-secondary font-medium leading-tight">El extracto debe incluir fecha, descripción, monto y saldo acumulado.</p>
+                            </div>
+                        </div>
+
+                        <!-- Tip -->
+                        <div class="bg-surface-container-highest/50 p-4 rounded-xl">
+                            <h3 class="text-sm font-bold text-primary font-headline mb-2 flex items-center gap-2">
+                                <span class="material-symbols-outlined text-sm">tips_and_updates</span>
+                                Tip
+                            </h3>
+                            <p class="text-xs text-on-surface-variant leading-relaxed">Para mayor precisión, asegúrese de que el PDF no esté protegido por contraseña y que el texto sea seleccionable (no escaneado).</p>
+                        </div>
+
+                    </div>
+                </div>
+            </div>
+
+        </div>
+    </div>
+
+    <!-- ══════════════════════════════════
+         PASO 2 — RESULTADO Y DESCARGA
+    ══════════════════════════════════ -->
+    <div th:if="${step == 2}">
+        <div class="max-w-lg mx-auto space-y-8">
+
+            <!-- Success icon + heading -->
+            <div class="text-center space-y-3 pt-4">
+                <div class="w-20 h-20 bg-secondary-container/30 rounded-full flex items-center justify-center mx-auto">
+                    <span class="material-symbols-outlined text-secondary text-5xl"
+                          style="font-variation-settings: 'FILL' 1">task_alt</span>
+                </div>
+                <h1 class="text-3xl font-extrabold font-headline tracking-tight text-primary">¡Listo para descargar!</h1>
+                <p class="text-on-surface-variant text-sm">El procesamiento finalizó correctamente.</p>
+            </div>
+
+            <!-- Summary card -->
+            <div class="bg-surface-container-lowest rounded-2xl p-6 ambient-shadow space-y-5">
+                <div class="flex items-center gap-3">
+                    <span class="material-symbols-outlined text-secondary">bar_chart</span>
+                    <h2 class="font-headline font-bold text-primary">Resumen del procesamiento</h2>
+                </div>
+
+                <div class="grid grid-cols-2 gap-4">
+                    <div class="bg-surface-container-low rounded-2xl p-4 text-center">
+                        <p class="text-4xl font-extrabold font-headline text-primary" th:text="${transactionCount}">0</p>
+                        <p class="text-xs text-on-surface-variant mt-1 uppercase tracking-wide">Transacciones</p>
+                    </div>
+                    <div class="bg-surface-container-low rounded-2xl p-4 text-center">
+                        <p class="text-4xl font-extrabold font-headline text-primary" th:text="${fileCount}">0</p>
+                        <p class="text-xs text-on-surface-variant mt-1 uppercase tracking-wide">Archivos procesados</p>
+                    </div>
+                </div>
+
+                <!-- Processed file list -->
+                <div th:if="${processedFiles}" class="space-y-2 pt-1">
+                    <div th:each="fileName : ${processedFiles}"
+                         class="flex items-center gap-3 p-3 bg-surface-container-low rounded-xl">
+                        <div class="w-9 h-9 bg-error-container/25 rounded-lg flex items-center justify-center flex-shrink-0">
+                            <span class="material-symbols-outlined text-error text-base">picture_as_pdf</span>
+                        </div>
+                        <p class="text-sm font-medium text-on-surface truncate flex-1" th:text="${fileName}">archivo.pdf</p>
+                        <span class="material-symbols-outlined text-secondary text-base flex-shrink-0"
+                              style="font-variation-settings: 'FILL' 1">check_circle</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Download button -->
+            <a th:href="@{/download}"
+               class="cta-gradient w-full py-5 rounded-xl font-headline font-bold text-lg text-on-primary shadow-xl hover:shadow-2xl hover:-translate-y-0.5 active:translate-y-0 transition-all flex items-center justify-center gap-3">
+                <span class="material-symbols-outlined">download</span>
+                Descargar Excel (.xlsx)
+            </a>
+
+            <!-- Process another -->
+            <a th:href="@{/}"
+               class="w-full py-4 rounded-xl font-headline font-semibold text-sm text-secondary bg-secondary-container/20 hover:bg-secondary-container/30 transition-colors flex items-center justify-center gap-2">
+                <span class="material-symbols-outlined text-base">refresh</span>
+                Procesar otros archivos
+            </a>
+
+        </div>
+    </div>
+
+</main>
+
+<!-- ══════════════════════════════════════
+     STICKY FOOTER (mobile, step 1 only)
+══════════════════════════════════════ -->
+<footer th:if="${step != 2}" class="fixed bottom-0 left-0 right-0 p-5 glass-nav border-t border-outline-variant/10 md:hidden z-40">
+    <div class="max-w-md mx-auto">
+        <button type="submit" form="upload-form"
+            class="cta-gradient w-full py-4 rounded-xl flex items-center justify-center gap-2 group active:scale-95 transition-transform shadow-lg shadow-primary/20">
+            <span class="text-white font-headline font-bold text-sm tracking-wide">Procesar extractos</span>
+            <span class="material-symbols-outlined text-secondary-fixed text-lg group-hover:translate-x-1 transition-transform">arrow_forward</span>
+        </button>
+    </div>
+</footer>
+
+<!-- ══════════════════════════════════════
+     PAGE FOOTER
+══════════════════════════════════════ -->
+<div class="hidden md:block py-10 px-6 mt-16 bg-surface-container-low">
+    <div class="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-center gap-6">
+        <span class="font-headline font-bold text-primary">Vuelco</span>
+        <div class="flex gap-6 text-sm text-on-surface-variant">
+            <a href="#" class="hover:text-secondary transition-colors">Términos de servicio</a>
+            <a href="#" class="hover:text-secondary transition-colors">Privacidad</a>
+            <a href="https://youtu.be/WRh_mCxd3UY?list=RDWRh_mCxd3UY&t=14" class="hover:text-secondary transition-colors">Soporte</a>
+        </div>
+        <p class="text-sm text-on-surface-variant">© 2026 Vuelco. Servicios financieros profesionales.</p>
+    </div>
+</div>
+
+<!-- ══════════════════════════════════════
+     JAVASCRIPT
+══════════════════════════════════════ -->
+<script>
+    const filesInput  = document.getElementById('files');
+    const fileList    = document.getElementById('file-list');
+    const fileItems   = document.getElementById('file-items');
+    const fileHeading = document.getElementById('file-list-heading');
+    const dropZone    = document.getElementById('drop-zone');
+
+    function renderFileList(files) {
+        fileItems.innerHTML = '';
+        if (!files || files.length === 0) {
+            fileList.classList.add('hidden');
+            return;
+        }
+        fileHeading.textContent = `Archivos seleccionados (${files.length})`;
+        fileList.classList.remove('hidden');
+
+        Array.from(files).forEach(file => {
+            const sizeMB = (file.size / (1024 * 1024)).toFixed(1);
+            const el = document.createElement('div');
+            el.className = 'flex items-center justify-between p-4 bg-surface-container-lowest rounded-xl shadow-sm';
+            el.innerHTML = `
+                <div class="flex items-center gap-3">
+                    <div class="w-10 h-10 bg-red-50 rounded-lg flex items-center justify-center">
+                        <span class="material-symbols-outlined text-red-600">picture_as_pdf</span>
+                    </div>
+                    <div>
+                        <p class="text-sm font-semibold text-on-surface truncate max-w-[200px]">${file.name}</p>
+                        <p class="text-[10px] text-on-surface-variant">${sizeMB} MB</p>
+                    </div>
+                </div>
+                <span class="material-symbols-outlined text-outline text-xl">insert_drive_file</span>
+            `;
+            fileItems.appendChild(el);
+        });
+    }
+
+    if (filesInput) {
+        filesInput.addEventListener('change', () => renderFileList(filesInput.files));
+    }
+
+    if (dropZone) {
+        dropZone.addEventListener('dragover', e => {
+            e.preventDefault();
+            dropZone.classList.add('border-secondary', 'bg-secondary-container/10');
+        });
+        dropZone.addEventListener('dragleave', () => {
+            dropZone.classList.remove('border-secondary', 'bg-secondary-container/10');
+        });
+        dropZone.addEventListener('drop', e => {
+            e.preventDefault();
+            dropZone.classList.remove('border-secondary', 'bg-secondary-container/10');
+            const dt = e.dataTransfer;
+            if (dt && dt.files.length) {
+                const transfer = new DataTransfer();
+                Array.from(dt.files).forEach(f => transfer.items.add(f));
+                filesInput.files = transfer.files;
+                renderFileList(filesInput.files);
+            }
+        });
+    }
+
+    // Options accordion
+    const toggleBtn      = document.getElementById('toggle-options');
+    const optionsPanel   = document.getElementById('options-panel');
+    const optionsChevron = document.getElementById('options-chevron');
+
+    if (toggleBtn) {
+        toggleBtn.addEventListener('click', () => {
+            const isHidden = optionsPanel.classList.toggle('hidden');
+            optionsChevron.textContent = isHidden ? 'expand_more' : 'expand_less';
+        });
+    }
+</script>
 
 </body>
-
 </html>

@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+
+<html class="light" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Vuelco - Cargar PDFs</title>
+<!-- Google Fonts: Manrope & Inter -->
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&amp;family=Inter:wght@400;500;600&amp;display=swap" rel="stylesheet"/>
+<!-- Material Symbols -->
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script id="tailwind-config">
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            colors: {
+              "on-tertiary-fixed-variant": "#3a4a49",
+              "surface-dim": "#d9dadb",
+              "on-tertiary-container": "#859695",
+              "on-background": "#191c1d",
+              "on-surface": "#191c1d",
+              "surface-container-lowest": "#ffffff",
+              "surface-tint": "#4e5e82",
+              "surface-container-highest": "#e1e3e4",
+              "primary-fixed": "#d8e2ff",
+              "primary-fixed-dim": "#b6c6f0",
+              "on-tertiary-fixed": "#0e1e1e",
+              "secondary-fixed": "#68fadd",
+              "on-primary-fixed-variant": "#364669",
+              "error": "#ba1a1a",
+              "on-secondary-fixed-variant": "#005145",
+              "tertiary": "#091a19",
+              "primary-container": "#1a2b4c",
+              "secondary-fixed-dim": "#44ddc1",
+              "on-primary-container": "#8293ba",
+              "tertiary-fixed": "#d4e6e5",
+              "on-secondary-fixed": "#00201a",
+              "error-container": "#ffdad6",
+              "surface-container": "#edeeef",
+              "on-primary": "#ffffff",
+              "tertiary-container": "#1e2e2e",
+              "on-secondary-container": "#007261",
+              "inverse-primary": "#b6c6f0",
+              "outline": "#75777f",
+              "secondary-container": "#68fadd",
+              "surface-container-high": "#e7e8e9",
+              "background": "#f8f9fa",
+              "on-secondary": "#ffffff",
+              "inverse-on-surface": "#f0f1f2",
+              "secondary": "#006b5c",
+              "on-surface-variant": "#44474e",
+              "on-error-container": "#93000a",
+              "surface-container-low": "#f3f4f5",
+              "on-primary-fixed": "#071b3b",
+              "inverse-surface": "#2e3132",
+              "on-tertiary": "#ffffff",
+              "primary": "#031636",
+              "outline-variant": "#c5c6cf",
+              "on-error": "#ffffff",
+              "surface-bright": "#f8f9fa",
+              "surface-variant": "#e1e3e4",
+              "tertiary-fixed-dim": "#b8cac9",
+              "surface": "#f8f9fa"
+            },
+            fontFamily: {
+              "headline": ["Manrope"],
+              "body": ["Inter"],
+              "label": ["Inter"]
+            },
+            borderRadius: {"DEFAULT": "0.125rem", "lg": "0.25rem", "xl": "0.5rem", "full": "0.75rem"},
+          },
+        },
+      }
+    </script>
+<style>
+      .material-symbols-outlined {
+        font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+      }
+      body {
+        font-family: 'Inter', sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+      h1, h2, h3, .font-headline {
+        font-family: 'Manrope', sans-serif;
+      }
+      .glass-nav {
+        background: rgba(243, 244, 245, 0.8);
+        backdrop-filter: blur(20px);
+      }
+      .cta-gradient {
+        background: linear-gradient(135deg, #031636 0%, #1a2b4c 100%);
+      }
+    </style>
+<style>
+    body {
+      min-height: max(884px, 100dvh);
+    }
+  </style>
+  </head>
+<body class="bg-background text-on-background min-h-screen flex flex-col">
+<!-- Top Navigation Bar -->
+<header class="sticky top-0 z-50 glass-nav">
+<div class="flex justify-between items-center w-full px-6 py-4 max-w-7xl mx-auto">
+<div class="flex items-center gap-2">
+<span class="text-2xl font-bold bg-gradient-to-br from-blue-900 to-slate-700 bg-clip-text text-transparent font-headline tracking-tight">Vuelco</span>
+</div>
+<button class="p-2 text-primary">
+<span class="material-symbols-outlined" data-icon="menu">menu</span>
+</button>
+</div>
+</header>
+<!-- Main Content Canvas -->
+<main class="flex-1 w-full max-w-md mx-auto px-6 pt-6 pb-32">
+<!-- Progress Stepper (Audit Tracker Style) -->
+<div class="mb-8">
+<div class="flex justify-between items-end mb-3">
+<span class="text-xs font-bold uppercase tracking-widest text-secondary font-label">Step 02</span>
+<span class="text-sm font-medium text-on-surface-variant">Paso 2 de 3</span>
+</div>
+<div class="h-1.5 w-full bg-surface-container-highest rounded-full overflow-hidden">
+<div class="h-full w-2/3 bg-secondary-container rounded-full"></div>
+</div>
+<h1 class="text-2xl font-extrabold mt-6 text-primary tracking-tight font-headline">Cargar PDFs</h1>
+<p class="text-on-surface-variant mt-2 text-sm leading-relaxed">Seleccione su institución financiera y cargue los extractos bancarios para procesar.</p>
+</div>
+<!-- Bank Selection Dropdown -->
+<div class="mb-6 space-y-2">
+<label class="text-xs font-bold text-primary uppercase tracking-tighter ml-1">Institución Bancaria</label>
+<div class="relative group">
+<div class="flex items-center justify-between w-full p-4 bg-surface-container-lowest rounded-xl border-b border-outline-variant/20 shadow-sm transition-all group-focus-within:bg-white group-focus-within:border-secondary">
+<div class="flex items-center gap-3">
+<span class="material-symbols-outlined text-secondary" data-icon="account_balance">account_balance</span>
+<span class="font-medium text-on-surface">Banco Santander Central</span>
+</div>
+<span class="material-symbols-outlined text-outline" data-icon="expand_more">expand_more</span>
+</div>
+</div>
+</div>
+<!-- Statement Format Preview (Glassmorphism Card) -->
+<div class="mb-8 p-4 bg-surface-container-low rounded-xl border-b border-outline-variant/10">
+<div class="flex items-center justify-between mb-3">
+<span class="text-xs font-semibold text-on-surface-variant flex items-center gap-2">
+<span class="material-symbols-outlined text-sm" data-icon="visibility">visibility</span>
+                    Vista previa del formato
+                </span>
+<button class="text-[10px] font-bold text-secondary uppercase tracking-widest">Cambiar</button>
+</div>
+<div class="relative aspect-[4/3] rounded-lg overflow-hidden border border-outline-variant/30 bg-white">
+<img alt="Bank statement preview" class="w-full h-full object-cover opacity-60 grayscale" data-alt="monochrome macro close up of professional financial spreadsheet showing columns of numbers and grid lines on white paper" src="https://lh3.googleusercontent.com/aida-public/AB6AXuBvEvTd-8xKFsSrid8D-oEPyLQyDeqxBaZO11EEJ8so3L7Yt995cALqaxke0vkCw5EdmFy9X8ehAJ9MEoPsI68wq8MOnl6_IgcN_jR-4dDoh0ZLI9Nw79gR7t7Xt4dzgzn8xApRRBA44Jrvalb58qFlKpf3iwTWb1v8mCd6ZAz1F1_NuVSWq3hIi3M9_Aw8rrzC93nIZ9szwUb88k-bb32K6DILyh-N305SdAE96F8FYixuMQHxUHLRyCMNOIkYRE7eHkxdTYVi3g"/>
+<div class="absolute inset-0 bg-gradient-to-t from-surface-container-low/80 to-transparent flex items-end p-4">
+<p class="text-[10px] font-medium text-primary leading-tight">Su extracto debe coincidir con esta estructura para garantizar el 100% de precisión.</p>
+</div>
+</div>
+</div>
+<!-- Upload Zone -->
+<div class="mb-10">
+<label class="block w-full cursor-pointer">
+<div class="flex flex-col items-center justify-center p-8 border-2 border-dashed border-outline-variant/40 bg-surface-container-lowest rounded-2xl hover:border-secondary transition-colors group">
+<div class="w-14 h-14 bg-secondary-container/30 rounded-full flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
+<span class="material-symbols-outlined text-secondary text-3xl" data-icon="upload_file">upload_file</span>
+</div>
+<span class="font-headline font-bold text-primary">Subir archivos PDF</span>
+<p class="text-xs text-on-surface-variant mt-1">Arrastre o toque para seleccionar</p>
+</div>
+<input accept=".pdf" class="hidden" multiple="" type="file"/>
+</label>
+</div>
+<!-- Selected Files List -->
+<div class="space-y-3">
+<div class="flex items-center justify-between px-1">
+<h3 class="text-xs font-bold text-primary uppercase tracking-tighter">Archivos Seleccionados (3)</h3>
+</div>
+<!-- File Row 1 -->
+<div class="flex items-center justify-between p-4 bg-surface-container-lowest rounded-xl shadow-sm">
+<div class="flex items-center gap-3">
+<div class="w-10 h-10 bg-error-container/20 rounded-lg flex items-center justify-center">
+<span class="material-symbols-outlined text-error" data-icon="picture_as_pdf">picture_as_pdf</span>
+</div>
+<div>
+<p class="text-sm font-semibold text-primary truncate w-32">Extracto_Enero_2024.pdf</p>
+<p class="text-[10px] text-on-surface-variant">2.4 MB • Completo</p>
+</div>
+</div>
+<button class="text-outline hover:text-error transition-colors">
+<span class="material-symbols-outlined text-xl" data-icon="delete_outline">delete_outline</span>
+</button>
+</div>
+<!-- File Row 2 -->
+<div class="flex items-center justify-between p-4 bg-surface-container-lowest rounded-xl shadow-sm">
+<div class="flex items-center gap-3">
+<div class="w-10 h-10 bg-error-container/20 rounded-lg flex items-center justify-center">
+<span class="material-symbols-outlined text-error" data-icon="picture_as_pdf">picture_as_pdf</span>
+</div>
+<div>
+<p class="text-sm font-semibold text-primary truncate w-32">Extracto_Febrero_2024.pdf</p>
+<p class="text-[10px] text-on-surface-variant">1.8 MB • Completo</p>
+</div>
+</div>
+<button class="text-outline hover:text-error transition-colors">
+<span class="material-symbols-outlined text-xl" data-icon="delete_outline">delete_outline</span>
+</button>
+</div>
+<!-- File Row 3 -->
+<div class="flex items-center justify-between p-4 bg-surface-container-lowest rounded-xl shadow-sm">
+<div class="flex items-center gap-3">
+<div class="w-10 h-10 bg-error-container/20 rounded-lg flex items-center justify-center">
+<span class="material-symbols-outlined text-error" data-icon="picture_as_pdf">picture_as_pdf</span>
+</div>
+<div>
+<p class="text-sm font-semibold text-primary truncate w-32">Extracto_Marzo_2024.pdf</p>
+<p class="text-[10px] text-on-surface-variant">3.1 MB • Completo</p>
+</div>
+</div>
+<button class="text-outline hover:text-error transition-colors">
+<span class="material-symbols-outlined text-xl" data-icon="delete_outline">delete_outline</span>
+</button>
+</div>
+</div>
+</main>
+<!-- Sticky Bottom Action Bar -->
+<footer class="fixed bottom-0 left-0 right-0 p-6 glass-nav border-t border-outline-variant/10 md:hidden">
+<div class="max-w-md mx-auto">
+<button class="cta-gradient w-full py-4 rounded-xl flex items-center justify-center gap-2 group active:scale-95 transition-transform shadow-lg shadow-primary/20">
+<span class="text-white font-headline font-bold text-sm tracking-wide">Continuar</span>
+<span class="material-symbols-outlined text-secondary-fixed text-lg transition-transform group-hover:translate-x-1" data-icon="arrow_forward">arrow_forward</span>
+</button>
+</div>
+</footer>
+<!-- Universal Footer for large screens (Hidden on mobile per prompt intent) -->
+<section class="hidden md:block py-12 px-6 bg-slate-50 border-t border-slate-100 mt-20">
+<div class="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-center gap-8">
+<span class="font-manrope font-bold text-slate-900">Vuelco</span>
+<div class="flex gap-6">
+<a class="text-slate-500 hover:text-emerald-600 font-inter text-sm" href="#">Terms of Service</a>
+<a class="text-slate-500 hover:text-emerald-600 font-inter text-sm" href="#">Privacy Policy</a>
+<a class="text-slate-500 hover:text-emerald-600 font-inter text-sm" href="#">Contact Support</a>
+<a class="text-slate-500 hover:text-emerald-600 font-inter text-sm" href="#">Security Audit</a>
+</div>
+<p class="font-inter text-sm text-slate-500 text-center">© 2024 Vuelco. Professional Financial Services.</p>
+</div>
+</section>
+</body></html>
