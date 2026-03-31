@@ -46,6 +46,8 @@ public class PdfStatementExtractor {
     }
 
     private void parsePage(String text, List<Transaction> out) {
+
+
         String[] lines = text.split("\\R");
 
         LocalDate currentDate = null;
@@ -55,7 +57,6 @@ public class PdfStatementExtractor {
         for (String raw : lines) {
             String line = raw.trim();
             if (line.isEmpty()) continue;
-
             // skip obvious headers
             if (line.startsWith("Resumen")
                     || line.startsWith("Página")
@@ -71,7 +72,30 @@ public class PdfStatementExtractor {
                 testData = dateMatcher.group(1);
                 currentDate = LocalDate.parse(testData, DATE_FORMAT);
                 description.setLength(0);
-                description.append(dateMatcher.group(2));
+
+                String rest = dateMatcher.group(2);
+                Matcher inlineMoneyMatcher = MONEY_LINE.matcher(rest);
+                if (inlineMoneyMatcher.find()) {
+                    // All info is on this single line — close transaction immediately
+                    String descPart = rest.substring(0, inlineMoneyMatcher.start()).trim();
+                    {
+                        BigDecimal amount = parseMoney(inlineMoneyMatcher.group(1));
+                        BigDecimal balance = parseMoney(inlineMoneyMatcher.group(2));
+                        TransactionType type =
+                                amount.signum() >= 0 ? TransactionType.credito : TransactionType.debito;
+                        out.add(new Transaction(
+                                testData,
+                                descPart,
+                                amount,
+                                balance,
+                                type,
+                                ImputationResolver.resolver(descPart)
+                        ));
+                    }
+                    currentDate = null;
+                } else {
+                    description.append(rest);
+                }
                 continue;
             }
 
