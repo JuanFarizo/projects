@@ -1,4 +1,4 @@
-package com.farizo.vuelco.pojo;
+package com.farizo.vuelco.model;
 
 public enum TransactionType {
     credito,

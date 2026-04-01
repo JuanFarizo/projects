@@ -69,10 +69,30 @@
         }
         .cta-gradient { background: linear-gradient(135deg, #031636 0%, #1a2b4c 100%); }
         .ambient-shadow { box-shadow: 0 20px 40px rgba(7, 27, 59, 0.06); }
+
+        /* Loading overlay spinner */
+        #loading-overlay { pointer-events: all; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .spinner-ring {
+            width: 3.5rem; height: 3.5rem;
+            border-radius: 9999px;
+            border: 4px solid #68fadd;   /* secondary-container */
+            border-top-color: #006b5c;   /* secondary */
+            animation: spin 0.75s linear infinite;
+        }
     </style>
 </head>
 
 <body class="bg-background text-on-background min-h-screen flex flex-col">
+
+<!-- ══════════════════════════════════════
+     LOADING OVERLAY
+══════════════════════════════════════ -->
+<div id="loading-overlay"
+     class="hidden fixed inset-0 z-[200] flex flex-col items-center justify-center bg-background/80 backdrop-blur-sm">
+    <div class="spinner-ring mb-5"></div>
+    <p id="loading-message" class="text-primary font-headline font-semibold text-sm tracking-wide">Procesando...</p>
+</div>
 
 <!-- ══════════════════════════════════════
      HEADER
@@ -161,12 +181,9 @@
                         <div class="relative">
                             <select id="banco" name="banco"
                                 class="w-full bg-surface-container-lowest border-0 border-b-2 border-outline-variant/30 focus:border-secondary focus:ring-0 focus:bg-white transition-all py-4 pl-4 pr-10 appearance-none text-on-surface font-medium rounded-t-xl">
-                                <!-- <option value="">Selecciona un banco</option> -->
-                                <option value="santander">Galicia</option>
+                                <option value="">Selecciona un banco</option>
+                                <option value="galicia">Galicia</option>
                                 <!-- <option value="bbva">BBVA</option> -->
-                                <!-- <option value="caixabank">CaixaBank</option> -->
-                                <!-- <option value="sabadell">Sabadell</option> -->
-                                <!-- <option value="otro">Otro / Genérico</option> -->
                             </select>
                             <!-- <div class="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none text-outline"> -->
                                 <!-- <span class="material-symbols-outlined">expand_more</span> -->
@@ -366,11 +383,17 @@
                 </div>
             </div>
 
-            <!-- Download button -->
-            <a th:href="@{/download}"
-               class="cta-gradient w-full py-5 rounded-xl font-headline font-bold text-lg text-on-primary shadow-xl hover:shadow-2xl hover:-translate-y-0.5 active:translate-y-0 transition-all flex items-center justify-center gap-3">
-                <span class="material-symbols-outlined">download</span>
-                Descargar Excel (.xlsx)
+            <!-- Download button (spinner = real request in flight; no full-page block) -->
+            <a id="download-btn" th:href="@{/download}"
+               class="cta-gradient w-full py-5 rounded-xl font-headline font-bold text-lg text-on-primary shadow-xl hover:shadow-2xl hover:-translate-y-0.5 active:translate-y-0 transition-all flex items-center justify-center min-h-[3.25rem] relative">
+                <span id="download-idle" class="flex items-center justify-center gap-3">
+                    <span class="material-symbols-outlined">download</span>
+                    Descargar Excel (.xlsx)
+                </span>
+                <span id="download-busy" class="hidden absolute inset-0 flex items-center justify-center gap-3" aria-hidden="true">
+                    <span class="inline-block h-6 w-6 rounded-full border-[3px] border-on-primary/25 border-t-on-primary animate-spin"></span>
+                    Descargando…
+                </span>
             </a>
 
             <!-- Process another -->
@@ -417,6 +440,105 @@
      JAVASCRIPT
 ══════════════════════════════════════ -->
 <script>
+    //  Loading overlay helpers 
+    const loadingOverlay = document.getElementById('loading-overlay');
+    const loadingMessage = document.getElementById('loading-message');
+
+    function showOverlay(message) {
+        loadingMessage.textContent = message || 'Procesando...';
+        loadingOverlay.classList.remove('hidden');
+    }
+
+    function hideOverlay() {
+        loadingOverlay.classList.add('hidden');
+    }
+
+    //  Upload form — show spinner on submit 
+    const uploadForm     = document.getElementById('upload-form');
+    const desktopSubmit  = uploadForm ? uploadForm.querySelector('button[type="submit"]') : null;
+    const mobileSubmit   = document.querySelector('footer button[type="submit"][form="upload-form"]');
+
+    function disableSubmitButtons() {
+        [desktopSubmit, mobileSubmit].forEach(btn => {
+            if (!btn) return;
+            btn.disabled = true;
+            btn.classList.add('opacity-60', 'cursor-not-allowed');
+        });
+    }
+
+    if (uploadForm) {
+        uploadForm.addEventListener('submit', () => {
+            showOverlay('Procesando extractos…');
+            disableSubmitButtons();
+        });
+    }
+
+    //  Download: fetch until bytes arrive, then trigger save. Spinner = that request only.
+    const downloadBtn = document.getElementById('download-btn');
+    const downloadIdle = document.getElementById('download-idle');
+    const downloadBusy = document.getElementById('download-busy');
+
+    function filenameFromContentDisposition(header) {
+        if (!header) return 'archivo.xlsx';
+        const utf8 = header.match(/filename\*=UTF-8''([^;\s]+)/i);
+        if (utf8) {
+            try {
+                return decodeURIComponent(utf8[1]);
+            } catch (_) { /* fall through */ }
+        }
+        const quoted = header.match(/filename="([^"]+)"/i);
+        if (quoted) return quoted[1];
+        const plain = header.match(/filename=([^;\s]+)/i);
+        if (plain) return plain[1].replace(/^["']|["']$/g, '');
+        return 'archivo.xlsx';
+    }
+
+    function setDownloadLoading(on) {
+        if (!downloadBtn || !downloadIdle || !downloadBusy) return;
+        downloadBtn.setAttribute('aria-busy', on ? 'true' : 'false');
+        downloadIdle.classList.toggle('hidden', on);
+        downloadBusy.classList.toggle('hidden', !on);
+        downloadBtn.classList.toggle('pointer-events-none', on);
+        downloadBtn.classList.toggle('opacity-90', on);
+    }
+
+    if (downloadBtn) {
+        let downloadPending = false;
+
+        downloadBtn.addEventListener('click', async e => {
+            e.preventDefault();
+            if (downloadPending) return;
+            downloadPending = true;
+            setDownloadLoading(true);
+
+            const url = downloadBtn.getAttribute('href');
+            try {
+                const res = await fetch(url, { credentials: 'same-origin' });
+                if (!res.ok) {
+                    throw new Error('Download failed: ' + res.status);
+                }
+                const blob = await res.blob();
+                const name = filenameFromContentDisposition(res.headers.get('Content-Disposition'));
+                const objectUrl = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = objectUrl;
+                a.download = name;
+                a.rel = 'noopener';
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                URL.revokeObjectURL(objectUrl);
+            } catch (err) {
+                console.error(err);
+                alert('No se pudo descargar el archivo. Intente de nuevo o vuelva a procesar los extractos.');
+            } finally {
+                setDownloadLoading(false);
+                downloadPending = false;
+            }
+        });
+    }
+
+    //  File list rendering 
     const filesInput  = document.getElementById('files');
     const fileList    = document.getElementById('file-list');
     const fileItems   = document.getElementById('file-items');
@@ -477,7 +599,7 @@
         });
     }
 
-    // Options accordion
+    //  Options accordion 
     const toggleBtn      = document.getElementById('toggle-options');
     const optionsPanel   = document.getElementById('options-panel');
     const optionsChevron = document.getElementById('options-chevron');

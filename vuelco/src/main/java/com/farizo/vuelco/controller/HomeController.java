@@ -1,15 +1,8 @@
 package com.farizo.vuelco.controller;
 
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.util.ArrayList;
 import java.util.List;
 
-import org.apache.poi.ss.usermodel.Cell;
-import org.apache.poi.ss.usermodel.Row;
-import org.apache.poi.ss.usermodel.Sheet;
-import org.apache.poi.ss.usermodel.Workbook;
-import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
@@ -21,8 +14,12 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.multipart.MultipartFile;
 
-import com.farizo.vuelco.pojo.Transaction;
-import com.farizo.vuelco.service.PdfStatementExtractor;
+import com.farizo.vuelco.model.Bank;
+import com.farizo.vuelco.model.Transaction;
+import com.farizo.vuelco.pojo.ExtractionResult;
+import com.farizo.vuelco.pojo.XlsFile;
+import com.farizo.vuelco.service.GaliciaPdfExtractor;
+import com.farizo.vuelco.service.XlsxBuilder;
 
 import jakarta.servlet.http.HttpSession;
 
@@ -30,7 +27,10 @@ import jakarta.servlet.http.HttpSession;
 public class HomeController {
 
     @Autowired
-    private PdfStatementExtractor pdfStatementExtractor;
+    private GaliciaPdfExtractor galiciaPdfExtractor;
+
+    @Autowired
+    private XlsxBuilder xlsxBuilder;
 
     @GetMapping("/")
     public String home(Model model) {
@@ -41,6 +41,7 @@ public class HomeController {
     @PostMapping("/upload")
     public String handleUpload(
             @RequestParam("files") List<MultipartFile> files,
+            @RequestParam("banco") String bank,
             Model model,
             HttpSession session) throws Exception {
 
@@ -49,24 +50,17 @@ public class HomeController {
             model.addAttribute("error", "Por favor seleccione al menos un archivo PDF.");
             return "home";
         }
+        Bank.validateBank(bank);
 
-        List<Transaction> allTransactions = new ArrayList<>();
-        List<String> processedFiles = new ArrayList<>();
+        ExtractionResult result = galiciaPdfExtractor.extract(files);
 
-        for (MultipartFile file : files) {
-            if (!file.isEmpty()) {
-                List<Transaction> transactions = pdfStatementExtractor.extract(file.getInputStream(), file.getOriginalFilename());
-                allTransactions.addAll(transactions);
-                processedFiles.add(file.getOriginalFilename());
-            }
-        }
-
-        session.setAttribute("transactions", allTransactions);
+        session.setAttribute("transactions", result.allTransactions());
+        session.setAttribute("bank", bank);
 
         model.addAttribute("step", 2);
-        model.addAttribute("transactionCount", allTransactions.size());
-        model.addAttribute("fileCount", processedFiles.size());
-        model.addAttribute("processedFiles", processedFiles);
+        model.addAttribute("transactionCount", result.allTransactions().size());
+        model.addAttribute("fileCount", result.processedFiles().size());
+        model.addAttribute("processedFiles", result.processedFiles());
 
         return "home";
     }
@@ -75,51 +69,19 @@ public class HomeController {
     public ResponseEntity<byte[]> download(HttpSession session) throws IOException {
         @SuppressWarnings("unchecked")
         List<Transaction> transactions = (List<Transaction>) session.getAttribute("transactions");
+        String bank = (String) session.getAttribute("bank");
 
         if (transactions == null || transactions.isEmpty()) {
             return ResponseEntity.badRequest().build();
         }
 
-        byte[] xlsx = generateXlsx(transactions);
+        XlsFile xlsx = xlsxBuilder.generateXlsx(transactions, bank);
 
         return ResponseEntity.ok()
-                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"extracto_vuelco.xlsx\"")
+                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + xlsx.name() + ".xlsx\"")
                 .contentType(MediaType.parseMediaType(
                         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
-                .body(xlsx);
+                .body(xlsx.file());
     }
 
-    private byte[] generateXlsx(List<Transaction> transactions) throws IOException {
-        try (Workbook workbook = new XSSFWorkbook();
-             ByteArrayOutputStream out = new ByteArrayOutputStream()) {
-
-            Sheet sheet = workbook.createSheet("Transacciones");
-
-            String[] cols = {"Fecha", "Descripción", "Importe", "Saldo", "Movimiento", "Imputacion", "Origen"};
-            Row header = sheet.createRow(0);
-            for (int i = 0; i < cols.length; i++) {
-                Cell cell = header.createCell(i);
-                cell.setCellValue(cols[i]);
-            }
-
-            int rowNum = 1;
-            for (Transaction t : transactions) {
-                Row row = sheet.createRow(rowNum++);
-                row.createCell(0).setCellValue(t.getDate());
-                row.createCell(1).setCellValue(t.getDescription());
-                row.createCell(2).setCellValue(t.getAmount().doubleValue());
-                row.createCell(3).setCellValue(t.getBalance().doubleValue());
-                row.createCell(4).setCellValue(t.getType().name());
-                row.createCell(5).setCellValue(t.getImputation());
-                row.createCell(6).setCellValue(t.getOrigin());
-            }
-
-            for (int i = 0; i < cols.length; i++) {
-                sheet.autoSizeColumn(i);
-            }
-
-            workbook.write(out);
-            return out.toByteArray();
-        }
-    }
 }
