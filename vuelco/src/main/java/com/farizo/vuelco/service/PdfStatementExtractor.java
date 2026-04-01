@@ -29,7 +29,7 @@ public class PdfStatementExtractor {
     private static final Pattern MONEY_LINE =
             Pattern.compile("(-?\\d{1,3}(?:\\.\\d{3})*,\\d{2})\\s+(-?\\d{1,3}(?:\\.\\d{3})*,\\d{2})$");
 
-    public List<Transaction> extract(InputStream inputStream) throws Exception {
+    public List<Transaction> extract(InputStream inputStream, String origin) throws Exception {
         List<Transaction> result = new ArrayList<>();
 
         try (PDDocument document = PDDocument.load(inputStream)) {
@@ -39,13 +39,13 @@ public class PdfStatementExtractor {
                 stripper.setStartPage(page);
                 stripper.setEndPage(page);
 
-                parsePage(stripper.getText(document), result);
+                parsePage(stripper.getText(document), result, origin);
             }
         }
         return result;
     }
 
-    private void parsePage(String text, List<Transaction> out) {
+    private void parsePage(String text, List<Transaction> out, String origin) {
 
 
         String[] lines = text.split("\\R");
@@ -89,7 +89,8 @@ public class PdfStatementExtractor {
                                 amount,
                                 balance,
                                 type,
-                                ImputationResolver.resolver(descPart)
+                                ImputationResolver.resolver(descPart),
+                                origin
                         ));
                     }
                     currentDate = null;
@@ -115,7 +116,8 @@ public class PdfStatementExtractor {
                         amount,
                         balance,
                         type,
-                        ImputationResolver.resolver(description.toString().trim())
+                        ImputationResolver.resolver(description.toString().trim()),
+                        origin
                 ));
 
                 // reset state

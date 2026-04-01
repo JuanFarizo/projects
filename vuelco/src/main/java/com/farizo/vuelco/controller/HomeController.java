@@ -55,19 +55,9 @@ public class HomeController {
 
         for (MultipartFile file : files) {
             if (!file.isEmpty()) {
-                List<Transaction> transactions = pdfStatementExtractor.extract(file.getInputStream());
+                List<Transaction> transactions = pdfStatementExtractor.extract(file.getInputStream(), file.getOriginalFilename());
                 allTransactions.addAll(transactions);
                 processedFiles.add(file.getOriginalFilename());
-                transactions.forEach(t ->
-                    System.out.println(
-                        t.getDate() + " | " +
-                        t.getType() + " | " +
-                        t.getAmount() + " | " +
-                        t.getBalance() + " | " +
-                        t.getDescription() + " | " +
-                        t.getImputation()
-                    )
-                );
             }
         }
 
@@ -105,7 +95,7 @@ public class HomeController {
 
             Sheet sheet = workbook.createSheet("Transacciones");
 
-            String[] cols = {"Fecha", "Descripción", "Tipo", "Monto", "Saldo", "Imputacion"};
+            String[] cols = {"Fecha", "Descripción", "Importe", "Saldo", "Movimiento", "Imputacion", "Origen"};
             Row header = sheet.createRow(0);
             for (int i = 0; i < cols.length; i++) {
                 Cell cell = header.createCell(i);
@@ -115,12 +105,13 @@ public class HomeController {
             int rowNum = 1;
             for (Transaction t : transactions) {
                 Row row = sheet.createRow(rowNum++);
-                row.createCell(0).setCellValue(t.getDate().toString());
+                row.createCell(0).setCellValue(t.getDate());
                 row.createCell(1).setCellValue(t.getDescription());
-                row.createCell(2).setCellValue(t.getType().name());
-                row.createCell(3).setCellValue(t.getAmount().doubleValue());
-                row.createCell(4).setCellValue(t.getBalance().doubleValue());
+                row.createCell(2).setCellValue(t.getAmount().doubleValue());
+                row.createCell(3).setCellValue(t.getBalance().doubleValue());
+                row.createCell(4).setCellValue(t.getType().name());
                 row.createCell(5).setCellValue(t.getImputation());
+                row.createCell(6).setCellValue(t.getOrigin());
             }
 
             for (int i = 0; i < cols.length; i++) {

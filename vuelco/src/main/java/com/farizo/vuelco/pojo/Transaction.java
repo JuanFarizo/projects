@@ -10,6 +10,7 @@ public class Transaction {
     private BigDecimal balance;
     private TransactionType type;
     private String imputation;
+    private String origin;
 
     public Transaction() {
     }
@@ -20,7 +21,8 @@ public class Transaction {
             BigDecimal amount,
             BigDecimal balance,
             TransactionType type,
-            String imputation
+            String imputation,
+            String origin
     ) {
         this.date = date;
         this.description = description;
@@ -28,6 +30,7 @@ public class Transaction {
         this.balance = balance;
         this.type = type;
         this.imputation = imputation;
+        this.origin = origin;
     }
 
     public String getDate() {
@@ -76,5 +79,13 @@ public class Transaction {
 
     public void setImputation(String imputation) {
         this.imputation = imputation;
+    }
+
+    public String getOrigin() {
+        return origin;
+    }
+
+    public void setOrigin(String origin) {
+        this.origin = origin;
     }
 }

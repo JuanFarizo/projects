@@ -18,6 +18,10 @@ public class ImputationResolver {
         // Comisiones
         reglas.put(Pattern.compile("COMISION|COM\\. GESTION", Pattern.CASE_INSENSITIVE), "Comisiones y gastos");
 
+        // Sueldos Ñ specific "acreditamiento de haberes" must come before the generic ACREDITAMIENTO rule
+        reglas.put(Pattern.compile("ACREDITAMIENTO.*HABERES|ACRED\\..*HABERES", Pattern.CASE_INSENSITIVE),
+                "Pago de Sueldos");
+
         // Deudores por ventas
         reglas.put(Pattern.compile(
                 "ACREDITAMIENTO|NAVE|CREDITO TRANSFERENCIA|TRANSFERENCIA DE TERCEROS|TRANSFERENCIAS CASH",
