@@ -14,12 +14,14 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.multipart.MultipartFile;
 
+import com.farizo.vuelco.config.UploadPayloadLimitFilter;
 import com.farizo.vuelco.model.Bank;
+import com.farizo.vuelco.model.BusinessException;
 import com.farizo.vuelco.model.Transaction;
 import com.farizo.vuelco.pojo.ExtractionResult;
 import com.farizo.vuelco.pojo.XlsFile;
-import com.farizo.vuelco.service.GaliciaPdfExtractor;
 import com.farizo.vuelco.service.XlsxBuilder;
+import com.farizo.vuelco.utils.PdfExtractorResolver;
 
 import jakarta.servlet.http.HttpSession;
 
@@ -27,13 +29,22 @@ import jakarta.servlet.http.HttpSession;
 public class HomeController {
 
     @Autowired
-    private GaliciaPdfExtractor galiciaPdfExtractor;
+    private PdfExtractorResolver pdfExtractorResolver;
 
     @Autowired
     private XlsxBuilder xlsxBuilder;
 
     @GetMapping("/")
-    public String home(Model model) {
+    public String home(Model model, HttpSession session) {
+        Object flashError = session.getAttribute(UploadPayloadLimitFilter.SESSION_FLASH_ERROR);
+        if (flashError != null) {
+            model.addAttribute("error", flashError);
+            Object step = session.getAttribute(UploadPayloadLimitFilter.SESSION_FLASH_STEP);
+            model.addAttribute("step", step != null ? step : 1);
+            session.removeAttribute(UploadPayloadLimitFilter.SESSION_FLASH_ERROR);
+            session.removeAttribute(UploadPayloadLimitFilter.SESSION_FLASH_STEP);
+            return "home";
+        }
         model.addAttribute("step", 1);
         return "home";
     }
@@ -43,20 +54,23 @@ public class HomeController {
             @RequestParam("files") List<MultipartFile> files,
             @RequestParam("banco") String bank,
             Model model,
-            HttpSession session) throws Exception {
+            HttpSession session) {
 
+        if (bank.equals("patagonia")) throw new BusinessException("Aun estamos trabajando en el procesamiento del extracto del banco patagonia", 1, "home");
         if (files == null || files.stream().allMatch(MultipartFile::isEmpty)) {
-            model.addAttribute("step", 1);
-            model.addAttribute("error", "Por favor seleccione al menos un archivo PDF.");
-            return "home";
+            throw new BusinessException(
+                    "Por favor seleccione al menos un archivo PDF.", 1, "home");
         }
-        if(!Bank.isValidBank(bank)) {
-            model.addAttribute("step", 1);
-            model.addAttribute("error", "Por favor seleccione un banco.");
-            return "home";
+        if (!Bank.isValidBank(bank)) {
+            throw new BusinessException("Por favor seleccione un banco.", 1, "home");
         }
 
-        ExtractionResult result = galiciaPdfExtractor.extract(files);
+        ExtractionResult result;
+        try {
+            result = pdfExtractorResolver.get(bank).extract(files);
+        } catch (Exception e) {
+            throw new BusinessException("Hubo un error al procesar el PDF.", 1, "home");
+        }
 
         session.setAttribute("transactions", result.allTransactions());
         session.setAttribute("bank", bank);
@@ -70,7 +84,7 @@ public class HomeController {
     }
 
     @GetMapping("/download")
-    public ResponseEntity<byte[]> download(HttpSession session) throws IOException {
+    public ResponseEntity<byte[]> download(HttpSession session) {
         @SuppressWarnings("unchecked")
         List<Transaction> transactions = (List<Transaction>) session.getAttribute("transactions");
         String bank = (String) session.getAttribute("bank");
@@ -79,7 +93,12 @@ public class HomeController {
             return ResponseEntity.badRequest().build();
         }
 
-        XlsFile xlsx = xlsxBuilder.generateXlsx(transactions, bank);
+        XlsFile xlsx;
+        try {
+            xlsx = xlsxBuilder.generateXlsx(transactions, bank);
+        } catch (IOException e) {
+            throw new BusinessException("Hubo un error al generar el archivo Excel.", 1, "home");
+        }
 
         return ResponseEntity.ok()
                 .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + xlsx.name() + ".xlsx\"")

@@ -4,7 +4,7 @@
     <meta charset="UTF-8"/>
     <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
     <title>Vuelco — Extractor de Extractos Bancarios</title>
-
+    <link rel="icon" type="image/x-icon" th:href="@{img/logo/favicon.ico}">
     <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&amp;family=Inter:wght@300;400;500;600&amp;display=swap" rel="stylesheet"/>
     <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
     <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
@@ -172,6 +172,9 @@
                 <div th:if="${error}" class="p-4 bg-error-container/40 rounded-xl">
                     <p class="text-sm font-medium text-error" th:text="${error}"></p>
                 </div>
+                <div id="client-upload-error" class="hidden p-4 bg-error-container/40 rounded-xl">
+                    <p id="client-upload-error-text" class="text-sm font-medium text-error"></p>
+                </div>
 
                 <form id="upload-form" th:action="@{/upload}" method="post" enctype="multipart/form-data" class="space-y-6">
 
@@ -183,6 +186,7 @@
                                 class="w-full bg-surface-container-lowest border-0 border-b-2 border-outline-variant/30 focus:border-secondary focus:ring-0 focus:bg-white transition-all py-4 pl-4 pr-10 appearance-none text-on-surface font-medium rounded-t-xl">
                                 <option value="">Selecciona un banco</option>
                                 <option value="galicia">Galicia</option>
+                                <option value="patagonia">Patagonia</option>
                                 <!-- <option value="bbva">BBVA</option> -->
                             </select>
                             <p id="bank-error" class="hidden mt-2 text-sm font-medium text-error" role="alert">Selecciona un banco</p>
@@ -474,13 +478,46 @@
         updateBankPreview();
     }
 
+    const MAX_FILE_BYTES = 20 * 1024 * 1024;
+    const MAX_TOTAL_BYTES = 50 * 1024 * 1024;
+
+    function showClientUploadError(msg) {
+        const box = document.getElementById('client-upload-error');
+        const text = document.getElementById('client-upload-error-text');
+        if (text) text.textContent = msg;
+        if (box) box.classList.remove('hidden');
+    }
+
+    function hideClientUploadError() {
+        const box = document.getElementById('client-upload-error');
+        if (box) box.classList.add('hidden');
+    }
+
     if (uploadForm) {
         uploadForm.addEventListener('submit', e => {
+            hideClientUploadError();
             if (bancoSelect && bancoSelect.value === '') {
                 e.preventDefault();
                 setBankError(true);
                 bancoSelect.focus();
                 return;
+            }
+            const filesEl = document.getElementById('files');
+            if (filesEl && filesEl.files && filesEl.files.length > 0) {
+                let total = 0;
+                for (const f of filesEl.files) {
+                    if (f.size > MAX_FILE_BYTES) {
+                        e.preventDefault();
+                        showClientUploadError('Cada archivo debe ser de 20 MB o menos.');
+                        return;
+                    }
+                    total += f.size;
+                }
+                if (total > MAX_TOTAL_BYTES) {
+                    e.preventDefault();
+                    showClientUploadError('El tamaño total de los archivos no puede superar 50 MB.');
+                    return;
+                }
             }
             setBankError(false);
             showOverlay('Procesando extractos…');
@@ -590,7 +627,10 @@
     }
 
     if (filesInput) {
-        filesInput.addEventListener('change', () => renderFileList(filesInput.files));
+        filesInput.addEventListener('change', () => {
+            hideClientUploadError();
+            renderFileList(filesInput.files);
+        });
     }
 
     if (dropZone) {

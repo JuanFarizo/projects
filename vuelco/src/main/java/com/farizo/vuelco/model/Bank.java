@@ -1,7 +1,9 @@
 package com.farizo.vuelco.model;
 
 public enum Bank {
-    galicia;
+    galicia,
+    frances,
+    patagonia;
 
     public static boolean isValidBank(String bank) {
         Bank[] banks = Bank.values();
