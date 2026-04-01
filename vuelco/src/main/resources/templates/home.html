@@ -179,12 +179,13 @@
                     <div>
                         <label for="banco" class="block text-xs font-bold text-primary uppercase tracking-tighter ml-1 mb-2">Institución bancaria *</label>
                         <div class="relative">
-                            <select id="banco" name="banco"
+                            <select id="banco" name="banco" aria-describedby="bank-error"
                                 class="w-full bg-surface-container-lowest border-0 border-b-2 border-outline-variant/30 focus:border-secondary focus:ring-0 focus:bg-white transition-all py-4 pl-4 pr-10 appearance-none text-on-surface font-medium rounded-t-xl">
                                 <option value="">Selecciona un banco</option>
                                 <option value="galicia">Galicia</option>
                                 <!-- <option value="bbva">BBVA</option> -->
                             </select>
+                            <p id="bank-error" class="hidden mt-2 text-sm font-medium text-error" role="alert">Selecciona un banco</p>
                             <!-- <div class="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none text-outline"> -->
                                 <!-- <span class="material-symbols-outlined">expand_more</span> -->
                             <!-- </div> -->
@@ -213,7 +214,7 @@
                     </div>
 
                     <!-- Processing options accordion -->
-                    <div class="bg-surface-container-low rounded-2xl p-5 space-y-4">
+                    <!-- <div class="bg-surface-container-low rounded-2xl p-5 space-y-4">
                         <button type="button" id="toggle-options" class="w-full flex items-center justify-between text-left">
                             <span class="flex items-center gap-2 text-sm font-semibold text-primary font-headline">
                                 <span class="material-symbols-outlined text-secondary text-base">tune</span>
@@ -222,10 +223,10 @@
                             <span class="material-symbols-outlined text-outline text-base" id="options-chevron">expand_more</span>
                         </button>
 
-                        <div id="options-panel" class="hidden space-y-5 pt-2">
+                        <div id="options-panel" class="hidden space-y-5 pt-2"> -->
 
                             <!-- Date format -->
-                            <div>
+                            <!-- <div>
                                 <p class="text-xs font-semibold text-on-surface-variant mb-2 uppercase tracking-wider">Formato de fecha en el PDF</p>
                                 <div class="flex gap-5">
                                     <label class="flex items-center gap-2 cursor-pointer">
@@ -237,10 +238,10 @@
                                         <span class="text-sm text-on-surface">DD/MM/AAAA</span>
                                     </label>
                                 </div>
-                            </div>
+                            </div> -->
 
                             <!-- Decimal separator -->
-                            <div>
+                            <!-- <div>
                                 <p class="text-xs font-semibold text-on-surface-variant mb-2 uppercase tracking-wider">Separador decimal en el PDF</p>
                                 <div class="flex gap-5">
                                     <label class="flex items-center gap-2 cursor-pointer">
@@ -252,16 +253,16 @@
                                         <span class="text-sm text-on-surface">Punto (1,234.56)</span>
                                     </label>
                                 </div>
-                            </div>
+                            </div> -->
 
                             <!-- Include headers -->
-                            <label class="flex items-center gap-3 cursor-pointer">
+                            <!-- <label class="flex items-center gap-3 cursor-pointer">
                                 <input type="checkbox" name="includeHeaders" value="true" checked class="accent-secondary rounded"/>
                                 <span class="text-sm text-on-surface">Incluir encabezados en el Excel</span>
                             </label>
 
                         </div>
-                    </div>
+                    </div> -->
 
                     <!-- Submit button — Desktop -->
                     <div class="hidden md:block pt-2">
@@ -285,39 +286,8 @@
                             <h2 class="font-headline font-bold">Ejemplo de extracto esperado</h2>
                         </div>
 
-                        <!-- Simulated bank statement -->
-                        <div class="relative overflow-hidden rounded-xl bg-white ambient-shadow aspect-[3/4]">
-                            <div class="p-5 h-full flex flex-col gap-3">
-                                <!-- Simulated header rows -->
-                                <div class="h-5 w-3/4 bg-surface-container-highest rounded"></div>
-                                <div class="h-3 w-2/5 bg-surface-container-high rounded"></div>
-                                <div class="h-3 w-1/3 bg-surface-container-high rounded"></div>
-                                <!-- Simulated table header -->
-                                <div class="mt-3 grid grid-cols-5 gap-1">
-                                    <div class="col-span-1 h-3 bg-surface-container-highest rounded"></div>
-                                    <div class="col-span-2 h-3 bg-surface-container-highest rounded"></div>
-                                    <div class="col-span-1 h-3 bg-surface-container-highest rounded"></div>
-                                    <div class="col-span-1 h-3 bg-surface-container-highest rounded"></div>
-                                </div>
-                                <!-- Simulated data rows -->
-                                <div th:each="i : ${#numbers.sequence(1, 9)}" class="grid grid-cols-5 gap-1">
-                                    <div class="col-span-1 h-3 bg-surface-container-low rounded"></div>
-                                    <div class="col-span-2 h-3 bg-surface-container-low rounded"></div>
-                                    <div class="col-span-1 h-3 bg-surface-container-low rounded"></div>
-                                    <div class="col-span-1 h-3 bg-surface-container-low rounded"></div>
-                                </div>
-                            </div>
-
-                            <!-- Callout -->
-                            <div class="absolute top-1/3 right-3 bg-secondary-container/95 p-3 rounded-xl shadow-lg backdrop-blur-sm max-w-[170px]">
-                                <div class="flex items-center gap-1.5 mb-1">
-                                    <span class="material-symbols-outlined text-secondary text-sm"
-                                          style="font-variation-settings: 'FILL' 1">info</span>
-                                    <span class="text-[9px] font-bold text-on-secondary-container uppercase tracking-widest">Dato crítico</span>
-                                </div>
-                                <p class="text-xs text-secondary font-medium leading-tight">El extracto debe incluir fecha, descripción, monto y saldo acumulado.</p>
-                            </div>
-                        </div>
+                        <!-- Simulated bank statement (image follows bank selection; empty until a bank is chosen) -->
+                        <div id="bank-preview" class="relative overflow-hidden rounded-xl bg-white ambient-shadow aspect-[3/4]"></div>
 
                         <!-- Tip -->
                         <div class="bg-surface-container-highest/50 p-4 rounded-xl">
@@ -439,8 +409,13 @@
 <!-- ══════════════════════════════════════
      JAVASCRIPT
 ══════════════════════════════════════ -->
+<script th:inline="javascript">
+    /*<![CDATA[*/
+    const VUELCO_IMG_BASE = /*[[@{/img/}]]*/ '/img/';
+    /*]]>*/
+</script>
 <script>
-    //  Loading overlay helpers 
+    //  Loading overlay helpers
     const loadingOverlay = document.getElementById('loading-overlay');
     const loadingMessage = document.getElementById('loading-message');
 
@@ -453,7 +428,7 @@
         loadingOverlay.classList.add('hidden');
     }
 
-    //  Upload form — show spinner on submit 
+    //  Upload form — show spinner on submit
     const uploadForm     = document.getElementById('upload-form');
     const desktopSubmit  = uploadForm ? uploadForm.querySelector('button[type="submit"]') : null;
     const mobileSubmit   = document.querySelector('footer button[type="submit"][form="upload-form"]');
@@ -466,8 +441,48 @@
         });
     }
 
+    const bancoSelect = document.getElementById('banco');
+    const bankError   = document.getElementById('bank-error');
+    const bankPreview = document.getElementById('bank-preview');
+
+    function setBankError(visible) {
+        if (!bankError || !bancoSelect) return;
+        bankError.classList.toggle('hidden', !visible);
+        bancoSelect.setAttribute('aria-invalid', visible ? 'true' : 'false');
+        bancoSelect.classList.toggle('border-outline-variant/30', !visible);
+        bancoSelect.classList.toggle('border-error', visible);
+    }
+
+    function updateBankPreview() {
+        if (!bankPreview || !bancoSelect) return;
+        bankPreview.innerHTML = '';
+        const value = bancoSelect.value;
+        if (!value) return;
+        const img = document.createElement('img');
+        img.src = (typeof VUELCO_IMG_BASE !== 'undefined' ? VUELCO_IMG_BASE : '/img/') + value + '.png';
+        img.alt = '';
+        img.loading = 'lazy';
+        img.className = 'w-full object-cover object-top';
+        bankPreview.appendChild(img);
+    }
+
+    if (bancoSelect) {
+        bancoSelect.addEventListener('change', () => {
+            setBankError(false);
+            updateBankPreview();
+        });
+        updateBankPreview();
+    }
+
     if (uploadForm) {
-        uploadForm.addEventListener('submit', () => {
+        uploadForm.addEventListener('submit', e => {
+            if (bancoSelect && bancoSelect.value === '') {
+                e.preventDefault();
+                setBankError(true);
+                bancoSelect.focus();
+                return;
+            }
+            setBankError(false);
             showOverlay('Procesando extractos…');
             disableSubmitButtons();
         });
@@ -538,7 +553,7 @@
         });
     }
 
-    //  File list rendering 
+    //  File list rendering
     const filesInput  = document.getElementById('files');
     const fileList    = document.getElementById('file-list');
     const fileItems   = document.getElementById('file-items');
@@ -599,7 +614,7 @@
         });
     }
 
-    //  Options accordion 
+    //  Options accordion
     const toggleBtn      = document.getElementById('toggle-options');
     const optionsPanel   = document.getElementById('options-panel');
     const optionsChevron = document.getElementById('options-chevron');
