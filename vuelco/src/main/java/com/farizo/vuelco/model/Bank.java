@@ -3,13 +3,13 @@ package com.farizo.vuelco.model;
 public enum Bank {
     galicia;
 
-    public static void validateBank(String bank) {
+    public static boolean isValidBank(String bank) {
         Bank[] banks = Bank.values();
         for (Bank bankEnum : banks) {
             if(bankEnum.toString().equals(bank)) {
-                return;
+                return true;
             }
         }
-        throw new IllegalArgumentException(bank + " no es un banco valido.");
+        return false;
     }
 }

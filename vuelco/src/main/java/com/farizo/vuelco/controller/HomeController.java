@@ -50,7 +50,11 @@ public class HomeController {
             model.addAttribute("error", "Por favor seleccione al menos un archivo PDF.");
             return "home";
         }
-        Bank.validateBank(bank);
+        if(!Bank.isValidBank(bank)) {
+            model.addAttribute("step", 1);
+            model.addAttribute("error", "Por favor seleccione un banco.");
+            return "home";
+        }
 
         ExtractionResult result = galiciaPdfExtractor.extract(files);
 
