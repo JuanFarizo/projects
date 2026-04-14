@@ -23,3 +23,74 @@ Thumbs.db
 
 # MSVC Windows builds of rustc generate these, which store debugging information
 **/*.pdb
+
+
+
+# =====================
+# OS
+# =====================
+.DS_Store
+Thumbs.db
+
+# =====================
+# IDEs / Editors
+# =====================
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.metadata/
+.history/
+
+# =====================
+# Node / React / JS
+# =====================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+dist/
+build/
+.cache/
+.next/
+out/
+
+# =====================
+# Java / Spring / Maven / Gradle
+# =====================
+target/
+bin/
+out/
+*.class
+*.log
+
+# =====================
+# Env / Secrets
+# =====================
+.env
+.env.*
+!.env.example
+
+# =====================
+# Databases / Local data
+# =====================
+*.db
+*.sqlite
+*.sqlite3
+
+# =====================
+# Coverage / Tests
+# =====================
+coverage/
+.nyc_output/
+
+# =====================
+# Temporary / Misc
+# =====================
+tmp/
+temp/
+*.tmp
+*.swp
+*.bak
