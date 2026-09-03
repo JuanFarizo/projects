@@ -10,8 +10,8 @@ import org.example.entity.Book.BookBuilder;
 
 @Generated(
     value = "org.mapstruct.ap.MappingProcessor",
-    date = "2025-10-02T00:41:51-0300",
-    comments = "version: 1.4.2.Final, compiler: Eclipse JDT (IDE) 3.43.0.v20250819-1513, environment: Java 21.0.8 (Eclipse Adoptium)"
+    date = "2026-08-31T09:08:00-0300",
+    comments = "version: 1.4.2.Final, compiler: Eclipse JDT (IDE) 3.46.100.v20260624-0231, environment: Java 25.0.2 (Amazon.com Inc.)"
 )
 public class BookMapperImpl implements BookMapper {
 
@@ -23,10 +23,10 @@ public class BookMapperImpl implements BookMapper {
 
         BookDtoBuilder bookDto = BookDto.builder();
 
-        bookDto.description( book.getDescription() );
         bookDto.id( book.getId() );
-        bookDto.price( book.getPrice() );
         bookDto.title( book.getTitle() );
+        bookDto.description( book.getDescription() );
+        bookDto.price( book.getPrice() );
 
         return bookDto.build();
     }
