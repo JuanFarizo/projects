@@ -28,6 +28,8 @@ import org.a2aproject.sdk.client.transport.rest.RestTransport;
 import org.a2aproject.sdk.client.transport.rest.RestTransportConfig;
 import org.a2aproject.sdk.client.transport.spi.ClientTransportConfig;
 import org.a2aproject.sdk.jsonrpc.common.json.JsonUtil;
+import com.google.gson.GsonBuilder;
+import com.google.gson.JsonParser;
 import org.a2aproject.sdk.spec.AgentCard;
 import org.a2aproject.sdk.spec.Artifact;
 import org.a2aproject.sdk.spec.Message;
@@ -35,6 +37,8 @@ import org.a2aproject.sdk.spec.Part;
 import org.a2aproject.sdk.spec.Task;
 import org.a2aproject.sdk.spec.TaskArtifactUpdateEvent;
 import org.a2aproject.sdk.spec.TextPart;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import io.grpc.Channel;
 import io.grpc.ManagedChannelBuilder;
 import io.opentelemetry.api.trace.propagation.W3CTraceContextPropagator;
@@ -52,29 +56,37 @@ import java.util.function.Function;
  */
 public class HelloWorldClient {
 
+    private static final Logger LOG = LoggerFactory.getLogger(HelloWorldClient.class);
+    private static final com.google.gson.Gson PRETTY_JSON = new GsonBuilder().setPrettyPrinting().create();
+
     private static final String SERVER_URL = "http://localhost:9999";
+
+    /** Re-formats already-serialized JSON for readable console output; the wire payload itself stays compact. */
+    private static String pretty(String json) {
+        return PRETTY_JSON.toJson(JsonParser.parseString(json));
+    }
     private static final String MESSAGE_TEXT = "Customers cannot complete payments since 14:00.";
 
     public static void main(String[] args) {
         OpenTelemetrySdk openTelemetrySdk = null;
         try {
             AgentCard publicAgentCard = A2ACardResolver.builder().baseUrl(SERVER_URL).build().getAgentCard();
-            System.out.println("Successfully fetched public agent card:");
-            System.out.println(JsonUtil.toJson(publicAgentCard));
-            System.out.println("Using public agent card for client initialization (default).");
+            LOG.info("Successfully fetched public agent card:");
+            LOG.info("\n{}", pretty(JsonUtil.toJson(publicAgentCard)));
+            LOG.info("Using public agent card for client initialization (default).");
             AgentCard finalAgentCard = publicAgentCard;
 
             if (publicAgentCard.capabilities().extendedAgentCard()) {
-                System.out.println("Public card supports authenticated extended card. Attempting to fetch from: " + SERVER_URL + "/ExtendedAgentCard");
+                LOG.info("Public card supports authenticated extended card. Attempting to fetch from: {}/ExtendedAgentCard", SERVER_URL);
                 Map<String, String> authHeaders = new HashMap<>();
                 authHeaders.put("Authorization", "Bearer dummy-token-for-extended-card");
                 AgentCard extendedAgentCard = A2A.getAgentCard(SERVER_URL, "/ExtendedAgentCard", authHeaders);
-                System.out.println("Successfully fetched authenticated extended agent card:");
-                System.out.println(JsonUtil.toJson(extendedAgentCard));
-                System.out.println("Using AUTHENTICATED EXTENDED agent card for client initialization.");
+                LOG.info("Successfully fetched authenticated extended agent card:");
+                LOG.info("\n{}", pretty(JsonUtil.toJson(extendedAgentCard)));
+                LOG.info("Using AUTHENTICATED EXTENDED agent card for client initialization.");
                 finalAgentCard = extendedAgentCard;
             } else {
-                System.out.println("Public card does not indicate support for an extended card. Using public card.");
+                LOG.info("Public card does not indicate support for an extended card. Using public card.");
             }
 
             final CompletableFuture<String> messageResponse = new CompletableFuture<>();
@@ -84,42 +96,41 @@ public class HelloWorldClient {
             consumers.add((event, agentCard) -> {
                 // BREAKPOINT: step through submitted -> working -> artifact -> completed one event at a time
                 try {
-                    System.out.println("[wire]      " + JsonUtil.toJson(event));
+                    LOG.info("[wire]\n{}", pretty(JsonUtil.toJson(event)));
                 } catch (Exception e) {
-                    System.out.println("[wire]      (unable to serialize event: " + e.getMessage() + ")");
+                    LOG.info("[wire]      (unable to serialize event: {})", e.getMessage());
                 }
 
                 if (event instanceof MessageEvent messageEvent) {
                     Message responseMessage = messageEvent.getMessage();
                     String text = extractText(responseMessage.parts());
-                    System.out.println("[message]   " + text);
+                    LOG.info("[message]   {}", text);
                     messageResponse.complete(text);
                 } else if (event instanceof TaskEvent taskEvent) {
                     var state = taskEvent.getTask().status().state();
-                    System.out.println("[task]      " + state);
+                    LOG.info("[task]      {}", state);
                     if (state.isFinal()) {
                         messageResponse.complete(extractLastArtifactText(taskEvent.getTask()));
                     }
                 } else if (event instanceof TaskUpdateEvent taskUpdateEvent) {
                     if (taskUpdateEvent.getUpdateEvent() instanceof TaskArtifactUpdateEvent artifactUpdate) {
                         String text = extractText(artifactUpdate.artifact() != null ? artifactUpdate.artifact().parts() : null);
-                        System.out.println("[artifact]  " + text);
+                        LOG.info("[artifact]  {}", text);
                     } else {
                         var state = taskUpdateEvent.getTask().status().state();
-                        System.out.println("[status]    " + state);
+                        LOG.info("[status]    {}", state);
                         if (state.isFinal()) {
                             messageResponse.complete(extractLastArtifactText(taskUpdateEvent.getTask()));
                         }
                     }
                 } else {
-                    System.out.println("Received client event: " + event.getClass().getSimpleName());
+                    LOG.info("Received client event: {}", event.getClass().getSimpleName());
                 }
             });
 
             // Create error handler for streaming errors
             Consumer<Throwable> streamingErrorHandler = (error) -> {
-                System.err.println("Streaming error occurred: " + error.getMessage());
-                error.printStackTrace();
+                LOG.error("Streaming error occurred: {}", error.getMessage(), error);
                 messageResponse.completeExceptionally(error);
             };
 
@@ -137,25 +148,24 @@ public class HelloWorldClient {
             // BREAKPOINT: inspect the fixed incident prompt right before it's sent
             Message message = A2A.toUserMessage(MESSAGE_TEXT); // the message ID will be automatically generated for you
             try {
-                System.out.println("Sending message: " + MESSAGE_TEXT);
-                System.out.println("[wire]      " + JsonUtil.toJson(message));
+                LOG.info("Sending message: {}", MESSAGE_TEXT);
+                LOG.info("[wire]\n{}", pretty(JsonUtil.toJson(message)));
                 client.sendMessage(message);
-                System.out.println("Message sent successfully. Responses will be handled by the configured consumers.");
+                LOG.info("Message sent successfully. Responses will be handled by the configured consumers.");
 
                 String responseText = messageResponse.get();
-                System.out.println("Response: " + responseText);
+                LOG.info("Response: {}", responseText);
             } catch (Exception e) {
-                System.err.println("Failed to get response: " + e.getMessage());
+                LOG.error("Failed to get response: {}", e.getMessage());
             }
         } catch (Exception e) {
-            System.err.println("An error occurred: " + e.getMessage());
-            e.printStackTrace();
+            LOG.error("An error occurred: {}", e.getMessage(), e);
         } finally {
             // Ensure OpenTelemetry SDK is properly shut down to export all pending spans
             if (openTelemetrySdk != null) {
-                System.out.println("Shutting down OpenTelemetry SDK...");
+                LOG.info("Shutting down OpenTelemetry SDK...");
                 openTelemetrySdk.close();
-                System.out.println("OpenTelemetry SDK shutdown complete.");
+                LOG.info("OpenTelemetry SDK shutdown complete.");
             }
         }
     }

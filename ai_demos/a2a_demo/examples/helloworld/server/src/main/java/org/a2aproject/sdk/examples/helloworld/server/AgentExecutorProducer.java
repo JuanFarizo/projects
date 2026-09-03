@@ -7,22 +7,21 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.util.List;
 
+import org.a2aproject.sdk.server.agentexecution.AgentExecutor;
+import org.a2aproject.sdk.server.agentexecution.RequestContext;
+import org.a2aproject.sdk.server.tasks.AgentEmitter;
+import org.a2aproject.sdk.spec.A2AError;
+import org.a2aproject.sdk.spec.TextPart;
+import org.a2aproject.sdk.spec.UnsupportedOperationError;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Produces;
-
-import org.a2aproject.sdk.server.agentexecution.AgentExecutor;
-import org.a2aproject.sdk.server.agentexecution.RequestContext;
-import org.a2aproject.sdk.server.tasks.AgentEmitter;
-import org.a2aproject.sdk.spec.A2AError;
-import org.a2aproject.sdk.spec.Part;
-import org.a2aproject.sdk.spec.TextPart;
-import org.a2aproject.sdk.spec.UnsupportedOperationError;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 @ApplicationScoped
 public class AgentExecutorProducer {
@@ -47,14 +46,23 @@ public class AgentExecutorProducer {
                 String incidentText = context.getUserInput();
 
                 emitter.submit();
+                LOGGER.info("Task {} transitioned -> SUBMITTED", emitter.getTaskId());
                 // BREAKPOINT: step through the state machine live (submitted -> working)
                 emitter.startWork();
+                LOGGER.info("Task {} transitioned SUBMITTED -> WORKING", emitter.getTaskId());
 
-                String diagnosis = diagnoseIncident(incidentText);
+                try {
+                    String diagnosis = diagnoseIncident(incidentText);
 
-                emitter.addArtifact(List.of(new TextPart(diagnosis)));
-                // BREAKPOINT: step through the state machine live (working -> completed)
-                emitter.complete();
+                    emitter.addArtifact(List.of(new TextPart(diagnosis)));
+                    // BREAKPOINT: step through the state machine live (working -> completed)
+                    emitter.complete();
+                    LOGGER.info("Task {} transitioned SUBMITTED -> COMPLETED", emitter.getTaskId());
+                } catch (RuntimeException e) {
+                    LOGGER.error("Task {} transitioned SUBMITTED -> FAILED: {}", emitter.getTaskId(), e.getMessage());
+                    emitter.fail();
+                    throw e;
+                }
             }
 
             @Override

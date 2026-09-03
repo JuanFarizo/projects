@@ -6,6 +6,11 @@ import jakarta.inject.Singleton;
 import io.vertx.ext.web.Router;
 import io.vertx.ext.web.handler.BodyHandler;
 
+import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
+import com.google.gson.JsonParseException;
+import com.google.gson.JsonParser;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -21,6 +26,16 @@ import org.slf4j.LoggerFactory;
 public class RequestResponseLoggingRoutes {
 
     private static final Logger LOG = LoggerFactory.getLogger(RequestResponseLoggingRoutes.class);
+    private static final Gson PRETTY_JSON = new GsonBuilder().setPrettyPrinting().create();
+
+    /** Pretty-prints a JSON body for readable console output; falls back to the raw text for non-JSON payloads. */
+    private static String pretty(String body) {
+        try {
+            return PRETTY_JSON.toJson(JsonParser.parseString(body));
+        } catch (JsonParseException e) {
+            return body;
+        }
+    }
 
     void setupLogging(@Observes Router router) {
         // Order -1 so this runs before the SDK's own routes (registered at default order).
@@ -31,7 +46,7 @@ public class RequestResponseLoggingRoutes {
             String path = ctx.request().path();
             String body = ctx.body() != null ? ctx.body().asString() : null;
             if (body != null && !body.isEmpty()) {
-                LOG.info(">>> {} {} body={}", method, path, body);
+                LOG.info(">>> {} {}\n{}", method, path, pretty(body));
             } else {
                 LOG.info(">>> {} {}", method, path);
             }
