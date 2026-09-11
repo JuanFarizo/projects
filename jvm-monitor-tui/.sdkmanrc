@@ -1,0 +1,8 @@
+
+# Enable auto-env through the sdkman_auto_env config
+# Add key=value pairs of SDKs to use below
+
+# Java and Maven versions for spring-initializr-tui
+# See README.md for build requirements
+maven=3.9.10
+java=25.0.4-amzn
