@@ -11,12 +11,6 @@ Metrics→UI handoff mechanism, and the metrics snapshot data model are now
 settled (see architecture.md and the `com.fari.connection`/`com.fari.metrics`
 packages); these remain open:
 
-- **Saved-connection persistence format and location.** No remote connection
-  types are implemented yet (see below), so this hasn't come up in practice.
-  Needs a decision once the Add Remote dialog becomes functional: file format
-  (properties/JSON/etc.), location (`~/.config/jvm-monitor-tui/` or similar),
-  and whether credentials (username/password for JMX auth) are stored in
-  plaintext or need OS keychain integration.
 - **Threading model for multiple simultaneous connections.** The current
   scaffold supports exactly one active connection/MetricsSource at a time
   (Connections → Overview → disconnect). If the app ever needs to monitor

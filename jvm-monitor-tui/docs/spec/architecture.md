@@ -16,6 +16,12 @@ Each layer only depends on the one below it — UI depends on Metrics, Metrics d
 - Covers the methods in [jvm-connection-methods.md](jvm-connection-methods.md): local attach, direct remote JMX, SSH tunnel, SSH SOCKS, SSH+jcmd (no JMX), Docker.
 - The Metrics Layer must not care which transport is behind a given connection — exact interface shape not yet decided.
 
+#### Saved-connection persistence
+- Format: JSON. One file, array of connection profiles (host, port, username, display name, connection method).
+- Location: `~/.config/jvm-monitor-tui/connections.json`.
+- **Password is never persisted.** Add Remote dialog prompts for it on each connect; held in memory only for the life of that connection.
+- Rationale: avoids owning an encryption-at-rest problem (key storage) or an OS-keychain dependency, whose native-image compatibility is unresearched (pillar 2 risk, same class as `jdk.attach` in [open-questions.md](open-questions.md)). No secret ever touches disk, so there's nothing to protect.
+
 ### Metrics Layer
 - Programmed to an abstraction (a `MetricsSource`-style interface producing snapshots), not to a concrete collection mechanism — swapping mechanisms must not require changes in the UI Layer or elsewhere in the Metrics Layer.
 - **Default, always-available implementation: JMX polling.** Works over any `MBeanServerConnection`, i.e. every connection method in [jvm-connection-methods.md](jvm-connection-methods.md).
