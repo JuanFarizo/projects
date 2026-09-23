@@ -12,7 +12,7 @@ Terminal UI for monitoring JVM processes (local and remote) — an `htop`/Visual
 - [architecture.md](docs/spec/architecture.md) — layers (Connection / Metrics / UI), concurrency contract.
 - [jvm-connection-methods.md](docs/spec/jvm-connection-methods.md) — supported connection methods, implementation order.
 - [ui-dsl-api-choice.md](docs/spec/ui-dsl-api-choice.md) — why `ToolkitApp` (retained-mode) over low-level `Backend`/`Frame`.
-- [ui-view/design_handoff_jvm_monitor_tui/](docs/spec/ui-view/design_handoff_jvm_monitor_tui/README.md) — screen mocks (Connections, Add Remote, Overview, Classes/Metaspace).
+- [ui-view/jvm-monitor-tui-implementation-handoff.html](docs/spec/ui-view/jvm-monitor-tui-implementation-handoff.html) — screen mocks (Connections, Add Remote, Overview, Classes/Metaspace).
 
 Before implementing a feature: check these first. If a request conflicts with them, flag the conflict instead of silently resolving it.
 

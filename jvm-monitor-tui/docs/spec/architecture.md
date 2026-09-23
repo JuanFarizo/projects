@@ -30,7 +30,7 @@ Each layer only depends on the one below it — UI depends on Metrics, Metrics d
 
 ### UI Layer
 - `dev.tamboui.toolkit.app.ToolkitApp`, retained-mode (`render()` returns declarative `Element` tree) — decision already made in [ui-dsl-api-choice.md](ui-dsl-api-choice.md).
-- Screens map 1:1 to [ui-view mock](ui-view/design_handoff_jvm_monitor_tui/README.md): Connections, Add Remote, Overview, Classes/Metaspace.
+- Screens map 1:1 to [ui-view mock](ui-view/jvm-monitor-tui-implementation-handoff.html): Connections, Add Remote, Overview, Classes/Metaspace.
 - Redraw driven by `TickEvent` (timer).
 
 ## Concurrency constraint

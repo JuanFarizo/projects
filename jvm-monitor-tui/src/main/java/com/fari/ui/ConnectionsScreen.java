@@ -68,14 +68,6 @@ public final class ConnectionsScreen {
         if (connectError != null) {
             elements.add(text("  " + connectError).fg(Theme.STATUS_BAD));
         }
-        elements.add(row(
-                text("↑↓").fg(Theme.TEXT_PRIMARY), text(":select  ").fg(Theme.TEXT_MUTED),
-                text("enter").fg(Theme.TEXT_PRIMARY), text(":connect  ").fg(Theme.TEXT_MUTED),
-                text("r").fg(Theme.TEXT_PRIMARY), text(":refresh  ").fg(Theme.TEXT_MUTED),
-                text("n").fg(Theme.TEXT_PRIMARY), text(":add remote  ").fg(Theme.TEXT_MUTED),
-                text("q").fg(Theme.TEXT_PRIMARY), text(":quit").fg(Theme.TEXT_MUTED),
-                spacer()
-        ).length(1));
 
         return column(elements.toArray(Element[]::new)).id("connections-screen");
     }

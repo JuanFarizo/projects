@@ -3,9 +3,9 @@ package com.fari.metrics;
 import com.fari.connection.ConnectionHandle;
 
 /**
- * Programmed to an abstraction, not to a concrete collection mechanism (per
- * architecture.md) — the default and only implementation right now is JMX
- * polling; a future JFR-based implementation must be able to drop in here
+ * Programmed to an abstraction, not to a concrete collection mechanism,
+ * the default and only implementation right now is JMX polling;
+ * a future JFR-based implementation must be able to drop in here
  * without UI or call-site changes.
  */
 public interface MetricsSource extends AutoCloseable {

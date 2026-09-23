@@ -7,9 +7,10 @@ public record HeapSnapshot(
         long eden,
         long old,
         long survivor,
-        long[] history
+        long[] usedHistory,
+        long[] committedHistory
 ) {
     public static HeapSnapshot empty() {
-        return new HeapSnapshot(0, 0, 0, 0, 0, 0, new long[0]);
+        return new HeapSnapshot(0, 0, 0, 0, 0, 0, new long[0], new long[0]);
     }
 }

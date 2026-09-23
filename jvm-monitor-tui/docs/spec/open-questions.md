@@ -48,10 +48,21 @@ now:
    itself become "noticeable load on the target JVM" (pillar 3). No
    throttling/backoff implemented; first place to optimize if profiling
    shows it.
-4. `com.sun.tools.attach.VirtualMachine.attach()` (`jdk.attach` module) under
-   GraalVM native-image is unresearched. Native-image packaging is out of
-   scope for the current pass, but local attach is core functionality and
-   will need dedicated investigation before native-image packaging can ship.
+4. GraalVM native-image compatibility is unresearched for the whole JMX-based
+   collection surface, not just attach:
+   `com.sun.tools.attach.VirtualMachine.attach()` (`jdk.attach` module);
+   the growing set of `ManagementFactory.newPlatformMXBeanProxy`-built dynamic
+   proxies in `JmxPollingMetricsSource` (one per MXBean interface — memory,
+   memory pool, OS, unix-OS, GC, thread, runtime, class-loading, compilation,
+   buffer-pool); the live `NotificationEmitter`/`addNotificationListener`
+   registration used for GC last-pause events; and
+   `com.sun.management.GarbageCollectionNotificationInfo.from(CompositeData)`,
+   which decodes `javax.management.openmbean.CompositeData` via `OpenType`
+   item-name reflection. Native-image packaging is out of scope for the
+   current pass, but all of this is core functionality and will need a
+   GraalVM tracing-agent run (exercising the notification listener at least
+   once) and the resulting `proxy-config.json`/reflect-config before
+   native-image packaging can ship.
 5. `RuntimeMXBean.getClassPath()` returns an empty string on modulepath-only
    launches — the VM Info panel's classpath entry count shows 0 in that case
    rather than something clearer.

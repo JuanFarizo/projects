@@ -20,12 +20,7 @@ public final class AddRemoteDialogScreen {
                 fieldRow("Auth", "( ) None   ( ) Username & Password"),
                 fieldRow("Username", "[ ]"),
                 fieldRow("Password", "[ ]"),
-                fieldRow("SSL/TLS", "[ ] use SSL/TLS for this connection"),
-                text(""),
-                row(
-                        text("esc").fg(Theme.TEXT_PRIMARY), text(":cancel").fg(Theme.TEXT_MUTED),
-                        spacer()
-                )
+                fieldRow("SSL/TLS", "[ ] use SSL/TLS for this connection")
         ).title("ADD REMOTE CONNECTION").rounded().borderColor(Theme.ACCENT).id("add-remote-screen");
     }
 

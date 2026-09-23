@@ -14,11 +14,11 @@ public final class ProcessDiscovery {
 
     public static List<LocalProcessInfo> listLocalJvms() {
         return VirtualMachine.list().stream()
-                .map(vm -> createLocalProcessInfoFromDesriptor(vm))
+                .map(vm -> createLocalProcessInfoFromDescriptor(vm))
                 .toList();
     }
 
-    private static LocalProcessInfo createLocalProcessInfoFromDesriptor(VirtualMachineDescriptor vmd) {
+    private static LocalProcessInfo createLocalProcessInfoFromDescriptor(VirtualMachineDescriptor vmd) {
         String displayName = vmd.displayName();
         String name;
         if (displayName == null || displayName.isBlank()) {
