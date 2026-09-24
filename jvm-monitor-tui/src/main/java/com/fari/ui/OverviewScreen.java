@@ -10,10 +10,6 @@ import com.fari.metrics.ThreadSnapshot;
 import com.fari.metrics.VmInfoSnapshot;
 import dev.tamboui.style.Style;
 import dev.tamboui.toolkit.element.Element;
-import dev.tamboui.toolkit.elements.ChartElement;
-import dev.tamboui.widgets.chart.Axis;
-import dev.tamboui.widgets.chart.Dataset;
-import dev.tamboui.widgets.chart.GraphType;
 import dev.tamboui.widgets.table.Row;
 
 import java.time.Duration;
@@ -67,13 +63,8 @@ public final class OverviewScreen {
         ).length(1);
     }
 
-    // Sparkline, not the full Chart widget: the 2x2 Overview grid gives each
-    // panel very little vertical room, and Chart's axis labels + legend eat
-    // most of it, leaving almost nothing for the actual line. DualSparkline
-    // keeps the used/committed comparison (top=used, bottom=committed) and
-    // the X/Y reference labels, in a fraction of the height. The full Chart
-    // (with axis titles and a proper legend) still lives on the Memory
-    // detail screen, which has the room for it — see MemoryScreen.heapPanel.
+    // Sparkline not Chart: 2x2 grid has no room for axis labels + legend.
+    // Full Chart lives on MemoryScreen.heapPanel (detail view, more space).
     private Element heapPanel(HeapSnapshot heap) {
         return panel("HEAP MEMORY",
                 column(
@@ -88,86 +79,6 @@ public final class OverviewScreen {
                 ).spacing(1).fill()
         ).rounded().borderColor(Theme.BORDER).padding(1);
     }
-
-    // Auto-scaled to the visible data (not fixed at the ceiling) — chosen
-    // over metrics.md's original "Y-axis bound fixed at max" design because,
-    // under normal/light load, that pinned the line to the bottom row and
-    // made it look static. Trade-off accepted: the direct "how close to the
-    // ceiling" read is gone; see docs/spec/metrics.md's Display philosophy,
-    // due for an update to match once this is confirmed.
-    static ChartElement heapChart(HeapSnapshot heap) {
-        double[] bounds = autoYBounds(toDoubleArray(heap.usedHistory(), heap.committedHistory()));
-        return chart()
-                .dataset(Dataset.builder()
-                        .name("used")
-                        .data(toPoints(heap.usedHistory()))
-                        .graphType(GraphType.LINE)
-                        .marker(Dataset.Marker.BRAILLE)
-                        .style(Style.EMPTY.fg(Theme.ACCENT))
-                        .build())
-                .dataset(Dataset.builder()
-                        .name("committed")
-                        .data(toPoints(heap.committedHistory()))
-                        .graphType(GraphType.LINE)
-                        .marker(Dataset.Marker.BRAILLE)
-                        .style(Style.EMPTY.fg(Theme.TEXT_SECONDARY))
-                        .build())
-                .xAxis(Axis.builder()
-                        .bounds(0, Math.max(1, heap.usedHistory().length - 1))
-                        .labels("-40s", "now")
-                        .build())
-                .yAxis(Axis.builder()
-                        .bounds(bounds[0], bounds[1])
-                        .title("MB")
-                        .labels(String.format(Locale.ROOT, "%.0f", bounds[0]),
-                                String.format(Locale.ROOT, "%.0f", bounds[1]))
-                        .build());
-    }
-
-    static double[][] toPoints(long[] history) {
-        double[][] points = new double[history.length][];
-        for (int i = 0; i < history.length; i++) {
-            points[i] = new double[] {i, history[i]};
-        }
-        return points;
-    }
-
-    static double[] toDoubleArray(long[]... histories) {
-        int total = 0;
-        for (long[] h : histories) {
-            total += h.length;
-        }
-        double[] out = new double[total];
-        int i = 0;
-        for (long[] h : histories) {
-            for (long v : h) {
-                out[i++] = v;
-            }
-        }
-        return out;
-    }
-
-    // {min, max} padded 10% on each side; falls back to {0, 1} when there's
-    // no data yet or the visible window is perfectly flat (avoids a
-    // zero-height axis range).
-    static double[] autoYBounds(double... values) {
-        double min = Double.MAX_VALUE;
-        double max = -Double.MAX_VALUE;
-        for (double v : values) {
-            min = Math.min(min, v);
-            max = Math.max(max, v);
-        }
-        if (values.length == 0 || min > max) {
-            return new double[] {0, 1};
-        }
-        if (min == max) {
-            min = Math.max(0, min - 1);
-            max = max + 1;
-        }
-        double pad = (max - min) * 0.1;
-        return new double[] {Math.max(0, min - pad), max + pad};
-    }
-
 
     // Sparkline, not Chart — same space rationale as heapPanel() above.
     // Sparkline's Y-axis label shows the raw data value, so the history is
@@ -184,14 +95,12 @@ public final class OverviewScreen {
                                 .showYAxis(true).xLabels("-60s", "now")
                                 .fill(),
                         text(String.format(Locale.ROOT, "Rolling avg %.1f%% 60s", cpu.rollingAvgPercent())).fg(Theme.TEXT_SECONDARY)
-                ).spacing(1)
+                ).spacing(1).fill()
         ).rounded().borderColor(Theme.BORDER).padding(1);
     }
 
-    // Rounding a lightly-loaded JVM's <0.5% samples straight to 0 made the
-    // whole sparkline empty (every bar height 0, nothing visible) — floor
-    // any real, nonzero load to at least 1% so the graph still shows
-    // something instead of going blank on an idle target.
+    // Floors nonzero load to 1%: rounding <0.5% samples to 0 made the
+    // sparkline blank on idle targets.
     private static long[] cpuWholePercent(long[] tenthsHistory) {
         long[] percent = new long[tenthsHistory.length];
         for (int i = 0; i < tenthsHistory.length; i++) {
@@ -252,9 +161,8 @@ public final class OverviewScreen {
         ).rounded().borderColor(Theme.BORDER).padding(1).length(7);
     }
 
-    // Both gauges are pure "how close to the ceiling" risk indicators (per
-    // metrics.md's Display philosophy) — open FDs are Unix-only, so that
-    // gauge is omitted entirely (not just blank) when unsupported.
+    // Both gauges are ceiling-risk indicators
+    // FD gauge omitted entirely on non-Unix, not just blank.
     private Element vmInfoGaugeRow(VmInfoSnapshot vmInfo) {
         double swapTotal = (double) vmInfo.swapTotal();
         double swapUsed = swapTotal > 0 ? (swapTotal - vmInfo.swapFree()) / swapTotal : 0;

@@ -2,7 +2,7 @@ package com.fari.ui;
 
 import dev.tamboui.style.Color;
 
-/** Plain color constants for the mock's palette (docs/spec/ui-view). */
+/** Plain color constants for the mock's palette (docs/specs/ui-view). */
 public final class Theme {
 
     private Theme() {

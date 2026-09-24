@@ -4,6 +4,9 @@ import com.fari.connection.ConnectionException;
 import com.fari.connection.LocalAttachConnection;
 import com.fari.connection.LocalProcessInfo;
 import com.fari.connection.ProcessDiscovery;
+import com.fari.connection.RemoteJmxConnection;
+import com.fari.connection.SavedConnection;
+import com.fari.connection.SavedConnectionsStore;
 import com.fari.metrics.DeadlockedThread;
 import com.fari.metrics.JmxPollingMetricsSource;
 import com.fari.metrics.MetricsSource;
@@ -37,18 +40,15 @@ public class JvmMonitorTui extends ToolkitApp {
 
     private volatile Screen currentScreen = Screen.CONNECTIONS;
     private volatile String connectError;
-    // Debug aid, toggled by 'd': fakes a deadlock (with a full wait-for chain,
-    // same shape as real DeadlockedThread data) so the banner/panel can be
-    // exercised without triggering a real one. Scoped to display only — it
-    // does not alter what ThreadsScreen reads from real metrics.
+    // Debug aid ('d' key): fakes a deadlock for exercising the banner/panel
+    // without a real one. Display-only, doesn't touch real metrics.
     private volatile boolean deadlockDemo = false;
     private static final List<DeadlockedThread> DEMO_DEADLOCK = List.of(
             new DeadlockedThread(-1, "demo-worker-1", "java.lang.Object", "demo-worker-2"),
             new DeadlockedThread(-2, "demo-worker-2", "java.lang.Object", "demo-worker-1")
     );
-    // Thread IDs (sorted) of the deadlock the user last dismissed with 'x'.
-    // Banner stays hidden while the same set persists; reappears once the set
-    // changes (new/different incident) or clears (resolved, reset to null).
+    // Sorted IDs of the deadlock last dismissed with 'x'; banner stays hidden
+    // until this set changes (new incident) or clears (resolved).
     private volatile long[] dismissedDeadlockIds = null;
 
     private final ConnectionsScreen connectionsScreen = new ConnectionsScreen();
@@ -63,12 +63,20 @@ public class JvmMonitorTui extends ToolkitApp {
     @Override
     protected void onStart() {
         refreshProcesses();
+        refreshSavedConnections();
     }
 
     private void refreshProcesses() {
         CompletableFuture.runAsync(() -> {
             List<LocalProcessInfo> processes = ProcessDiscovery.listLocalJvms();
             connectionsScreen.setProcesses(processes);
+        });
+    }
+
+    private void refreshSavedConnections() {
+        CompletableFuture.runAsync(() -> {
+            List<SavedConnection> saved = SavedConnectionsStore.load(SavedConnectionsStore.defaultPath());
+            connectionsScreen.setSavedConnections(saved);
         });
     }
 
@@ -91,8 +99,7 @@ public class JvmMonitorTui extends ToolkitApp {
             children.add(banner);
         }
         children.add(content);
-        // Footer legend is all metrics-screen navigation — meaningless before
-        // a JVM is attached, so it only shows once metricsSource is set.
+        // Footer is metrics-screen navigation — meaningless before a connection.
         if (metricsSource != null) {
             children.add(globalFooter());
         }
@@ -140,8 +147,7 @@ public class JvmMonitorTui extends ToolkitApp {
         ).length(1);
     }
 
-    // `active` highlights the entry for currentScreen so the footer legend
-    // doubles as a "you are here" indicator.
+    // Highlights the entry matching currentScreen ("you are here").
     private static Element key(String k, boolean active) {
         return active
                 ? text(k).fg(Theme.ACCENT).bold()
@@ -152,18 +158,15 @@ public class JvmMonitorTui extends ToolkitApp {
         return text(":" + l + "  ").fg(active ? Theme.ACCENT : Theme.TEXT_MUTED);
     }
 
-    // Prepended above every screen's own content except THREADS (which already
-    // shows the full deadlock panel — see ThreadsScreen.deadlockPanel). Naturally
-    // absent pre-connect (or once disconnected) since ThreadSnapshot.empty()'s
-    // deadlockedThreads() is empty, so no extra gating is needed for that case.
+    // Hidden on THREADS (full deadlock panel already shown there); naturally
+    // absent pre-connect too since ThreadSnapshot.empty() has no deadlocks.
     private Element deadlockBanner() {
         if (currentScreen == Screen.THREADS) {
             return null;
         }
         List<DeadlockedThread> deadlockedThreads = currentDeadlockedThreads();
         if (deadlockedThreads.isEmpty()) {
-            // Resolved (or never happened) — clear any stale dismissal so a
-            // future incident, even one that reuses thread IDs, isn't muted.
+            // Resolved — clear dismissal so a future incident isn't muted.
             dismissedDeadlockIds = null;
             return null;
         }
@@ -204,59 +207,62 @@ public class JvmMonitorTui extends ToolkitApp {
             quit();
             return EventResult.HANDLED;
         }
-        // Global, reserved on every screen per the footer legend — '1'/'2'
-        // jump straight to Connections/Overview instead of only being
-        // reachable by backing out one level at a time.
-        if (event.isChar('1')) {
-            if (metricsSource != null) {
-                disconnect();
-            } else {
-                currentScreen = Screen.CONNECTIONS;
+        // Global on every screen — jump straight to Connections/Overview
+        // instead of backing out one level at a time. Suppressed while a
+        // keyboard text field has focus (Add Remote form, saved-connection
+        // reconnect prompt) so typed letters like 'm'/'t'/'g'/'c'/'d'/'x'/'1'/'2'
+        // reach the field instead of being swallowed as navigation shortcuts.
+        boolean textEntryActive = currentScreen == Screen.ADD_REMOTE
+                || (currentScreen == Screen.CONNECTIONS && connectionsScreen.isPrompting());
+        if (!textEntryActive) {
+            if (event.isChar('1')) {
+                if (metricsSource != null) {
+                    disconnect();
+                } else {
+                    currentScreen = Screen.CONNECTIONS;
+                }
+                return EventResult.HANDLED;
             }
-            return EventResult.HANDLED;
-        }
-        if (event.isChar('2')) {
-            if (metricsSource != null) {
-                currentScreen = Screen.OVERVIEW;
+            if (event.isChar('2')) {
+                if (metricsSource != null) {
+                    currentScreen = Screen.OVERVIEW;
+                }
+                return EventResult.HANDLED;
             }
-            return EventResult.HANDLED;
-        }
-        if (event.isChar('d')) {
-            if (metricsSource != null) {
-                deadlockDemo = !deadlockDemo;
+            if (event.isChar('d')) {
+                if (metricsSource != null) {
+                    deadlockDemo = !deadlockDemo;
+                }
+                return EventResult.HANDLED;
             }
-            return EventResult.HANDLED;
-        }
-        if (event.isChar('x')) {
-            dismissDeadlockBanner();
-            return EventResult.HANDLED;
-        }
-        // Global like '1'/'2' — jump straight to any metrics screen from any
-        // other one, instead of only being reachable by backing out to
-        // Overview first (see globalFooter(), same legend advertises these).
-        if (event.isChar('m')) {
-            if (metricsSource != null) {
-                currentScreen = Screen.MEMORY;
+            if (event.isChar('x')) {
+                dismissDeadlockBanner();
+                return EventResult.HANDLED;
             }
-            return EventResult.HANDLED;
-        }
-        if (event.isChar('t')) {
-            if (metricsSource != null) {
-                currentScreen = Screen.THREADS;
+            if (event.isChar('m')) {
+                if (metricsSource != null) {
+                    currentScreen = Screen.MEMORY;
+                }
+                return EventResult.HANDLED;
             }
-            return EventResult.HANDLED;
-        }
-        if (event.isChar('g')) {
-            if (metricsSource != null) {
-                currentScreen = Screen.GC_LOG;
+            if (event.isChar('t')) {
+                if (metricsSource != null) {
+                    currentScreen = Screen.THREADS;
+                }
+                return EventResult.HANDLED;
             }
-            return EventResult.HANDLED;
-        }
-        if (event.isChar('c')) {
-            if (metricsSource != null) {
-                currentScreen = Screen.CLASSES;
+            if (event.isChar('g')) {
+                if (metricsSource != null) {
+                    currentScreen = Screen.GC_LOG;
+                }
+                return EventResult.HANDLED;
             }
-            return EventResult.HANDLED;
+            if (event.isChar('c')) {
+                if (metricsSource != null) {
+                    currentScreen = Screen.CLASSES;
+                }
+                return EventResult.HANDLED;
+            }
         }
 
         return switch (currentScreen) {
@@ -268,6 +274,9 @@ public class JvmMonitorTui extends ToolkitApp {
     }
 
     private EventResult handleConnectionsKey(KeyEvent event) {
+        if (connectionsScreen.isPrompting()) {
+            return handleReconnectPromptKey(event);
+        }
         if (event.isUp()) {
             connectionsScreen.selectPrevious();
             return EventResult.HANDLED;
@@ -276,8 +285,16 @@ public class JvmMonitorTui extends ToolkitApp {
             connectionsScreen.selectNext();
             return EventResult.HANDLED;
         }
+        if (event.isLeft() || event.isRight()) {
+            connectionsScreen.togglePanel();
+            return EventResult.HANDLED;
+        }
         if (event.isConfirm()) {
-            connectToSelected();
+            if (connectionsScreen.focusedPanel() == ConnectionsScreen.Panel.PROCESSES) {
+                connectToSelected();
+            } else {
+                confirmSelectedSaved();
+            }
             return EventResult.HANDLED;
         }
         if (event.isChar('r')) {
@@ -285,7 +302,52 @@ public class JvmMonitorTui extends ToolkitApp {
             return EventResult.HANDLED;
         }
         if (event.isChar('n')) {
+            addRemoteScreen.reset();
             currentScreen = Screen.ADD_REMOTE;
+            return EventResult.HANDLED;
+        }
+        return EventResult.UNHANDLED;
+    }
+
+    private void confirmSelectedSaved() {
+        var saved = connectionsScreen.selectedSaved();
+        if (saved == null) {
+            return;
+        }
+        if (saved.hasAuth()) {
+            connectionsScreen.startReconnectPrompt(saved);
+        } else {
+            connectToRemote(saved.alias(), saved.host(), saved.port(), null, null);
+        }
+    }
+
+    private EventResult handleReconnectPromptKey(KeyEvent event) {
+        if (event.isCancel()) {
+            connectionsScreen.cancelReconnectPrompt();
+            return EventResult.HANDLED;
+        }
+        if (event.isUp() || event.isDown()) {
+            connectionsScreen.promptToggleFocus();
+            return EventResult.HANDLED;
+        }
+        if (event.isDeleteBackward()) {
+            connectionsScreen.promptHandleBackspace();
+            return EventResult.HANDLED;
+        }
+        if (event.isConfirm()) {
+            if (connectionsScreen.promptIsOnLastField()) {
+                var target = connectionsScreen.promptTarget();
+                connectToRemote(target.alias(), target.host(), target.port(),
+                        connectionsScreen.promptUsername(), connectionsScreen.promptPassword());
+                connectionsScreen.cancelReconnectPrompt();
+            } else {
+                connectionsScreen.promptToggleFocus();
+            }
+            return EventResult.HANDLED;
+        }
+        char c = event.character();
+        if (c >= 32 && c < 127) {
+            connectionsScreen.promptHandleChar(c);
             return EventResult.HANDLED;
         }
         return EventResult.UNHANDLED;
@@ -294,6 +356,36 @@ public class JvmMonitorTui extends ToolkitApp {
     private EventResult handleAddRemoteKey(KeyEvent event) {
         if (event.isCancel()) {
             currentScreen = Screen.CONNECTIONS;
+            return EventResult.HANDLED;
+        }
+        if (event.isUp()) {
+            addRemoteScreen.focusPrevious();
+            return EventResult.HANDLED;
+        }
+        if (event.isDown()) {
+            addRemoteScreen.focusNext();
+            return EventResult.HANDLED;
+        }
+        if (addRemoteScreen.focused() == AddRemoteDialogScreen.Field.AUTH
+                && (event.isLeft() || event.isRight())) {
+            addRemoteScreen.toggleAuth();
+            return EventResult.HANDLED;
+        }
+        if (event.isDeleteBackward()) {
+            addRemoteScreen.handleBackspace();
+            return EventResult.HANDLED;
+        }
+        if (event.isConfirm()) {
+            if (addRemoteScreen.isOnLastField()) {
+                addRemoteScreen.submit(this::connectToRemote);
+            } else {
+                addRemoteScreen.focusNext();
+            }
+            return EventResult.HANDLED;
+        }
+        char c = event.character();
+        if (c >= 32 && c < 127) {
+            addRemoteScreen.handleChar(c);
             return EventResult.HANDLED;
         }
         return EventResult.UNHANDLED;
@@ -314,6 +406,12 @@ public class JvmMonitorTui extends ToolkitApp {
     private EventResult handleDetailScreenKey(KeyEvent event) {
         if (event.isCancel()) {
             currentScreen = Screen.OVERVIEW;
+            return EventResult.HANDLED;
+        }
+        // Classes' histogram is on-demand only (never polled — see
+        // MetricsSource.fetchClassHistogram()), so it needs its own trigger.
+        if (currentScreen == Screen.CLASSES && event.isChar('r') && classesScreen != null) {
+            classesScreen.refresh();
             return EventResult.HANDLED;
         }
         return EventResult.UNHANDLED;
@@ -337,6 +435,33 @@ public class JvmMonitorTui extends ToolkitApp {
                 classesScreen = new ClassesScreen(source);
                 connectError = null;
                 currentScreen = Screen.OVERVIEW;
+            } catch (ConnectionException e) {
+                connectError = e.getMessage();
+            }
+        });
+    }
+
+    private void connectToRemote(String alias, String host, int port, String username, String password) {
+        CompletableFuture.runAsync(() -> {
+            try {
+                var connection = new RemoteJmxConnection(host, port, username, password, alias);
+                var source = new JmxPollingMetricsSource();
+                source.start(connection);
+                metricsSource = source;
+                overviewScreen = new OverviewScreen(source);
+                memoryScreen = new MemoryScreen(source);
+                threadsScreen = new ThreadsScreen(source);
+                gcLogScreen = new GcLogScreen(source);
+                classesScreen = new ClassesScreen(source);
+                connectError = null;
+                currentScreen = Screen.OVERVIEW;
+
+                String savedUsername = (username != null && !username.isBlank()) ? username : "";
+                var saved = new SavedConnection(alias, host, port, savedUsername, SavedConnection.METHOD_DIRECT_REMOTE_JMX);
+                var path = SavedConnectionsStore.defaultPath();
+                var updated = SavedConnectionsStore.upsert(SavedConnectionsStore.load(path), saved);
+                SavedConnectionsStore.save(path, updated);
+                connectionsScreen.setSavedConnections(updated);
             } catch (ConnectionException e) {
                 connectError = e.getMessage();
             }

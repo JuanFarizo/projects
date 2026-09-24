@@ -73,7 +73,7 @@ com.fari
   JvmMonitorTui.java             Entry point and ToolkitApp subclass — screen
                                   switching, key routing, connect/disconnect flow
 
-com.fari.connection              Connection Layer (docs/spec/architecture.md)
+com.fari.connection              Connection Layer (docs/specs/architecture.md)
   ConnectionHandle.java           Abstraction the Metrics Layer depends on
   LocalAttachConnection.java      VirtualMachine.attach + local JMX management agent
   ProcessDiscovery.java           VirtualMachine.list() — no attach performed
@@ -94,7 +94,7 @@ com.fari.ui                      UI Layer (TamboUI ToolkitApp), one class per sc
   OverviewScreen.java              2x2 Heap/CPU/GC/Threads grid + VM Info strip
   Theme.java                       color palette constants from the design mock
 
-docs/spec/                       Source of truth — read before changing behavior
+docs/specs/                       Source of truth — read before changing behavior
   requirements.md, architecture.md, jvm-connection-methods.md,
   ui-dsl-api-choice.md, open-questions.md, ui-view/
 ```

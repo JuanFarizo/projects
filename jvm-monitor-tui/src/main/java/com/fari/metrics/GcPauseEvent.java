@@ -6,13 +6,15 @@ public record GcPauseEvent(
         String cause,
         boolean isFullGc,
         long durationMs,
-        long timestampMillis
+        long timestampMillis,
+        long heapBeforeBytes,
+        long heapAfterBytes
 ) {
     public static GcPauseEvent unavailable() {
-        return new GcPauseEvent(GcPauseAvailability.UNAVAILABLE, "", "", false, 0, 0);
+        return new GcPauseEvent(GcPauseAvailability.UNAVAILABLE, "", "", false, 0, 0, 0, 0);
     }
 
     public static GcPauseEvent pendingFirstEvent() {
-        return new GcPauseEvent(GcPauseAvailability.PENDING_FIRST_EVENT, "", "", false, 0, 0);
+        return new GcPauseEvent(GcPauseAvailability.PENDING_FIRST_EVENT, "", "", false, 0, 0, 0, 0);
     }
 }

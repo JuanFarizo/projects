@@ -15,7 +15,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * Collection-only smoke test for the metrics added to JmxPollingMetricsSource:
  * attaches to a real subprocess JVM (not self-attach, which needs
- * -Djdk.attach.allowAttachSelf=true — see docs/spec/open-questions.md known
+ * -Djdk.attach.allowAttachSelf=true — see docs/specs/open-questions.md known
  * risk #7) and asserts every newly-added snapshot field is populated plausibly.
  */
 class JmxPollingMetricsSourceCollectionTest {
@@ -64,9 +64,9 @@ class JmxPollingMetricsSourceCollectionTest {
             assertTrue(snapshot.threads().topCpuThreads().size() <= 10);
             assertTrue(!snapshot.threads().topCpuThreads().isEmpty());
             // Never null by construction (findDeadlockedThreads() == null maps to
-            // an empty array) — SleepyMain has no real deadlock, so length 0 is the
+            // an empty array) — SleepyMain has no real deadlock, so empty is the
             // actual expected value, not just "non-null".
-            assertTrue(snapshot.threads().deadlockedThreadIds().length == 0);
+            assertTrue(snapshot.threads().deadlockedThreads().isEmpty());
 
             assertTrue(snapshot.vmInfo().systemLoadAverage() >= -1);
             assertTrue(snapshot.vmInfo().jitCompilationTimeMs() >= 0);
@@ -77,7 +77,6 @@ class JmxPollingMetricsSourceCollectionTest {
 
             assertTrue(snapshot.heap().usedHistory().length >= 1);
             assertTrue(snapshot.heap().committedHistory().length >= 1);
-            assertTrue(snapshot.threads().deadlockedThreadNames().isEmpty());
         } finally {
             source.close();
         }

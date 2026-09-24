@@ -16,17 +16,25 @@ packages); these remain open:
   (Connections → Overview → disconnect). If the app ever needs to monitor
   multiple JVMs concurrently (e.g. a multi-pane view), the poll-thread-per-
   connection model needs revisiting for thread/resource limits.
-- **Classes/Metaspace per-class table JMX feasibility.** Standard
-  `java.lang.management` MXBeans (`MemoryPoolMXBean`, `ClassLoadingMXBean`)
-  give aggregate Metaspace/Classloading stats (used/committed/loaded/unloaded)
-  without issue. A per-class table with instance counts + retained size (the
-  requirement for the Classes/Metaspace screen) needs HotSpot-specific
-  diagnostic commands (`com.sun.management.DiagnosticCommandMBean`,
-  `gcClassHistogram`-equivalent) that aren't part of the standard MXBean
-  surface. Feasibility of those diagnostic-command MBeans under a GraalVM
-  native-image build (pillar 2's packaging goal) is unresearched. The
-  Classes/Metaspace screen itself is not built yet — this blocks starting
-  it, not anything currently in the codebase.
+- **Classes/Metaspace per-class table JMX feasibility — RESOLVED.** Verified
+  live against a running JDK 25 process: `com.sun.management:type=
+  DiagnosticCommand` (not `DiagnosticCommandMBean` — that ObjectName doesn't
+  exist; corrected here) exposes `gcClassHistogram`, reachable over the same
+  `MBeanServerConnection` every other metric already uses, no extra JVM
+  flags. It returns per-class instance count + byte size as a plain
+  `java.lang.String` text report (`jmap -histo` format), not a typed JMX open
+  type — no loader field, no per-class "details" of any kind. Resolution
+  recorded in [metrics.md](metrics.md)'s Classes/Metaspace section: name +
+  instances + bytes only, on-demand (not polled), HotSpot-family-only
+  parser, degrades gracefully on other vendors/formats. GraalVM native-image
+  feasibility for this specific MBean call is still unresearched, same as
+  the rest of the JMX surface — see known risk #4.
+  (Considered and rejected: `com.sun.tools.attach.VirtualMachine`'s
+  `heapHisto()` — same data, but only reachable via the JDK-internal
+  `sun.tools.attach.HotSpotVirtualMachine` class, confirmed live to require
+  `--add-exports jdk.attach/sun.tools.attach=ALL-UNNAMED` even via
+  reflection (`InaccessibleObjectException` without it) — an extra
+  packaging/native-image burden the JMX MBean path doesn't have.)
 
 ## Known risks / backlog
 
@@ -62,7 +70,10 @@ now:
    current pass, but all of this is core functionality and will need a
    GraalVM tracing-agent run (exercising the notification listener at least
    once) and the resulting `proxy-config.json`/reflect-config before
-   native-image packaging can ship.
+   native-image packaging can ship. `RemoteJmxConnection` (Direct Remote JMX,
+   connection method 2) joins this same list: `JMXConnectorFactory.connect()`
+   and the RMI stub dynamic proxies it creates need the same reflect-config
+   treatment — same underlying gap, not a new one.
 5. `RuntimeMXBean.getClassPath()` returns an empty string on modulepath-only
    launches — the VM Info panel's classpath entry count shows 0 in that case
    rather than something clearer.
@@ -77,3 +88,15 @@ now:
    confusing first-run experience (the monitor's own PID is always visible
    and selectable in its own process list). Worth a clearer inline message
    distinguishing "self-attach blocked" from other attach failures.
+8. `gcClassHistogram`'s text-report format has no documented stability
+   contract — same undocumented-CLI-output status as `jstat`, whose own man
+   page warns "don't write scripts to parse the jstat command's output
+   because the format might change in future releases." Confirmed non-
+   hypothetical: the format already changed once, around JDK 9, adding a
+   `(module@version)` suffix to class names (VisualVM carries two separate
+   parsers, `Histogram18`/`Histogram19`, over this exact break). Mitigation
+   already in place per metrics.md: `ClassHistogramParser` targets the
+   current HotSpot-family format only, wrapped in try/catch, degrading to a
+   TUI "unavailable" message instead of crashing on drift or a non-HotSpot
+   vendor (e.g. OpenJ9, which needs a different command path entirely on
+   older IBM Java).

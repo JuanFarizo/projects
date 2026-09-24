@@ -21,6 +21,7 @@ Each layer only depends on the one below it — UI depends on Metrics, Metrics d
 - Location: `~/.config/jvm-monitor-tui/connections.json`.
 - **Password is never persisted.** Add Remote dialog prompts for it on each connect; held in memory only for the life of that connection.
 - Rationale: avoids owning an encryption-at-rest problem (key storage) or an OS-keychain dependency, whose native-image compatibility is unresearched (pillar 2 risk, same class as `jdk.attach` in [open-questions.md](open-questions.md)). No secret ever touches disk, so there's nothing to protect.
+- **Implemented** (`com.fari.connection.SavedConnectionsStore`, alongside the Direct Remote JMX connection method): hand-rolled JSON reader/writer, no library dependency — the shape is a narrow enough flat array-of-flat-objects that pulling in Jackson/Gson for it would be a pillar-2 violation. Atomic write (temp file + rename). Auto-saves on every successful connect; dedupe key is (alias, host, port).
 
 ### Metrics Layer
 - Programmed to an abstraction (a `MetricsSource`-style interface producing snapshots), not to a concrete collection mechanism — swapping mechanisms must not require changes in the UI Layer or elsewhere in the Metrics Layer.

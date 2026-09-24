@@ -2,6 +2,7 @@ package com.fari.metrics;
 
 import com.fari.connection.ConnectionHandle;
 import com.sun.management.GarbageCollectionNotificationInfo;
+import com.sun.management.HotSpotDiagnosticMXBean;
 import com.sun.management.OperatingSystemMXBean;
 import com.sun.management.ThreadMXBean;
 import com.sun.management.UnixOperatingSystemMXBean;
@@ -50,6 +51,16 @@ import java.util.concurrent.TimeUnit;
  */
 public final class JmxPollingMetricsSource implements MetricsSource {
 
+    private static final ObjectName DIAGNOSTIC_COMMAND;
+
+    static {
+        try {
+            DIAGNOSTIC_COMMAND = new ObjectName("com.sun.management:type=DiagnosticCommand");
+        } catch (MalformedObjectNameException e) {
+            throw new ExceptionInInitializerError(e);
+        }
+    }
+
     private static final int HEAP_HISTORY_SIZE = 40;
     // CPU rolling avg is labeled "60s" in the UI — one sample per poll tick.
     private static final int CPU_HISTORY_SIZE = 60;
@@ -91,7 +102,7 @@ public final class JmxPollingMetricsSource implements MetricsSource {
 
     // Matched out of memoryPools by name substring — same "not a stable
     // contract" risk already accepted for Eden/Old/Survivor in
-    // buildHeapSnapshot() (see docs/spec/open-questions.md known risk #2).
+    // buildHeapSnapshot() (see docs/specs/open-questions.md known risk #2).
     // Code Cache is a list, not a single bean: since JDK 9 it's segmented into
     // several "CodeHeap '...'" pools (non-nmethods/profiled/non-profiled) —
     // there's no longer a single pool named "Code Cache" to match.
@@ -107,6 +118,14 @@ public final class JmxPollingMetricsSource implements MetricsSource {
     private final Deque<Long> cpuHistory = new ArrayDeque<>();
     private final Deque<Long> classesUsedHistory = new ArrayDeque<>();
     private final Deque<Long> classesCommittedHistory = new ArrayDeque<>();
+    private final Deque<Long> classesLoadedDeltaHistory = new ArrayDeque<>();
+    private long previousLoadedClassCount = -1;
+    private final Deque<Long> directUsedHistory = new ArrayDeque<>();
+    private final Deque<Long> mappedUsedHistory = new ArrayDeque<>();
+
+    // Cached once, like vmStartTimeMillis — a launch-time invariant.
+    private long maxDirectMemorySize;
+    private boolean directMemorySupported;
 
     @Override
     public void start(ConnectionHandle connection) {
@@ -148,6 +167,17 @@ public final class JmxPollingMetricsSource implements MetricsSource {
                 compilationBean = null;
             }
             bufferPools = proxyAll(mbsc, "java.nio:type=BufferPool,name=*", BufferPoolMXBean.class);
+
+            try {
+                HotSpotDiagnosticMXBean diagnosticBean = ManagementFactory.newPlatformMXBeanProxy(
+                        mbsc, "com.sun.management:type=HotSpotDiagnostic", HotSpotDiagnosticMXBean.class);
+                maxDirectMemorySize = Long.parseLong(diagnosticBean.getVMOption("MaxDirectMemorySize").getValue());
+                directMemorySupported = true;
+            } catch (Exception e) {
+                // Not HotSpot, or the option isn't recognized — degrade, don't fail start().
+                maxDirectMemorySize = 0;
+                directMemorySupported = false;
+            }
 
             codeCacheBeans.clear();
             for (MemoryPoolMXBean pool : memoryPools) {
@@ -231,13 +261,23 @@ public final class JmxPollingMetricsSource implements MetricsSource {
                 info.getGcCause(),
                 isFullGc(info.getGcName(), info.getGcAction()),
                 info.getGcInfo().getDuration(),
-                info.getGcInfo().getEndTime() + vmStartTimeMillis
+                info.getGcInfo().getEndTime() + vmStartTimeMillis,
+                sumUsedBytes(info.getGcInfo().getMemoryUsageBeforeGc()),
+                sumUsedBytes(info.getGcInfo().getMemoryUsageAfterGc())
         );
         lastGcEvent = event;
         gcPauseHistory.addLast(event);
         while (gcPauseHistory.size() > GC_PAUSE_HISTORY_SIZE) {
             gcPauseHistory.removeFirst();
         }
+    }
+
+    private static long sumUsedBytes(Map<String, MemoryUsage> poolUsages) {
+        long total = 0;
+        for (MemoryUsage usage : poolUsages.values()) {
+            total += usage.getUsed();
+        }
+        return total;
     }
 
     // Young-vs-full split by name/action substring match — same risk class as
@@ -312,8 +352,9 @@ public final class JmxPollingMetricsSource implements MetricsSource {
             codeCacheUsed += poolUsed(pool);
         }
         long compressedClassSpaceUsed = poolUsed(compressedClassSpaceBean);
+        long codeCacheMax = sumMax(codeCacheBeans);
         return new NonHeapSnapshot(nonHeapUsage.getUsed(), nonHeapUsage.getCommitted(), nonHeapUsage.getMax(),
-                codeCacheUsed, compressedClassSpaceUsed);
+                codeCacheUsed, compressedClassSpaceUsed, codeCacheMax);
     }
 
     private static long poolUsed(MemoryPoolMXBean pool) throws IOException {
@@ -324,17 +365,36 @@ public final class JmxPollingMetricsSource implements MetricsSource {
         return usage == null ? 0 : usage.getUsed();
     }
 
+    // -1 ("no ceiling") if any segment's max is undefined, rather than
+    // understating the total by summing a real number with an undefined one.
+    private static long sumMax(List<MemoryPoolMXBean> pools) throws IOException {
+        long total = 0;
+        for (MemoryPoolMXBean pool : pools) {
+            MemoryUsage usage = pool.getUsage();
+            long max = usage == null ? -1 : usage.getMax();
+            if (max < 0) {
+                return -1;
+            }
+            total += max;
+        }
+        return total;
+    }
+
     private BuffersSnapshot buildBuffersSnapshot() throws IOException {
         BufferPoolSnapshot direct = BufferPoolSnapshot.empty();
         BufferPoolSnapshot mapped = BufferPoolSnapshot.empty();
         for (BufferPoolMXBean pool : bufferPools) {
             String name = pool.getName();
-            BufferPoolSnapshot snapshot =
-                    new BufferPoolSnapshot(pool.getCount(), pool.getMemoryUsed(), pool.getTotalCapacity());
             if ("direct".equals(name)) {
-                direct = snapshot;
+                // KB, not MB: direct buffer usage is often under 1MB, and MB
+                // granularity flattened the trend to a permanent 0.
+                pushBounded(directUsedHistory, pool.getMemoryUsed() / 1024, HEAP_HISTORY_SIZE);
+                direct = new BufferPoolSnapshot(pool.getCount(), pool.getMemoryUsed(), pool.getTotalCapacity(),
+                        toArray(directUsedHistory));
             } else if ("mapped".equals(name)) {
-                mapped = snapshot;
+                pushBounded(mappedUsedHistory, pool.getMemoryUsed() / 1024, HEAP_HISTORY_SIZE);
+                mapped = new BufferPoolSnapshot(pool.getCount(), pool.getMemoryUsed(), pool.getTotalCapacity(),
+                        toArray(mappedUsedHistory));
             }
         }
         return new BuffersSnapshot(direct, mapped);
@@ -401,12 +461,8 @@ public final class JmxPollingMetricsSource implements MetricsSource {
                 deadlockedThreads, topCpuThreads);
     }
 
-    // Only called when a deadlock cycle actually exists — one extra
-    // getThreadInfo() round-trip paid solely during a real deadlock, not
-    // every poll tick. Lock class name + owner name come off the same
-    // ThreadInfo, no setThreadContentionMonitoringEnabled() needed (that flag
-    // is only for blocked/waited counts+time — the separate, rejected
-    // "lock contention" feature in docs/spec/metrics.md).
+    // Only called when a deadlock exists — one extra getThreadInfo()
+    // round-trip, not every poll tick.
     private List<DeadlockedThread> buildDeadlockedThreads(long[] deadlockedIds) throws IOException {
         ThreadInfo[] infos = threadBean.getThreadInfo(deadlockedIds);
         List<DeadlockedThread> threads = new ArrayList<>(infos.length);
@@ -461,8 +517,23 @@ public final class JmxPollingMetricsSource implements MetricsSource {
 
         pushBounded(classesUsedHistory, used / (1024 * 1024), CLASSES_HISTORY_SIZE);
         pushBounded(classesCommittedHistory, committed / (1024 * 1024), CLASSES_HISTORY_SIZE);
+
+        // First tick has no prior sample to diff against.
+        long delta = previousLoadedClassCount < 0 ? 0 : Math.max(0, loaded - previousLoadedClassCount);
+        previousLoadedClassCount = loaded;
+        pushBounded(classesLoadedDeltaHistory, delta, CLASSES_HISTORY_SIZE);
+
+        long metaspaceMax = -1;
+        if (metaspaceBean != null) {
+            MemoryUsage usage = metaspaceBean.getUsage();
+            if (usage != null) {
+                metaspaceMax = usage.getMax();
+            }
+        }
+
         return new ClassesSnapshot(used, committed, loaded, unloaded,
-                toArray(classesUsedHistory), toArray(classesCommittedHistory));
+                toArray(classesUsedHistory), toArray(classesCommittedHistory),
+                metaspaceMax, toArray(classesLoadedDeltaHistory));
     }
 
     private VmInfoSnapshot buildVmInfoSnapshot(GcSnapshot gc) throws IOException {
@@ -499,7 +570,9 @@ public final class JmxPollingMetricsSource implements MetricsSource {
                 osBean.getFreeSwapSpaceSize(),
                 fdOpen,
                 fdMax,
-                fdSupported
+                fdSupported,
+                maxDirectMemorySize,
+                directMemorySupported
         );
     }
 
@@ -530,6 +603,30 @@ public final class JmxPollingMetricsSource implements MetricsSource {
     @Override
     public MetricsSnapshot snapshot() {
         return latest;
+    }
+
+    // On-demand only, called off the poll cadence — see MetricsSource's
+    // javadoc and docs/specs/metrics.md's Classes/Metaspace section for why
+    // this can't be a poll-tick field like the rest of ClassesSnapshot.
+    @Override
+    public ClassHistogramResult fetchClassHistogram() {
+        ConnectionHandle conn = connection;
+        if (conn == null) {
+            return ClassHistogramResult.unavailable("Not connected");
+        }
+        try {
+            Object report = conn.mbeanServerConnection().invoke(DIAGNOSTIC_COMMAND, "gcClassHistogram",
+                    new Object[]{new String[0]}, new String[]{"[Ljava.lang.String;"});
+            List<ClassHistogramEntry> entries = new ArrayList<>(ClassHistogramParser.parse(String.valueOf(report)));
+            entries.sort(Comparator.comparingLong(ClassHistogramEntry::bytes).reversed());
+            return ClassHistogramResult.of(entries);
+        } catch (Exception e) {
+            // Covers connection drop (IOException/InstanceNotFoundException from
+            // invoke()) and parser rejection (IllegalStateException on
+            // unrecognized format) alike — both degrade the same way in the TUI.
+            String message = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+            return ClassHistogramResult.unavailable(message);
+        }
     }
 
     @Override

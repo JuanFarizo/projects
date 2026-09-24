@@ -16,6 +16,15 @@ public interface MetricsSource extends AutoCloseable {
     /** Non-blocking read of the latest snapshot. Never null after {@link #start}. */
     MetricsSnapshot snapshot();
 
+    /**
+     * Blocking, on-demand class histogram fetch — walks the whole
+     * heap/metaspace on the target JVM (safepoint-inducing), so callers must
+     * invoke it off the render thread and never on a poll cadence. Never
+     * throws; a fetch or parse failure comes back as
+     * {@link ClassHistogramResult#unavailable}.
+     */
+    ClassHistogramResult fetchClassHistogram();
+
     @Override
     void close();
 }

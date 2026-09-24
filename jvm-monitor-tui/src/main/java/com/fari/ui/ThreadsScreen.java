@@ -22,6 +22,10 @@ import static dev.tamboui.toolkit.Toolkit.*;
  */
 public final class ThreadsScreen {
 
+    // Named so barsHeight below reads as a formula, not a magic number.
+    private static final int STATE_BAR_COUNT = 4;
+    private static final int STATE_BAR_GAP = 1;
+
     private final MetricsSource metricsSource;
 
     public ThreadsScreen(MetricsSource metricsSource) {
@@ -35,9 +39,9 @@ public final class ThreadsScreen {
             return column(
                     text(" THREADS").fg(Theme.TEXT_PRIMARY).bold(),
                     panel("",
-                            text(" Connection lost: " + snapshot.errorMessage()).fg(Theme.STATUS_BAD).bold()
-                    ).rounded().borderColor(Theme.STATUS_BAD).padding(1)
-            ).id("threads-screen");
+                            text(" Connection lost: " + snapshot.errorMessage()).fg(Theme.STATUS_BAD).bold()).rounded()
+                            .borderColor(Theme.STATUS_BAD).padding(1))
+                    .id("threads-screen");
         }
 
         ThreadSnapshot threads = snapshot.threads();
@@ -51,12 +55,6 @@ public final class ThreadsScreen {
 
         return column(elements.toArray(Element[]::new)).id("threads-screen");
     }
-
-    // Bar count/gap for the state-breakdown chart below — named so the
-    // chart's required height (see barsHeight()) reads as a formula, not a
-    // hand-computed magic number that silently goes stale if either changes.
-    private static final int STATE_BAR_COUNT = 4;
-    private static final int STATE_BAR_GAP = 1;
 
     private Element stateBreakdownPanel(ThreadSnapshot threads) {
         var states = threads.stateCounts();
@@ -84,18 +82,16 @@ public final class ThreadsScreen {
                                         Bar.of(states.getOrDefault(Thread.State.RUNNABLE, 0), "RUNNABLE"),
                                         Bar.of(states.getOrDefault(Thread.State.WAITING, 0), "WAITING"),
                                         Bar.of(states.getOrDefault(Thread.State.TIMED_WAITING, 0), "TIMED_WAITING"),
-                                        blockedBar
-                                )
+                                        blockedBar)
                                 .max(chartMax)
                                 .horizontal()
                                 .barGap(STATE_BAR_GAP)
                                 .barColor(Theme.ACCENT)
                                 .labelStyle(Style.EMPTY.fg(Theme.TEXT_MUTED))
                                 .valueStyle(Style.EMPTY.fg(Theme.TEXT_SECONDARY))
-                                .length(barsHeight)
-                )
-                .length(countsRowHeight + gapLine + barsHeight)
-        ).rounded().borderColor(Theme.BORDER).padding(1).length(countsRowHeight + gapLine + barsHeight + 4);
+                                .length(barsHeight))
+                        .length(countsRowHeight + gapLine + barsHeight))
+                .rounded().borderColor(Theme.BORDER).padding(1).length(countsRowHeight + gapLine + barsHeight + 4);
     }
 
     private Element threadCountsRow(ThreadSnapshot threads) {
@@ -106,15 +102,13 @@ public final class ThreadsScreen {
                 text("   "),
                 statColumn("PEAK", threads.peak()),
                 text("   "),
-                statColumn("STARTED", threads.started())
-        ).length(2);
+                statColumn("STARTED", threads.started())).length(2);
     }
 
     private static Element statColumn(String label, long value) {
         return column(
                 text(label).fg(Theme.TEXT_MUTED),
-                text(String.valueOf(value)).fg(Theme.TEXT_PRIMARY).bold()
-        );
+                text(String.valueOf(value)).fg(Theme.TEXT_PRIMARY).bold());
     }
 
     private Element topCpuPanel(ThreadSnapshot threads) {
@@ -135,8 +129,8 @@ public final class ThreadsScreen {
                 table()
                         .header(Row.from("#", "Thread", "State", "CPU Time"))
                         .rows(rows)
-                        .widths(length(3), fill(), length(14), length(14))
-        ).rounded().borderColor(Theme.BORDER).fill();
+                        .widths(length(3), fill(), length(14), length(14)))
+                .rounded().borderColor(Theme.BORDER).fill();
     }
 
     private Element deadlockPanel(ThreadSnapshot threads) {
