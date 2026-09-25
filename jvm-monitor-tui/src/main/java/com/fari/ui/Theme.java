@@ -32,7 +32,6 @@ public final class Theme {
     public static final Color ACCENT_LIGHT = Color.hex("#d2cefd");
     public static final Color BORDER = Color.hex("#E3E0FF");
     // Alternate-row background for table zebra-striping — one step lighter
-    // than BACKGROUND, subtle enough not to compete with row text/highlight.
     public static final Color ROW_ALT = Color.hex("#1e2133");
     public static final Color STATUS_GOOD = ACCENT;
     public static final Color STATUS_BAD = Color.hex("#e06c75");

@@ -29,7 +29,7 @@ import static dev.tamboui.toolkit.Toolkit.*;
 
 /**
  * GC pause-event log: one bar per pause (young vs full), pause-latency stats,
- * per-collector totals, plus the most recent pause. Reached from Overview via 'g'.
+ * per-collector totals, plus the most recent pause.
  */
 public final class GcLogScreen {
 
@@ -129,8 +129,6 @@ public final class GcLogScreen {
         return panel(String.format(Locale.ROOT, "PAUSE EVENTS (young %d vs full %d)",
                         youngPoints.size(), fullPoints.size()),
                 chart()
-                        // BAR, not SCATTER: a floating dot has no baseline, so its
-                        // height is hard to read against the axis at a glance.
                         .dataset(Dataset.builder()
                                 .name("young")
                                 .data(youngPoints)
@@ -143,8 +141,6 @@ public final class GcLogScreen {
                                 .graphType(GraphType.BAR)
                                 .style(Style.EMPTY.fg(Theme.STATUS_BAD))
                                 .build())
-                        // No .title(): Chart's axis-title column is 1 char wide and
-                        // wraps text letter-per-line — units folded into labels instead.
                         .xAxis(Axis.builder()
                                 .bounds(0, Math.max(1, maxX))
                                 .labels("0s", String.format(Locale.ROOT, "%.0fs", Math.max(1, maxX)))
@@ -232,8 +228,6 @@ public final class GcLogScreen {
         long reclaimedBytes = lastPause.heapBeforeBytes() - lastPause.heapAfterBytes();
         String reclaimed = String.format(Locale.ROOT, "%.1fMB", reclaimedBytes / (1024.0 * 1024.0));
 
-        // Header row + one data row, not a single run-on sentence — each
-        // field gets its own column so values are easy to scan.
         return panel("LAST PAUSE",
                 table()
                         .header(Row.from("Collector", "Duration", "Reclaimed", "Cause", "Generation", "Time"))

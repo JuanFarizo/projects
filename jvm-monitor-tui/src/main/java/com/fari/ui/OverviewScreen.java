@@ -63,8 +63,6 @@ public final class OverviewScreen {
         ).length(1);
     }
 
-    // Sparkline not Chart: 2x2 grid has no room for axis labels + legend.
-    // Full Chart lives on MemoryScreen.heapPanel (detail view, more space).
     private Element heapPanel(HeapSnapshot heap) {
         return panel("HEAP MEMORY",
                 column(
@@ -80,10 +78,6 @@ public final class OverviewScreen {
         ).rounded().borderColor(Theme.BORDER).padding(1);
     }
 
-    // Sparkline, not Chart — same space rationale as heapPanel() above.
-    // Sparkline's Y-axis label shows the raw data value, so the history is
-    // pre-rounded to whole percent here (cpu.history() itself stays
-    // tenths-of-a-percent for the text stat row's 1-decimal precision).
     private Element cpuPanel(CpuSnapshot cpu) {
         return panel("CPU",
                 column(

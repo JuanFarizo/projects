@@ -49,6 +49,11 @@
       <version>${tamboui.version}</version>
     </dependency>
     <dependency>
+      <groupId>com.github.mwiede</groupId>
+      <artifactId>jsch</artifactId>
+      <version>2.28.0</version>
+    </dependency>
+    <dependency>
       <groupId>dev.tamboui</groupId>
       <artifactId>tamboui-css</artifactId>
       <version>${tamboui.version}</version>

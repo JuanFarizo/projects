@@ -23,17 +23,12 @@ import static dev.tamboui.toolkit.Toolkit.*;
  */
 public final class ClassesScreen {
 
-    // Cap at biggest offenders — not a heap profiler (metrics.md non-goals).
+    // Cap at biggest offenders — not a heap profiler
     private static final int MAX_TABLE_ROWS = 30;
 
-    // Sparkline preferredSize() under-reports height, and a wrapping Column
-    // sums it instead of honoring .length() — both need it set explicitly.
     private static final int METASPACE_SPARKLINE_HEIGHT = 10;
     private static final int LOADED_SPARKLINE_HEIGHT = 4;
-    // statRow + chart + ratio line, plus border/padding — same formula as
-    // MemoryScreen.SIDE_PANEL_HEIGHT.
     private static final int SIDE_PANEL_HEIGHT = METASPACE_SPARKLINE_HEIGHT + 8;
-
     private static final double HIGH_UTILIZATION_WARN_RATIO = 0.85;
 
     private final MetricsSource metricsSource;
@@ -78,8 +73,6 @@ public final class ClassesScreen {
         ).id("classes-screen");
     }
 
-    // DualSparkline, not Chart — see metrics.md's Classes/Metaspace Display note.
-    // Wider than classLoadingPanel (fill(2) vs fill(1)) — metaspace is the primary signal.
     private Element metaspacePanel(ClassesSnapshot classes) {
         Element usedChart = dualSparkline(classes.usedHistory(), classes.committedHistory())
                 .topStyle(Style.EMPTY.fg(Theme.ACCENT).bold()).bottomColor(Theme.TEXT_SECONDARY)

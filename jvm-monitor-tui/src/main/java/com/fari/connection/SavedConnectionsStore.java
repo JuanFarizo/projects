@@ -16,8 +16,8 @@ import java.util.UUID;
  * docs/specs/architecture.md's "Saved-connection persistence" section.
  * <p>
  * No JSON library dependency — the file is a flat array of flat objects with
- * five known fields, narrow enough that a hand-rolled reader/writer is
- * lighter than pulling in Jackson/Gson for it (pillar 2).
+ * a fixed set of known fields, narrow enough that a hand-rolled reader/writer
+ * is lighter than pulling in Jackson/Gson for it (pillar 2).
  */
 public final class SavedConnectionsStore {
 
@@ -102,7 +102,10 @@ public final class SavedConnectionsStore {
                 sb.append("\"host\":").append(quote(c.host())).append(',');
                 sb.append("\"port\":").append(c.port()).append(',');
                 sb.append("\"username\":").append(quote(c.username())).append(',');
-                sb.append("\"method\":").append(quote(c.method()));
+                sb.append("\"method\":").append(quote(c.method())).append(',');
+                sb.append("\"sshPort\":").append(c.sshPort()).append(',');
+                sb.append("\"sshKeyPath\":").append(quote(c.sshKeyPath())).append(',');
+                sb.append("\"rmiPort\":").append(c.rmiPort());
                 sb.append('}');
                 if (i < connections.size() - 1) {
                     sb.append(',');
@@ -174,7 +177,10 @@ public final class SavedConnectionsStore {
             int port = ((Number) obj.getOrDefault("port", 0)).intValue();
             String username = (String) obj.getOrDefault("username", "");
             String method = (String) obj.getOrDefault("method", SavedConnection.METHOD_DIRECT_REMOTE_JMX);
-            return new SavedConnection(id, alias, host, port, username, method);
+            int sshPort = ((Number) obj.getOrDefault("sshPort", 0)).intValue();
+            String sshKeyPath = (String) obj.getOrDefault("sshKeyPath", "");
+            int rmiPort = ((Number) obj.getOrDefault("rmiPort", 0)).intValue();
+            return new SavedConnection(id, alias, host, port, username, method, sshPort, sshKeyPath, rmiPort);
         }
 
         private static final class Scanner {

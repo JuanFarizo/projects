@@ -12,6 +12,7 @@ import dev.tamboui.widgets.barchart.Bar;
 import dev.tamboui.widgets.table.Row;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Locale;
 
 import static dev.tamboui.toolkit.Toolkit.*;
@@ -71,8 +72,7 @@ public final class ThreadsScreen {
         int gapLine = 1;
         int countsRowHeight = 2;
 
-        // Horizontal, not vertical — see MemoryScreen.nonHeapPanel()'s comment:
-        // vertical bars truncate labels to 1 column ("RUNNABLE" -> "R").
+        // Vertical bars truncate labels to 1 column ("RUNNABLE" -> "R").
         return panel("STATE BREAKDOWN",
                 column(
                         threadCountsRow(threads),
@@ -117,8 +117,7 @@ public final class ThreadsScreen {
         for (ThreadCpuStat stat : threads.topCpuThreads()) {
             Row row = Row.from(String.valueOf(rank), stat.name(), stat.state().name(),
                     formatCpuTime(stat.cpuTimeNanos()));
-            // No row-divider primitive in TableElement — zebra-stripe alternate
-            // rows instead, same "scannable" effect without one.
+            // No row-divider primitive in TableElement — zebra-stripe alternate rows
             if (rank % 2 == 0) {
                 row = row.style(Style.EMPTY.bg(Theme.ROW_ALT));
             }
@@ -135,7 +134,7 @@ public final class ThreadsScreen {
 
     private Element deadlockPanel(ThreadSnapshot threads) {
         var deadlocked = threads.deadlockedThreads();
-        var lines = new java.util.ArrayList<Element>();
+        var lines = new ArrayList<Element>();
         lines.add(text(" DEADLOCK DETECTED: " + deadlocked.size() + " threads").fg(Theme.STATUS_BAD).bold());
         for (DeadlockedThread dt : deadlocked) {
             String lock = dt.lockClassName() != null ? dt.lockClassName() : "unknown lock";

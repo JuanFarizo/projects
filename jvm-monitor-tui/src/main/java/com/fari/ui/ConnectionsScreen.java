@@ -222,13 +222,13 @@ public final class ConnectionsScreen {
             return text("No saved connections yet — press n to add one.").fg(Theme.TEXT_MUTED);
         }
         var rows = savedConnections.stream()
-                .map(c -> Row.from(c.alias(), c.host() + ":" + c.port()))
+                .map(c -> Row.from(c.alias(), c.host() + ":" + c.port(), c.isSshTunnel() ? "SSH" : "JMX"))
                 .toList();
         return table()
-                .header(Row.from("Alias", "Host:Port"))
+                .header(Row.from("Alias", "Host:Port", "Via"))
                 .rows(rows)
                 .state(remoteTableState)
-                .widths(percent(30), fill())
+                .widths(percent(30), fill(), percent(15))
                 .highlightColor(Theme.ACCENT);
     }
 

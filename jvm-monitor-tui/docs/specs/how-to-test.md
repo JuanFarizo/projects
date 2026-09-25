@@ -18,7 +18,7 @@ Two terminals: one runs the target JVM, the other runs the monitor.
 
 **Terminal 1 — target JVM:**
 ```bash
-cd /Users/juan.farizo/Documents/projects/jvm-monitor-tui
+cd /path/to/jvm-monitor-tui
 mvn -q test-compile
 java -cp target/test-classes \
   -Dcom.sun.management.jmxremote \
@@ -32,12 +32,11 @@ java -cp target/test-classes \
 
 **Terminal 2 — the monitor:**
 ```bash
-cd /Users/juan.farizo/Documents/projects/jvm-monitor-tui
+cd /path/to/jvm-monitor-tui
 mvn -q compile exec:java
 ```
 Press `n` (Add Remote). Alias: anything. Host: `127.0.0.1`. Port: `9010`.
-Leave Auth = None. Enter through the fields to submit — should land on
-Overview showing SleepyMain's metrics.
+Leave Auth = None.
 
 ### With auth
 

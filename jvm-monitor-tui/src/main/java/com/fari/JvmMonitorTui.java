@@ -4,9 +4,11 @@ import com.fari.connection.ConnectionException;
 import com.fari.connection.LocalAttachConnection;
 import com.fari.connection.LocalProcessInfo;
 import com.fari.connection.ProcessDiscovery;
+import com.fari.connection.ConnectionHandle;
 import com.fari.connection.RemoteJmxConnection;
 import com.fari.connection.SavedConnection;
 import com.fari.connection.SavedConnectionsStore;
+import com.fari.connection.SshTunnelConnection;
 import com.fari.metrics.DeadlockedThread;
 import com.fari.metrics.JmxPollingMetricsSource;
 import com.fari.metrics.MetricsSource;
@@ -142,8 +144,7 @@ public class JvmMonitorTui extends ToolkitApp {
     }
 
     // Same legend style as globalFooter, scoped to what the Connections
-    // screen's two panels actually support (no "you are here" highlighting —
-    // nothing here represents a screen to navigate to).
+    // screen's two panels actually support
     private Element connectionsFooter() {
         return row(
                 key("[enter]", false), label("connect", false),
@@ -157,7 +158,7 @@ public class JvmMonitorTui extends ToolkitApp {
         ).length(1);
     }
 
-    // Highlights the entry matching currentScreen ("you are here").
+    // Highlights the entry matching currentScreen
     private static Element key(String k, boolean active) {
         return active
                 ? text(k).fg(Theme.ACCENT).bold()
@@ -354,12 +355,19 @@ public class JvmMonitorTui extends ToolkitApp {
         });
     }
 
+    // SSH tunnel reconnect always goes through the full Add Remote form — the
+    // small inline username/password prompt below only fits the direct-JMX
+    // shape (it can't collect an SSH port, key path, or key passphrase).
     private void confirmSelectedSaved() {
         var saved = connectionsScreen.selectedSaved();
         if (saved == null) {
             return;
         }
-        if (saved.hasAuth()) {
+        if (saved.isSshTunnel()) {
+            addRemoteScreen.startReconnect(saved);
+            connectError = null;
+            currentScreen = Screen.ADD_REMOTE;
+        } else if (saved.hasAuth()) {
             connectionsScreen.startReconnectPrompt(saved);
         } else {
             connectToRemote(saved.alias(), saved.host(), saved.port(), null, null);
@@ -417,6 +425,16 @@ public class JvmMonitorTui extends ToolkitApp {
             addRemoteScreen.toggleAuth();
             return EventResult.HANDLED;
         }
+        if (addRemoteScreen.focused() == AddRemoteDialogScreen.Field.METHOD
+                && (event.isLeft() || event.isRight())) {
+            addRemoteScreen.toggleMethod();
+            return EventResult.HANDLED;
+        }
+        if (addRemoteScreen.focused() == AddRemoteDialogScreen.Field.SSH_AUTH_TYPE
+                && (event.isLeft() || event.isRight())) {
+            addRemoteScreen.toggleSshAuthType();
+            return EventResult.HANDLED;
+        }
         if (event.isDeleteBackward()) {
             addRemoteScreen.handleBackspace();
             return EventResult.HANDLED;
@@ -427,7 +445,7 @@ public class JvmMonitorTui extends ToolkitApp {
                 if (addRemoteScreen.isEditMode()) {
                     addRemoteScreen.submit(this::updateSavedConnection);
                 } else {
-                    addRemoteScreen.submit(this::connectToRemote);
+                    addRemoteScreen.submit(this::connectFromRequest);
                 }
             } else {
                 addRemoteScreen.focusNext();
@@ -444,11 +462,12 @@ public class JvmMonitorTui extends ToolkitApp {
 
     // Edit path: persists the metadata change directly, no live connect
     // attempt (unlike Add, which connects first and saves as a side effect).
-    private void updateSavedConnection(String alias, String host, int port, String username, String password) {
+    private void updateSavedConnection(AddRemoteDialogScreen.ConnectRequest request) {
         String editId = addRemoteScreen.editId();
         CompletableFuture.runAsync(() -> {
-            String savedUsername = (username != null && !username.isBlank()) ? username : "";
-            var updatedConn = new SavedConnection(editId, alias, host, port, savedUsername, SavedConnection.METHOD_DIRECT_REMOTE_JMX);
+            String savedUsername = (request.username() != null && !request.username().isBlank()) ? request.username() : "";
+            var updatedConn = new SavedConnection(editId, request.alias(), request.host(), request.port(), savedUsername,
+                    request.method(), request.sshPort(), request.sshKeyPath() != null ? request.sshKeyPath() : "", request.rmiPort());
             var path = SavedConnectionsStore.defaultPath();
             var updated = SavedConnectionsStore.update(SavedConnectionsStore.load(path), updatedConn);
             SavedConnectionsStore.save(path, updated);
@@ -508,9 +527,35 @@ public class JvmMonitorTui extends ToolkitApp {
     }
 
     private void connectToRemote(String alias, String host, int port, String username, String password) {
+        connectAndSave(() -> new RemoteJmxConnection(host, port, username, password, alias),
+                new SavedConnection(alias, host, port, (username != null && !username.isBlank()) ? username : "",
+                        SavedConnection.METHOD_DIRECT_REMOTE_JMX));
+    }
+
+    // Add Remote form submit — dispatches to the ConnectionHandle impl for
+    // the chosen method (only two dispatch sites exist today: this switch
+    // and updateSavedConnection's metadata-only persistence, see
+    // docs/specs/architecture.md's Connection Layer section).
+    private void connectFromRequest(AddRemoteDialogScreen.ConnectRequest request) {
+        String savedUsername = (request.username() != null && !request.username().isBlank()) ? request.username() : "";
+        SavedConnection toSave = switch (request.method()) {
+            case SavedConnection.METHOD_SSH_TUNNEL -> new SavedConnection(request.alias(), request.host(), request.port(),
+                    savedUsername, request.method(), request.sshPort(),
+                    request.sshKeyPath() != null ? request.sshKeyPath() : "", request.rmiPort());
+            default -> new SavedConnection(request.alias(), request.host(), request.port(), savedUsername, request.method());
+        };
+        connectAndSave(() -> switch (request.method()) {
+            case SavedConnection.METHOD_SSH_TUNNEL -> new SshTunnelConnection(request.host(), request.sshPort(),
+                    request.username(), request.password(), request.sshKeyPath(), request.sshPassphrase(),
+                    request.port(), request.rmiPort(), request.alias());
+            default -> new RemoteJmxConnection(request.host(), request.port(), request.username(), request.password(), request.alias());
+        }, toSave);
+    }
+
+    private void connectAndSave(java.util.function.Supplier<ConnectionHandle> connector, SavedConnection toSave) {
         CompletableFuture.runAsync(() -> {
             try {
-                var connection = new RemoteJmxConnection(host, port, username, password, alias);
+                var connection = connector.get();
                 var source = new JmxPollingMetricsSource();
                 source.start(connection);
                 metricsSource = source;
@@ -522,10 +567,8 @@ public class JvmMonitorTui extends ToolkitApp {
                 connectError = null;
                 currentScreen = Screen.OVERVIEW;
 
-                String savedUsername = (username != null && !username.isBlank()) ? username : "";
-                var saved = new SavedConnection(alias, host, port, savedUsername, SavedConnection.METHOD_DIRECT_REMOTE_JMX);
                 var path = SavedConnectionsStore.defaultPath();
-                var updated = SavedConnectionsStore.upsert(SavedConnectionsStore.load(path), saved);
+                var updated = SavedConnectionsStore.upsert(SavedConnectionsStore.load(path), toSave);
                 SavedConnectionsStore.save(path, updated);
                 connectionsScreen.setSavedConnections(updated);
             } catch (ConnectionException e) {

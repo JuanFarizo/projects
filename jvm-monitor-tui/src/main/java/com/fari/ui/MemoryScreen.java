@@ -22,11 +22,7 @@ import static dev.tamboui.toolkit.Toolkit.*;
  */
 public final class MemoryScreen {
 
-    // DualSparkline/BarChart both under-report their own preferredSize(), and
-    // Column.preferredSize() sums children's preferredSize() rather than
-    // honoring their explicit constraint() — so an unconstrained wrapping
-    // Column silently under-sizes itself and Panel gives it a too-small Rect.
-    // Fix: give the leaf AND its wrapping Column an explicit .length().
+    // Column explicit .length().
     private static final int HEAP_SPARKLINE_HEIGHT = 12;
     private static final int BUFFER_SPARKLINE_HEIGHT = 8;
     private static final int SIDE_PANEL_HEIGHT = HEAP_SPARKLINE_HEIGHT + 6;
@@ -34,7 +30,7 @@ public final class MemoryScreen {
     // Above this ratio-to-ceiling, a pool is close enough to its cap to flag.
     private static final double HIGH_UTILIZATION_WARN_RATIO = 0.85;
 
-    // Named so barsHeight below reads as a formula, not a magic number.
+    // Named so barsHeight below reads as a formula.
     private static final int NON_HEAP_BAR_COUNT = 5;
     private static final int NON_HEAP_BAR_GAP = 1;
 
@@ -64,8 +60,6 @@ public final class MemoryScreen {
         ).id("memory-screen");
     }
 
-    // DualSparkline, not Chart (see metrics.md). Auto-scaled, not pinned to
-    // heap.max() — pinning flattened the line under light load.
     private Element heapPanel(HeapSnapshot heap) {
         Element sparkline = dualSparkline(heap.usedHistory(), heap.committedHistory())
                 .topStyle(Style.EMPTY.fg(Theme.ACCENT).bold()).bottomColor(Theme.TEXT_SECONDARY)
@@ -113,8 +107,6 @@ public final class MemoryScreen {
                 .barColor(Theme.ACCENT)
                 .labelStyle(Style.EMPTY.fg(Theme.TEXT_MUTED))
                 .valueStyle(Style.EMPTY.fg(Theme.TEXT_SECONDARY))
-                // Explicit: BarChart's preferredSize() ignores barGap,
-                // under-reporting height and clipping the last bars.
                 .length(barsHeight);
 
         return panel("NON-HEAP & POOLS",
