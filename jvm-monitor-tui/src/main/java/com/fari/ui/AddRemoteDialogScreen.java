@@ -1,5 +1,6 @@
 package com.fari.ui;
 
+import com.fari.connection.SavedConnection;
 import dev.tamboui.toolkit.element.Element;
 
 import static dev.tamboui.toolkit.Toolkit.*;
@@ -11,6 +12,9 @@ import java.util.ArrayList;
  * pass). Hand-rolled keyboard-driven form matching this codebase's existing
  * manual-dispatch convention (ConnectionsScreen's up/down+TableState), not
  * TamboUI's FormElement/FocusManager subsystem.
+ * <p>
+ * Doubles as the edit form for a saved connection ({@link #startEdit}) —
+ * same fields, password always starts blank since it's never persisted.
  */
 public final class AddRemoteDialogScreen {
 
@@ -24,6 +28,8 @@ public final class AddRemoteDialogScreen {
     private String username = "";
     private String password = "";
     private String validationError;
+    private boolean editMode = false;
+    private String editId;
 
     public void reset() {
         focused = Field.ALIAS;
@@ -34,6 +40,30 @@ public final class AddRemoteDialogScreen {
         username = "";
         password = "";
         validationError = null;
+        editMode = false;
+        editId = null;
+    }
+
+    /** Prefills the form from an existing saved connection; password stays blank (never persisted). */
+    public void startEdit(SavedConnection existing) {
+        focused = Field.ALIAS;
+        alias = existing.alias();
+        host = existing.host();
+        port = String.valueOf(existing.port());
+        useAuth = existing.hasAuth();
+        username = existing.username();
+        password = "";
+        validationError = null;
+        editMode = true;
+        editId = existing.id();
+    }
+
+    public boolean isEditMode() {
+        return editMode;
+    }
+
+    public String editId() {
+        return editId;
     }
 
     public Field focused() {
@@ -142,7 +172,12 @@ public final class AddRemoteDialogScreen {
         callback.submit(alias, host, portValue, useAuth ? username : null, useAuth ? password : null);
     }
 
-    public Element render() {
+    /**
+     * @param connectError last connection-attempt failure (from the caller's
+     *                      submit callback), or null. Shown only when there's
+     *                      no local validation error, so the two never overlap.
+     */
+    public Element render(String connectError) {
         var rows = new ArrayList<Element>();
         rows.add(textRow("Alias", alias, focused == Field.ALIAS));
         rows.add(textRow("Host", host, focused == Field.HOST));
@@ -154,12 +189,13 @@ public final class AddRemoteDialogScreen {
             rows.add(maskedRow("Password", password, focused == Field.PASSWORD));
         }
         rows.add(fieldRow("SSL/TLS", "[ ] not yet supported"));
-        if (validationError != null) {
-            rows.add(row(text("  " + validationError).fg(Theme.STATUS_BAD)));
+        String errorToShow = validationError != null ? validationError : connectError;
+        if (errorToShow != null) {
+            rows.add(row(text("  " + errorToShow).fg(Theme.STATUS_BAD)));
         }
 
         return dialog(rows.toArray(Element[]::new))
-                .title("ADD REMOTE CONNECTION")
+                .title(editMode ? "EDIT REMOTE CONNECTION" : "ADD REMOTE CONNECTION")
                 .rounded()
                 .borderColor(Theme.ACCENT)
                 .width(46)

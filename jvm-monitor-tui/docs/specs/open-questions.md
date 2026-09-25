@@ -16,25 +16,6 @@ packages); these remain open:
   (Connections → Overview → disconnect). If the app ever needs to monitor
   multiple JVMs concurrently (e.g. a multi-pane view), the poll-thread-per-
   connection model needs revisiting for thread/resource limits.
-- **Classes/Metaspace per-class table JMX feasibility — RESOLVED.** Verified
-  live against a running JDK 25 process: `com.sun.management:type=
-  DiagnosticCommand` (not `DiagnosticCommandMBean` — that ObjectName doesn't
-  exist; corrected here) exposes `gcClassHistogram`, reachable over the same
-  `MBeanServerConnection` every other metric already uses, no extra JVM
-  flags. It returns per-class instance count + byte size as a plain
-  `java.lang.String` text report (`jmap -histo` format), not a typed JMX open
-  type — no loader field, no per-class "details" of any kind. Resolution
-  recorded in [metrics.md](metrics.md)'s Classes/Metaspace section: name +
-  instances + bytes only, on-demand (not polled), HotSpot-family-only
-  parser, degrades gracefully on other vendors/formats. GraalVM native-image
-  feasibility for this specific MBean call is still unresearched, same as
-  the rest of the JMX surface — see known risk #4.
-  (Considered and rejected: `com.sun.tools.attach.VirtualMachine`'s
-  `heapHisto()` — same data, but only reachable via the JDK-internal
-  `sun.tools.attach.HotSpotVirtualMachine` class, confirmed live to require
-  `--add-exports jdk.attach/sun.tools.attach=ALL-UNNAMED` even via
-  reflection (`InaccessibleObjectException` without it) — an extra
-  packaging/native-image burden the JMX MBean path doesn't have.)
 
 ## Known risks / backlog
 

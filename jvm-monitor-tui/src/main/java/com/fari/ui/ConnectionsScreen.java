@@ -33,6 +33,10 @@ public final class ConnectionsScreen {
     private String promptPassword = "";
     private PromptField promptFocused = PromptField.USERNAME;
 
+    // Inline delete confirmation — same shape as the reconnect prompt above.
+    private boolean confirmingDelete = false;
+    private SavedConnection deleteTarget;
+
     public void setProcesses(List<LocalProcessInfo> processes) {
         this.processes = processes;
         if (tableState.selected() == null && !processes.isEmpty()) {
@@ -150,6 +154,26 @@ public final class ConnectionsScreen {
         return s.isEmpty() ? s : s.substring(0, s.length() - 1);
     }
 
+    // ==================== Delete confirmation ====================
+
+    public boolean isConfirmingDelete() {
+        return confirmingDelete;
+    }
+
+    public void startDeleteConfirm(SavedConnection target) {
+        confirmingDelete = true;
+        deleteTarget = target;
+    }
+
+    public void cancelDeleteConfirm() {
+        confirmingDelete = false;
+        deleteTarget = null;
+    }
+
+    public SavedConnection deleteTarget() {
+        return deleteTarget;
+    }
+
     // ==================== Rendering ====================
 
     public Element render(String connectError) {
@@ -168,7 +192,9 @@ public final class ConnectionsScreen {
                 .rounded()
                 .borderColor(focusedPanel == Panel.PROCESSES ? Theme.ACCENT : Theme.BORDER);
 
-        Element remoteContent = prompting ? renderReconnectPrompt() : renderSavedConnectionsTable();
+        Element remoteContent = prompting ? renderReconnectPrompt()
+                : confirmingDelete ? renderDeleteConfirm()
+                : renderSavedConnectionsTable();
         var remotePanel = panel("SAVED REMOTE CONNECTIONS", remoteContent)
                 .rounded()
                 .borderColor(focusedPanel == Panel.REMOTES ? Theme.ACCENT : Theme.BORDER);
@@ -181,6 +207,14 @@ public final class ConnectionsScreen {
         }
 
         return column(elements.toArray(Element[]::new)).id("connections-screen");
+    }
+
+    private Element renderDeleteConfirm() {
+        String alias = deleteTarget != null ? deleteTarget.alias() : "";
+        return column(
+                text("  Delete " + alias + "?").fg(Theme.STATUS_BAD),
+                text("  y: confirm   n / esc: cancel").fg(Theme.TEXT_MUTED)
+        );
     }
 
     private Element renderSavedConnectionsTable() {

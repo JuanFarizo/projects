@@ -19,6 +19,7 @@ Any design choice that trades pillar 2 or 3 for convenience needs explicit justi
 - SSH + jcmd/jstat (no JMX).
 - Docker container JVM (local and remote host).
 - Saved remote connection profiles (alias, host, port, protocol, auth, SSL/TLS) — see [ui-view mock, screen 2](ui-view/jvm-monitor-tui-implementation-handoff.html).
+- Saved remote connections support edit and delete (Connections screen, saved-connections panel only — not local processes): `e` opens the Add Remote form prefilled for editing, `d` deletes after inline confirmation. Both act on the persisted profile only, never on an already-live connection session.
 
 ### Metrics
 Full catalog with status (implemented / approved / rejected / parked): [metrics.md](metrics.md).
@@ -51,6 +52,6 @@ Navigation: command-driven, keyboard-only, no mouse affordances, no persistent n
 ## Non-functional requirements
 - **Lightweight/performant, concretely:** not yet quantified (no startup-time or footprint target set). Fill in once there's something to measure.
 - **UI thread safety:** never block or mutate UI state off the render thread.
-- **Resilience:** a lost/unreachable connection (remote host drops, SSH tunnel dies, target JVM exits) must degrade the UI to a clear status, never crash the app.
+- **Resilience:** a lost/unreachable connection (remote host drops, SSH tunnel dies, target JVM exits) must degrade the UI to a clear status, never crash the app. A failed connection attempt (bad credentials, refused connection, etc.) must surface its error on the screen the user is actually looking at — e.g. inline in the Add/Edit Remote dialog while it's still open, not only after the dialog is dismissed — and must never discard what the user already typed.
 - **No unnecessary dependencies:** every new Maven dependency must be justified against pillar 2 before adding (mirrors [ui-dsl-api-choice.md](ui-dsl-api-choice.md)'s decision-log format).
 

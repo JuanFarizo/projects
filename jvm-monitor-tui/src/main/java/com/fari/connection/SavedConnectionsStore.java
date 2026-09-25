@@ -9,6 +9,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 /**
  * Reads/writes the saved-connection profiles JSON file described in
@@ -69,6 +70,25 @@ public final class SavedConnectionsStore {
         return result;
     }
 
+    /** Replaces the entry matching updated's id — the edit path, identity-keyed rather than dedupe-keyed. */
+    public static List<SavedConnection> update(List<SavedConnection> existing, SavedConnection updated) {
+        List<SavedConnection> result = new ArrayList<>(existing);
+        for (int i = 0; i < result.size(); i++) {
+            if (result.get(i).id().equals(updated.id())) {
+                result.set(i, updated);
+                return result;
+            }
+        }
+        result.add(updated);
+        return result;
+    }
+
+    public static List<SavedConnection> delete(List<SavedConnection> existing, String id) {
+        List<SavedConnection> result = new ArrayList<>(existing);
+        result.removeIf(c -> c.id().equals(id));
+        return result;
+    }
+
     /** Minimal hand-rolled JSON — scoped to this one array-of-flat-objects shape only. */
     private static final class Json {
 
@@ -77,6 +97,7 @@ public final class SavedConnectionsStore {
             for (int i = 0; i < connections.size(); i++) {
                 SavedConnection c = connections.get(i);
                 sb.append("  {");
+                sb.append("\"id\":").append(quote(c.id())).append(',');
                 sb.append("\"alias\":").append(quote(c.alias())).append(',');
                 sb.append("\"host\":").append(quote(c.host())).append(',');
                 sb.append("\"port\":").append(c.port()).append(',');
@@ -142,12 +163,18 @@ public final class SavedConnectionsStore {
         }
 
         private static SavedConnection toConnection(Map<String, Object> obj) {
+            // Entries written before the id field existed get one generated here;
+            // it's persisted back on the next save() (no separate migration step).
+            String id = (String) obj.get("id");
+            if (id == null || id.isBlank()) {
+                id = UUID.randomUUID().toString();
+            }
             String alias = (String) obj.getOrDefault("alias", "");
             String host = (String) obj.getOrDefault("host", "");
             int port = ((Number) obj.getOrDefault("port", 0)).intValue();
             String username = (String) obj.getOrDefault("username", "");
             String method = (String) obj.getOrDefault("method", SavedConnection.METHOD_DIRECT_REMOTE_JMX);
-            return new SavedConnection(alias, host, port, username, method);
+            return new SavedConnection(id, alias, host, port, username, method);
         }
 
         private static final class Scanner {

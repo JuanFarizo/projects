@@ -17,26 +17,22 @@ import java.util.concurrent.CompletableFuture;
 import static dev.tamboui.toolkit.Toolkit.*;
 
 /**
- * Classes / Metaspace detail: used/committed history + loaded/unloaded
- * counts, plus an on-demand class histogram table (name/instances/size).
- * The histogram is never polled — see MetricsSource.fetchClassHistogram()
- * and docs/specs/metrics.md's Classes/Metaspace section — so it starts
- * empty and is fetched only when the user presses refresh.
+ * Classes / Metaspace detail. Histogram is never polled (see
+ * MetricsSource.fetchClassHistogram()) — fetched only on refresh.
  * Reached from Overview via 'c'.
  */
 public final class ClassesScreen {
 
-    // Rendering more rows than this buys nothing for a monitor (not a heap
-    // profiler, see metrics.md's non-goals) and costs table layout time —
-    // capped at the biggest offenders, which is what the panel is for.
+    // Cap at biggest offenders — not a heap profiler (metrics.md non-goals).
     private static final int MAX_TABLE_ROWS = 30;
 
-    // DualSparkline/Sparkline under-report their own preferredSize(), and a
-    // wrapping Column sums children's (buggy) preferredSize() instead of
-    // honoring an explicit constraint — so both the leaf and its wrapping
-    // Column need an explicit .length() (see MemoryScreen for the same fix).
+    // Sparkline preferredSize() under-reports height, and a wrapping Column
+    // sums it instead of honoring .length() — both need it set explicitly.
     private static final int METASPACE_SPARKLINE_HEIGHT = 10;
     private static final int LOADED_SPARKLINE_HEIGHT = 4;
+    // statRow + chart + ratio line, plus border/padding — same formula as
+    // MemoryScreen.SIDE_PANEL_HEIGHT.
+    private static final int SIDE_PANEL_HEIGHT = METASPACE_SPARKLINE_HEIGHT + 8;
 
     private static final double HIGH_UTILIZATION_WARN_RATIO = 0.85;
 
@@ -77,38 +73,41 @@ public final class ClassesScreen {
         ClassesSnapshot classes = snapshot.classes();
         return column(
                 text(" CLASSES / METASPACE").fg(Theme.TEXT_PRIMARY).bold(),
-                metaspacePanel(classes),
+                row(metaspacePanel(classes), classLoadingPanel(classes)).spacing(1).length(SIDE_PANEL_HEIGHT),
                 loadedClassesPanel()
         ).id("classes-screen");
     }
 
-    // DualSparkline, not the full Chart this screen used before: the used/
-    // committed history over a fixed axis didn't give the JVM monitor user
-    // a signal the compact form doesn't already carry — see metrics.md's
-    // Classes/Metaspace Display note. Same widget shape as Overview's
-    // Heap/CPU panels, just at full screen width.
+    // DualSparkline, not Chart — see metrics.md's Classes/Metaspace Display note.
+    // Wider than classLoadingPanel (fill(2) vs fill(1)) — metaspace is the primary signal.
     private Element metaspacePanel(ClassesSnapshot classes) {
         Element usedChart = dualSparkline(classes.usedHistory(), classes.committedHistory())
                 .topStyle(Style.EMPTY.fg(Theme.ACCENT).bold()).bottomColor(Theme.TEXT_SECONDARY)
                 .showYAxis(true).xLabels("-40s", "now")
                 .length(METASPACE_SPARKLINE_HEIGHT);
 
-        Element loadedChart = sparkline(classes.loadedDeltaHistory())
-                .autoMax().color(Theme.ACCENT)
-                .showYAxis(true).xLabels("-40s", "now")
-                .length(LOADED_SPARKLINE_HEIGHT);
-
-        int contentHeight = METASPACE_SPARKLINE_HEIGHT + LOADED_SPARKLINE_HEIGHT + 7;
         return panel("METASPACE",
                 column(
                         statRow("Used", format(classes.used()), "Committed", format(classes.committed()),
                                 "Loaded", String.valueOf(classes.loaded()), "Unloaded", String.valueOf(classes.unloaded())),
                         usedChart,
-                        metaspaceRatioLine(classes),
-                        text(" Class loading (new classes/tick):").fg(Theme.TEXT_MUTED),
+                        metaspaceRatioLine(classes)
+                ).spacing(1).length(METASPACE_SPARKLINE_HEIGHT + 4)
+        ).rounded().borderColor(Theme.BORDER).padding(1).fill(2);
+    }
+
+    private Element classLoadingPanel(ClassesSnapshot classes) {
+        Element loadedChart = sparkline(classes.loadedDeltaHistory())
+                .autoMax().color(Theme.ACCENT)
+                .showYAxis(true).xLabels("-40s", "now")
+                .length(LOADED_SPARKLINE_HEIGHT);
+
+        return panel("CLASS LOADING",
+                column(
+                        text(" new classes/tick").fg(Theme.TEXT_MUTED),
                         loadedChart
-                ).spacing(1).length(contentHeight)
-        ).rounded().borderColor(Theme.BORDER).padding(1).length(contentHeight + 4);
+                ).spacing(1).length(LOADED_SPARKLINE_HEIGHT + 2)
+        ).rounded().borderColor(Theme.BORDER).padding(1).fill(1);
     }
 
     private static Element metaspaceRatioLine(ClassesSnapshot classes) {

@@ -40,13 +40,6 @@ public class JvmMonitorTui extends ToolkitApp {
 
     private volatile Screen currentScreen = Screen.CONNECTIONS;
     private volatile String connectError;
-    // Debug aid ('d' key): fakes a deadlock for exercising the banner/panel
-    // without a real one. Display-only, doesn't touch real metrics.
-    private volatile boolean deadlockDemo = false;
-    private static final List<DeadlockedThread> DEMO_DEADLOCK = List.of(
-            new DeadlockedThread(-1, "demo-worker-1", "java.lang.Object", "demo-worker-2"),
-            new DeadlockedThread(-2, "demo-worker-2", "java.lang.Object", "demo-worker-1")
-    );
     // Sorted IDs of the deadlock last dismissed with 'x'; banner stays hidden
     // until this set changes (new incident) or clears (resolved).
     private volatile long[] dismissedDeadlockIds = null;
@@ -84,7 +77,7 @@ public class JvmMonitorTui extends ToolkitApp {
     protected Element render() {
         Element content = switch (currentScreen) {
             case CONNECTIONS -> connectionsScreen.render(connectError);
-            case ADD_REMOTE -> addRemoteScreen.render();
+            case ADD_REMOTE -> addRemoteScreen.render(connectError);
             case OVERVIEW -> overviewScreen != null ? overviewScreen.render() : connectionsScreen.render(connectError);
             case MEMORY -> memoryScreen != null ? memoryScreen.render() : connectionsScreen.render(connectError);
             case THREADS -> threadsScreen != null ? threadsScreen.render() : connectionsScreen.render(connectError);
@@ -102,6 +95,8 @@ public class JvmMonitorTui extends ToolkitApp {
         // Footer is metrics-screen navigation — meaningless before a connection.
         if (metricsSource != null) {
             children.add(globalFooter());
+        } else if (currentScreen == Screen.CONNECTIONS) {
+            children.add(connectionsFooter());
         }
 
         return column(children.toArray(Element[]::new))
@@ -139,9 +134,24 @@ public class JvmMonitorTui extends ToolkitApp {
                 key("[m]", currentScreen == Screen.MEMORY), label("memory", currentScreen == Screen.MEMORY),
                 key("[t]", currentScreen == Screen.THREADS), label("threads", currentScreen == Screen.THREADS),
                 key("[g]", currentScreen == Screen.GC_LOG), label("gc log", currentScreen == Screen.GC_LOG),
-                key("[n]", currentScreen == Screen.ADD_REMOTE), label("add remote", currentScreen == Screen.ADD_REMOTE),
                 text(" |  ").fg(Theme.TEXT_MUTED),
                 key("[esc]", false), label("back", false),
+                key("[q]", false), label("quit", false),
+                spacer()
+        ).length(1);
+    }
+
+    // Same legend style as globalFooter, scoped to what the Connections
+    // screen's two panels actually support (no "you are here" highlighting —
+    // nothing here represents a screen to navigate to).
+    private Element connectionsFooter() {
+        return row(
+                key("[enter]", false), label("connect", false),
+                key("[n]", false), label("add", false),
+                key("[e]", false), label("edit", false),
+                key("[d]", false), label("delete", false),
+                key("[r]", false), label("refresh", false),
+                text(" |  ").fg(Theme.TEXT_MUTED),
                 key("[q]", false), label("quit", false),
                 spacer()
         ).length(1);
@@ -180,14 +190,12 @@ public class JvmMonitorTui extends ToolkitApp {
         ).length(1);
     }
 
-    // Real deadlocked threads, or the 'd' demo fake when there are none.
     private List<DeadlockedThread> currentDeadlockedThreads() {
         MetricsSource source = metricsSource;
         if (source == null) {
             return List.of();
         }
-        List<DeadlockedThread> threads = source.snapshot().threads().deadlockedThreads();
-        return threads.isEmpty() && deadlockDemo ? DEMO_DEADLOCK : threads;
+        return source.snapshot().threads().deadlockedThreads();
     }
 
     private static long[] deadlockedThreadIds(List<DeadlockedThread> threads) {
@@ -210,7 +218,7 @@ public class JvmMonitorTui extends ToolkitApp {
         // Global on every screen — jump straight to Connections/Overview
         // instead of backing out one level at a time. Suppressed while a
         // keyboard text field has focus (Add Remote form, saved-connection
-        // reconnect prompt) so typed letters like 'm'/'t'/'g'/'c'/'d'/'x'/'1'/'2'
+        // reconnect prompt) so typed letters like 'm'/'t'/'g'/'c'/'x'/'1'/'2'
         // reach the field instead of being swallowed as navigation shortcuts.
         boolean textEntryActive = currentScreen == Screen.ADD_REMOTE
                 || (currentScreen == Screen.CONNECTIONS && connectionsScreen.isPrompting());
@@ -226,12 +234,6 @@ public class JvmMonitorTui extends ToolkitApp {
             if (event.isChar('2')) {
                 if (metricsSource != null) {
                     currentScreen = Screen.OVERVIEW;
-                }
-                return EventResult.HANDLED;
-            }
-            if (event.isChar('d')) {
-                if (metricsSource != null) {
-                    deadlockDemo = !deadlockDemo;
                 }
                 return EventResult.HANDLED;
             }
@@ -277,6 +279,9 @@ public class JvmMonitorTui extends ToolkitApp {
         if (connectionsScreen.isPrompting()) {
             return handleReconnectPromptKey(event);
         }
+        if (connectionsScreen.isConfirmingDelete()) {
+            return handleDeleteConfirmKey(event);
+        }
         if (event.isUp()) {
             connectionsScreen.selectPrevious();
             return EventResult.HANDLED;
@@ -303,10 +308,50 @@ public class JvmMonitorTui extends ToolkitApp {
         }
         if (event.isChar('n')) {
             addRemoteScreen.reset();
+            connectError = null;
             currentScreen = Screen.ADD_REMOTE;
             return EventResult.HANDLED;
         }
+        if (event.isChar('e') && connectionsScreen.focusedPanel() == ConnectionsScreen.Panel.REMOTES) {
+            var saved = connectionsScreen.selectedSaved();
+            if (saved != null) {
+                addRemoteScreen.startEdit(saved);
+                connectError = null;
+                currentScreen = Screen.ADD_REMOTE;
+            }
+            return EventResult.HANDLED;
+        }
+        if (event.isChar('d') && connectionsScreen.focusedPanel() == ConnectionsScreen.Panel.REMOTES) {
+            var saved = connectionsScreen.selectedSaved();
+            if (saved != null) {
+                connectionsScreen.startDeleteConfirm(saved);
+            }
+            return EventResult.HANDLED;
+        }
         return EventResult.UNHANDLED;
+    }
+
+    private EventResult handleDeleteConfirmKey(KeyEvent event) {
+        if (event.isCancel() || event.isChar('n')) {
+            connectionsScreen.cancelDeleteConfirm();
+            return EventResult.HANDLED;
+        }
+        if (event.isConfirm() || event.isChar('y')) {
+            var target = connectionsScreen.deleteTarget();
+            connectionsScreen.cancelDeleteConfirm();
+            deleteSavedConnection(target);
+            return EventResult.HANDLED;
+        }
+        return EventResult.UNHANDLED;
+    }
+
+    private void deleteSavedConnection(SavedConnection target) {
+        CompletableFuture.runAsync(() -> {
+            var path = SavedConnectionsStore.defaultPath();
+            var updated = SavedConnectionsStore.delete(SavedConnectionsStore.load(path), target.id());
+            SavedConnectionsStore.save(path, updated);
+            connectionsScreen.setSavedConnections(updated);
+        });
     }
 
     private void confirmSelectedSaved() {
@@ -345,9 +390,9 @@ public class JvmMonitorTui extends ToolkitApp {
             }
             return EventResult.HANDLED;
         }
-        char c = event.character();
+        int c = event.codePoint();
         if (c >= 32 && c < 127) {
-            connectionsScreen.promptHandleChar(c);
+            connectionsScreen.promptHandleChar((char) c);
             return EventResult.HANDLED;
         }
         return EventResult.UNHANDLED;
@@ -355,6 +400,7 @@ public class JvmMonitorTui extends ToolkitApp {
 
     private EventResult handleAddRemoteKey(KeyEvent event) {
         if (event.isCancel()) {
+            connectError = null;
             currentScreen = Screen.CONNECTIONS;
             return EventResult.HANDLED;
         }
@@ -377,18 +423,38 @@ public class JvmMonitorTui extends ToolkitApp {
         }
         if (event.isConfirm()) {
             if (addRemoteScreen.isOnLastField()) {
-                addRemoteScreen.submit(this::connectToRemote);
+                connectError = null;
+                if (addRemoteScreen.isEditMode()) {
+                    addRemoteScreen.submit(this::updateSavedConnection);
+                } else {
+                    addRemoteScreen.submit(this::connectToRemote);
+                }
             } else {
                 addRemoteScreen.focusNext();
             }
             return EventResult.HANDLED;
         }
-        char c = event.character();
+        int c = event.codePoint();
         if (c >= 32 && c < 127) {
-            addRemoteScreen.handleChar(c);
+            addRemoteScreen.handleChar((char) c);
             return EventResult.HANDLED;
         }
         return EventResult.UNHANDLED;
+    }
+
+    // Edit path: persists the metadata change directly, no live connect
+    // attempt (unlike Add, which connects first and saves as a side effect).
+    private void updateSavedConnection(String alias, String host, int port, String username, String password) {
+        String editId = addRemoteScreen.editId();
+        CompletableFuture.runAsync(() -> {
+            String savedUsername = (username != null && !username.isBlank()) ? username : "";
+            var updatedConn = new SavedConnection(editId, alias, host, port, savedUsername, SavedConnection.METHOD_DIRECT_REMOTE_JMX);
+            var path = SavedConnectionsStore.defaultPath();
+            var updated = SavedConnectionsStore.update(SavedConnectionsStore.load(path), updatedConn);
+            SavedConnectionsStore.save(path, updated);
+            connectionsScreen.setSavedConnections(updated);
+            currentScreen = Screen.CONNECTIONS;
+        });
     }
 
     // m/t/g/c are now handled globally in handleKeyEvent() (any metrics screen

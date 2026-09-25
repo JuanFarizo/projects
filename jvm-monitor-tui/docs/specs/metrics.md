@@ -281,16 +281,24 @@ numbers next to each chart.
   this file's earlier Display-philosophy revision for this one panel: in
   practice the full-axis `Chart` wasn't adding a readable signal over the
   compact form, so it's demoted to the same treatment as Overview's Heap/CPU
-  panels, just at full screen width. Same `preferredSize()`-under-reports /
-  wrapping-`Column`-must-also-get-an-explicit-`.length()` fix as MemoryScreen's
-  sparklines applies here too — both the metaspace and loaded-class-delta
-  sparklines, and their wrapping `Column`, use explicit `.length()`.
+  panels. Same `preferredSize()`-under-reports / wrapping-`Column`-must-also-
+  get-an-explicit-`.length()` fix as MemoryScreen's sparklines applies here
+  too — both the metaspace and loaded-class-delta sparklines, and their
+  wrapping `Column`, use explicit `.length()`.
   Metaspace used/max/ratio shown as its own text line (bold+red above 85%
   utilization), same treatment as MemoryScreen's Code Cache line — usually
   reads "no limit" since `-XX:MaxMetaspaceSize` is rarely set.
+  **Display, revised:** the METASPACE panel (chart + stat row + ratio line) is
+  now `.fill(2)` of a 2-part row next to a new CLASS LOADING panel at
+  `.fill(1)` — same split as GC's pause-events/PAUSE STATS row above, for the
+  same reason: at full row width the chart's drawn columns are capped by its
+  40-sample history (`DualSparklineElement`/`Sparkline` render exactly one
+  column per sample and never stretch further, regardless of the area given —
+  a widget-level limit, not a layout one), so the untouched width past that
+  point was permanent dead space; the second panel puts it to use instead.
   Loaded-class-delta trend — plain `Sparkline` (single series, not `DualSparkline`
   — there's no paired second series here), labeled "new classes/tick" since an
-  unlabeled delta chart reads as ambiguous.
+  unlabeled delta chart reads as ambiguous, now in its own CLASS LOADING panel.
   Loaded Classes — `Table`, rows = top N by `#bytes` descending (fixed sort;
   no interactive sort/filter/search for v1 — the constraint is the underlying
   data source per the histogram note above, not the widget; revisiting this for
