@@ -20,4 +20,8 @@ Client flags: `-DsocksProxyHost=localhost -DsocksProxyPort=9696`.
 `ssh user@host jcmd <pid> GC.heap_info`. No JMX involved.
 
 ## 6. Docker, local
-`docker run -p 9010:9010 -p 9011:9011`, `java.rmi.server.hostname=<host IP>`.
+`docker run -p 9010:9010 -p 9011:9011 --label jvm-monitor.enabled=true`
+Target flags: `.rmi.port=9011` `-Djava.rmi.server.hostname=localhost`.
+
+No tunnel — discovery only. Discovery: Docker Engine API over the daemon's Unix socket (`DOCKER_HOST`-aware), filtered
+server-side to `label=jvm-monitor.enabled=true`.

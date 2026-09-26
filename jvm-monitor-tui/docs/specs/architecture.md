@@ -15,7 +15,8 @@ Each layer only depends on the one below it — UI depends on Metrics, Metrics d
 ### Connection Layer
 - Covers the methods in [jvm-connection-methods.md](jvm-connection-methods.md): local attach, direct remote JMX, SSH tunnel, SSH SOCKS, SSH+jcmd (no JMX), Docker.
 - The Metrics Layer must not care which transport is behind a given connection — exact interface shape not yet decided.
-- **SSH -L tunnel, implemented**: `com.fari.connection.SshTunnelConnection`, using `com.github.mwiede:jsch` (maintained JSch fork, pure Java, no native deps). Local port binds must match the target JVM's configured JMX/RMI ports exactly (see method 3's spec entry). Host key verification is strict against the user's own `~/.ssh/known_hosts` — no separate trust store, no disabled verification. Supports password or private-key-file SSH auth; does not cover JMX-level auth (`jmxremote.authenticate=true`) on top of the tunnel, same as method 2's optional auth layer but not wired through the SSH path yet.
+- **SSH -L tunnel**: using `com.github.mwiede:jsch` (maintained JSch fork, pure Java, no native deps). Local port binds must match the target JVM's configured JMX/RMI ports exactly. Host key verification is strict against the user's own `~/.ssh/known_hosts` — no separate trust store, no disabled verification. Supports password or private-key-file SSH auth; does not cover JMX-level auth (`jmxremote.authenticate=true`) on top of the tunnel.
+- **Docker, local**: discovers opted-in containers (label `jvm-monitor.enabled=true`) over the Docker Engine API and hands the host/port to the existing `RemoteJmxConnection` — no new `ConnectionHandle`. Parses the API response with `com.fari.connection.MinimalJson`.
 
 #### Saved-connection persistence
 - Format: JSON. One file, array of connection profiles (id, alias, host, port, username, connection method).
@@ -34,7 +35,7 @@ Each layer only depends on the one below it — UI depends on Metrics, Metrics d
 
 ### UI Layer
 - `dev.tamboui.toolkit.app.ToolkitApp`, retained-mode (`render()` returns declarative `Element` tree) — decision already made in [ui-dsl-api-choice.md](ui-dsl-api-choice.md).
-- Screens map 1:1 to [ui-view mock](ui-view/jvm-monitor-tui-implementation-handoff.html): Connections, Add Remote, Overview, Classes/Metaspace.
+- Screens map 1:1 to [ui-view mock](ui-view/jvm-monitor-tui-implementation-handoff.html): Connections, Add Remote, Overview, Classes/Metaspace. Docker discovery is a third panel on the Connections screen, not pictured in the mock.
 - Redraw driven by `TickEvent` (timer).
 
 ## Concurrency constraint

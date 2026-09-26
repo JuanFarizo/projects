@@ -1,6 +1,7 @@
 package com.fari.ui;
 
 import com.fari.connection.SavedConnection;
+import dev.tamboui.style.Overflow;
 import dev.tamboui.toolkit.element.Element;
 
 import static dev.tamboui.toolkit.Toolkit.*;
@@ -8,7 +9,7 @@ import static dev.tamboui.toolkit.Toolkit.*;
 import java.util.ArrayList;
 
 /**
- * Remote connect form — Direct Remote JMX (method 2) and SSH -L Tunnel
+ * Remote connect form — Direct Remote JMX and SSH -L Tunnel
  * Hand-rolled
  * keyboard-driven form matching this codebase's existing manual-dispatch
  * convention (ConnectionsScreen's up/down+TableState), not TamboUI's
@@ -342,7 +343,7 @@ public final class AddRemoteDialogScreen {
         }
         String errorToShow = validationError != null ? validationError : connectError;
         if (errorToShow != null) {
-            rows.add(row(text("  " + errorToShow).fg(Theme.STATUS_BAD)));
+            rows.add(row(text("  " + errorToShow).fg(Theme.STATUS_BAD).overflow(Overflow.WRAP_WORD)));
         }
 
         return dialog(rows.toArray(Element[]::new))

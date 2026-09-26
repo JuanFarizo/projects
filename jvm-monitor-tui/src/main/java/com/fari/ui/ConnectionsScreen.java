@@ -1,5 +1,6 @@
 package com.fari.ui;
 
+import com.fari.connection.DockerContainerInfo;
 import com.fari.connection.LocalProcessInfo;
 import com.fari.connection.SavedConnection;
 import dev.tamboui.toolkit.element.Element;
@@ -14,13 +15,15 @@ import static dev.tamboui.toolkit.Toolkit.*;
 /** Local JVM process picker + saved remote connections. */
 public final class ConnectionsScreen {
 
-    public enum Panel { PROCESSES, REMOTES }
+    public enum Panel { PROCESSES, DOCKER, REMOTES }
 
     public enum PromptField { USERNAME, PASSWORD }
 
     private final TableState tableState = new TableState();
+    private final TableState dockerTableState = new TableState();
     private final TableState remoteTableState = new TableState();
     private List<LocalProcessInfo> processes = List.of();
+    private List<DockerContainerInfo> dockerContainers = List.of();
     private List<SavedConnection> savedConnections = List.of();
     private Panel focusedPanel = Panel.PROCESSES;
 
@@ -51,31 +54,64 @@ public final class ConnectionsScreen {
         }
     }
 
+    public void setDockerContainers(List<DockerContainerInfo> dockerContainers) {
+        this.dockerContainers = dockerContainers;
+        if (dockerTableState.selected() == null && !dockerContainers.isEmpty()) {
+            dockerTableState.selectFirst();
+        }
+    }
+
     public Panel focusedPanel() {
         return focusedPanel;
     }
 
-    public void togglePanel() {
-        focusedPanel = focusedPanel == Panel.PROCESSES ? Panel.REMOTES : Panel.PROCESSES;
+    private static final Panel[] PANELS = Panel.values();
+
+    public void focusNext() {
+        focusedPanel = PANELS[(focusedPanel.ordinal() + 1) % PANELS.length];
+    }
+
+    public void focusPrevious() {
+        focusedPanel = PANELS[(focusedPanel.ordinal() - 1 + PANELS.length) % PANELS.length];
     }
 
     public void selectNext() {
-        if (focusedPanel == Panel.PROCESSES) {
-            if (!processes.isEmpty()) {
-                tableState.selectNext(processes.size());
+        switch (focusedPanel) {
+            case PROCESSES -> {
+                if (!processes.isEmpty()) {
+                    tableState.selectNext(processes.size());
+                }
             }
-        } else if (!savedConnections.isEmpty()) {
-            remoteTableState.selectNext(savedConnections.size());
+            case DOCKER -> {
+                if (!dockerContainers.isEmpty()) {
+                    dockerTableState.selectNext(dockerContainers.size());
+                }
+            }
+            case REMOTES -> {
+                if (!savedConnections.isEmpty()) {
+                    remoteTableState.selectNext(savedConnections.size());
+                }
+            }
         }
     }
 
     public void selectPrevious() {
-        if (focusedPanel == Panel.PROCESSES) {
-            if (!processes.isEmpty()) {
-                tableState.selectPrevious();
+        switch (focusedPanel) {
+            case PROCESSES -> {
+                if (!processes.isEmpty()) {
+                    tableState.selectPrevious();
+                }
             }
-        } else if (!savedConnections.isEmpty()) {
-            remoteTableState.selectPrevious();
+            case DOCKER -> {
+                if (!dockerContainers.isEmpty()) {
+                    dockerTableState.selectPrevious();
+                }
+            }
+            case REMOTES -> {
+                if (!savedConnections.isEmpty()) {
+                    remoteTableState.selectPrevious();
+                }
+            }
         }
     }
 
@@ -85,6 +121,14 @@ public final class ConnectionsScreen {
             return null;
         }
         return processes.get(index);
+    }
+
+    public DockerContainerInfo selectedDocker() {
+        Integer index = dockerTableState.selected();
+        if (index == null || index < 0 || index >= dockerContainers.size()) {
+            return null;
+        }
+        return dockerContainers.get(index);
     }
 
     public SavedConnection selectedSaved() {
@@ -192,6 +236,10 @@ public final class ConnectionsScreen {
                 .rounded()
                 .borderColor(focusedPanel == Panel.PROCESSES ? Theme.ACCENT : Theme.BORDER);
 
+        var dockerPanel = panel("DOCKER CONTAINERS", renderDockerTable())
+                .rounded()
+                .borderColor(focusedPanel == Panel.DOCKER ? Theme.ACCENT : Theme.BORDER);
+
         Element remoteContent = prompting ? renderReconnectPrompt()
                 : confirmingDelete ? renderDeleteConfirm()
                 : renderSavedConnectionsTable();
@@ -201,6 +249,7 @@ public final class ConnectionsScreen {
 
         List<Element> elements = new ArrayList<>();
         elements.add(localPanel);
+        elements.add(dockerPanel);
         elements.add(remotePanel);
         if (connectError != null) {
             elements.add(text("  " + connectError).fg(Theme.STATUS_BAD));
@@ -215,6 +264,28 @@ public final class ConnectionsScreen {
                 text("  Delete " + alias + "?").fg(Theme.STATUS_BAD),
                 text("  y: confirm   n / esc: cancel").fg(Theme.TEXT_MUTED)
         );
+    }
+
+    private Element renderDockerTable() {
+        if (dockerContainers.isEmpty()) {
+            return text("No containers labeled jvm-monitor.enabled=true found — press r to refresh.").fg(Theme.TEXT_MUTED);
+        }
+        var rows = dockerContainers.stream()
+                .map(c -> Row.from(c.name(), c.image(), formatPorts(c)))
+                .toList();
+        return table()
+                .header(Row.from("Name", "Image", "Ports"))
+                .rows(rows)
+                .state(dockerTableState)
+                .widths(percent(25), percent(35), fill())
+                .highlightColor(Theme.ACCENT);
+    }
+
+    private static String formatPorts(DockerContainerInfo c) {
+        return c.publishedTcpPorts().stream()
+                .map(String::valueOf)
+                .reduce((a, b) -> a + ", " + b)
+                .orElse("");
     }
 
     private Element renderSavedConnectionsTable() {

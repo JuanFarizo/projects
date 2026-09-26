@@ -1,6 +1,8 @@
 package com.fari;
 
 import com.fari.connection.ConnectionException;
+import com.fari.connection.DockerContainerInfo;
+import com.fari.connection.DockerDiscovery;
 import com.fari.connection.LocalAttachConnection;
 import com.fari.connection.LocalProcessInfo;
 import com.fari.connection.ProcessDiscovery;
@@ -58,6 +60,7 @@ public class JvmMonitorTui extends ToolkitApp {
     @Override
     protected void onStart() {
         refreshProcesses();
+        refreshDockerContainers();
         refreshSavedConnections();
     }
 
@@ -65,6 +68,18 @@ public class JvmMonitorTui extends ToolkitApp {
         CompletableFuture.runAsync(() -> {
             List<LocalProcessInfo> processes = ProcessDiscovery.listLocalJvms();
             connectionsScreen.setProcesses(processes);
+        });
+    }
+
+    private void refreshDockerContainers() {
+        CompletableFuture.runAsync(() -> {
+            try {
+                List<DockerContainerInfo> containers = DockerDiscovery.listContainers();
+                connectionsScreen.setDockerContainers(containers);
+                connectError = null;
+            } catch (ConnectionException e) {
+                connectError = e.getMessage();
+            }
         });
     }
 
@@ -291,20 +306,28 @@ public class JvmMonitorTui extends ToolkitApp {
             connectionsScreen.selectNext();
             return EventResult.HANDLED;
         }
-        if (event.isLeft() || event.isRight()) {
-            connectionsScreen.togglePanel();
+        if (event.isLeft()) {
+            connectionsScreen.focusPrevious();
+            return EventResult.HANDLED;
+        }
+        if (event.isRight()) {
+            connectionsScreen.focusNext();
             return EventResult.HANDLED;
         }
         if (event.isConfirm()) {
-            if (connectionsScreen.focusedPanel() == ConnectionsScreen.Panel.PROCESSES) {
-                connectToSelected();
-            } else {
-                confirmSelectedSaved();
+            switch (connectionsScreen.focusedPanel()) {
+                case PROCESSES -> connectToSelected();
+                case DOCKER -> connectToSelectedDocker();
+                case REMOTES -> confirmSelectedSaved();
             }
             return EventResult.HANDLED;
         }
         if (event.isChar('r')) {
-            refreshProcesses();
+            switch (connectionsScreen.focusedPanel()) {
+                case PROCESSES -> refreshProcesses();
+                case DOCKER -> refreshDockerContainers();
+                case REMOTES -> { /* saved connections load from disk, nothing to refresh */ }
+            }
             return EventResult.HANDLED;
         }
         if (event.isChar('n')) {
@@ -526,6 +549,32 @@ public class JvmMonitorTui extends ToolkitApp {
         });
     }
 
+    // Docker containers are discovered fresh each time, like local processes —
+    // connect directly, no saved-profile step (that's REMOTES's job).
+    private void connectToSelectedDocker() {
+        DockerContainerInfo container = connectionsScreen.selectedDocker();
+        if (container == null) {
+            return;
+        }
+        CompletableFuture.runAsync(() -> {
+            try {
+                var connection = new RemoteJmxConnection("localhost", container.registryPort(), null, null, container.name());
+                var source = new JmxPollingMetricsSource();
+                source.start(connection);
+                metricsSource = source;
+                overviewScreen = new OverviewScreen(source);
+                memoryScreen = new MemoryScreen(source);
+                threadsScreen = new ThreadsScreen(source);
+                gcLogScreen = new GcLogScreen(source);
+                classesScreen = new ClassesScreen(source);
+                connectError = null;
+                currentScreen = Screen.OVERVIEW;
+            } catch (ConnectionException e) {
+                connectError = e.getMessage();
+            }
+        });
+    }
+
     private void connectToRemote(String alias, String host, int port, String username, String password) {
         connectAndSave(() -> new RemoteJmxConnection(host, port, username, password, alias),
                 new SavedConnection(alias, host, port, (username != null && !username.isBlank()) ? username : "",
@@ -581,6 +630,7 @@ public class JvmMonitorTui extends ToolkitApp {
         releaseMetrics();
         currentScreen = Screen.CONNECTIONS;
         refreshProcesses();
+        refreshDockerContainers();
     }
 
     private void releaseMetrics() {

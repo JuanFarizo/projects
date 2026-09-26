@@ -40,7 +40,7 @@ public final class SshTunnelConnection implements ConnectionHandle {
         this.label = alias + " (ssh:" + host + ")";
         try {
             JSch jsch = new JSch();
-            jsch.setKnownHosts(Path.of(System.getProperty("user.home"), ".ssh", "known_hosts").toString());
+            jsch.setKnownHosts(Path.of(System.getProperty("user.home"), ".ssh", "known_hosts").toString());// TODO: This applies only to Mac/Linux?
             if (sshKeyPath != null && !sshKeyPath.isBlank()) {
                 jsch.addIdentity(sshKeyPath, blankToNull(sshKeyPassphrase));
             }

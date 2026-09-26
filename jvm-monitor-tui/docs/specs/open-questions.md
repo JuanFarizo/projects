@@ -69,7 +69,12 @@ now:
    confusing first-run experience (the monitor's own PID is always visible
    and selectable in its own process list). Worth a clearer inline message
    distinguishing "self-attach blocked" from other attach failures.
-8. `gcClassHistogram`'s text-report format has no documented stability
+8. Docker discovery only resolves the socket via `DOCKER_HOST` or the default
+   `/var/run/docker.sock` — rootless Docker's default path isn't auto-detected.
+9. Docker discovery's registry-port pick (`DockerContainerInfo.registryPort()`, the lowest
+   published TCP port) is a convention, not a guarantee — a reversed setup fails with a normal
+   RMI connect error, not silently wrong metrics, so no picker UI was built for it.
+10. `gcClassHistogram`'s text-report format has no documented stability
    contract — same undocumented-CLI-output status as `jstat`, whose own man
    page warns "don't write scripts to parse the jstat command's output
    because the format might change in future releases." Confirmed non-

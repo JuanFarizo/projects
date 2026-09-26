@@ -17,7 +17,7 @@ Any design choice that trades pillar 2 or 3 for convenience needs explicit justi
 - SSH -L tunnel.
 - SSH SOCKS proxy.
 - SSH + jcmd/jstat (no JMX).
-- Docker container JVM (local and remote host).
+- Docker container JVM — local daemon, remote Docker host out of current scope.
 - Saved remote connection profiles (alias, host, port, protocol, auth, SSL/TLS) — see [ui-view mock, screen 2](ui-view/jvm-monitor-tui-implementation-handoff.html).
 - Saved remote connections support edit and delete (Connections screen, saved-connections panel only — not local processes): `e` opens the Add Remote form prefilled for editing, `d` deletes after inline confirmation. Both act on the persisted profile only, never on an already-live connection session.
 

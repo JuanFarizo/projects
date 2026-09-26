@@ -69,6 +69,43 @@ java -cp target/test-classes \
 Auth to "Username & Password" (Left/Right on the Auth row), username
 `monitor`, password `secret123`.
 
+## Docker, local (connection method 6)
+
+Any container is fine as long as it publishes both ports and sets the JMX flags — no image
+rebuild needed, `JAVA_TOOL_OPTIONS` is picked up by a plain `java -jar`/`java -cp` entrypoint.
+Verified: `-Djava.rmi.server.hostname=localhost` works here because the monitor and the Docker
+daemon are the same machine — Docker's `-p` publish reaches the container via the host's own
+loopback too, no need to hunt for a LAN IP.
+
+**Terminal 1 — throwaway target container** (swap `my-app-image` for any real app image — the
+flags are all that matters):
+```bash
+docker run -d --name jmxtest -p 9010:9010 -p 9011:9011 \
+  --label jvm-monitor.enabled=true \
+  -e JAVA_TOOL_OPTIONS="-Dcom.sun.management.jmxremote \
+    -Dcom.sun.management.jmxremote.port=9010 \
+    -Dcom.sun.management.jmxremote.rmi.port=9011 \
+    -Djava.rmi.server.hostname=localhost \
+    -Dcom.sun.management.jmxremote.authenticate=false \
+    -Dcom.sun.management.jmxremote.ssl=false" \
+  my-app-image
+```
+
+**Terminal 2 — the monitor:**
+```bash
+mvn -q compile exec:java
+```
+Left/Right to the DOCKER CONTAINERS panel. The labeled container should appear; press `r` if it
+was already running before the monitor started. Enter connects.
+
+**Negative cases:**
+- A container *without* the label (e.g. `postgres`, `minio`) should never appear, even with 2+
+  published ports.
+- Labels are set at container creation and can't be edited in place: `docker rm -f jmxtest`,
+  recreate it with the same `docker run` command but *without* the `--label` flag, restart the
+  monitor, confirm it no longer appears in DOCKER CONTAINERS.
+- `docker rm -f jmxtest` when done.
+
 ### Checklist while you're in there
 
 - After a successful connect, back out to Connections (`1`) — the profile
@@ -80,8 +117,12 @@ Auth to "Username & Password" (Left/Right on the Auth row), username
 - Reconnecting a saved entry: the no-auth profile should reconnect
   immediately on Enter; the auth profile should show the inline
   username/password re-prompt instead.
-- Left/Right on the Connections screen switches focus between the local
-  processes panel and the saved remotes panel.
+- Left/Right on the Connections screen cycles focus through all three
+  panels — local processes, Docker containers, saved remotes.
+- A Docker connection never gets saved: after connecting to `jmxtest`, back
+  out to Connections (`1`) and confirm it does **not** appear under "SAVED
+  REMOTE CONNECTIONS" or in `connections.json` — unlike Direct Remote JMX
+  above, Docker rows are ephemeral/rediscovered, not persisted profiles.
 - Type an alias/host containing `m`, `t`, `g`, `c`, `d`, `x`, `1`, or `2`
   (the letters that double as global navigation shortcuts elsewhere in the
   app) into a text field — it should type normally, not get swallowed as a
