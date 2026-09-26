@@ -1,15 +1,18 @@
 package com.fari.connection;
 
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.net.StandardProtocolFamily;
 import java.net.URLEncoder;
 import java.net.UnixDomainSocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.channels.SocketChannel;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.AccessDeniedException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -22,12 +25,9 @@ import java.util.Map;
 public final class DockerDiscovery {
 
     private static final String DEFAULT_SOCKET_PATH = "/var/run/docker.sock";
+    private static final String OPT_IN_LABEL = "jvm-monitor.enabled=true";
 
-    /** Opt-in label — see docs/specs/jvm-connection-methods.md method 6 for why this exists. */
-    public static final String OPT_IN_LABEL = "jvm-monitor.enabled=true";
-
-    private DockerDiscovery() {
-    }
+    private DockerDiscovery() {}
 
     public static List<DockerContainerInfo> listContainers() {
         Path socketPath = resolveSocketPath();
@@ -99,10 +99,10 @@ public final class DockerDiscovery {
                 buf.clear();
             }
             return parseHttpResponse(raw.toString(StandardCharsets.UTF_8));
-        } catch (java.nio.file.AccessDeniedException e) {
+        } catch (AccessDeniedException e) {
             throw new ConnectionException("Can't read " + socketPath
                     + " — add your user to the docker group: sudo usermod -aG docker $USER (then log out/in).", e);
-        } catch (java.io.IOException e) {
+        } catch (IOException e) {
             if (e.getMessage() != null && e.getMessage().toLowerCase(java.util.Locale.ROOT).contains("permission denied")) {
                 throw new ConnectionException("Can't read " + socketPath
                         + " — add your user to the docker group: sudo usermod -aG docker $USER (then log out/in).", e);
@@ -124,7 +124,7 @@ public final class DockerDiscovery {
             throw new ConnectionException("Docker daemon returned an error: " + statusLine);
         }
 
-        boolean chunked = headers.toLowerCase(java.util.Locale.ROOT).contains("transfer-encoding: chunked");
+        boolean chunked = headers.toLowerCase(Locale.ROOT).contains("transfer-encoding: chunked");
         return chunked ? dechunk(body) : body;
     }
 
