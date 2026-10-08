@@ -2,17 +2,34 @@
 
 Terminal UI for monitoring JVM processes, local and remote.
 
-**Tech stack:** Java 25 · TamboUI 0.5.0-SNAPSHOT
+**Tech stack:** Java 25 · TamboUI 0.5.0-SNAPSHOT · JSch (SSH)
 
-## Features (pending)
+## Features
 
-- [ ] Local JVM attach and process list
-- [ ] Remote JMX connection (direct, SSH tunnel, SSH SOCKS proxy)
+**Connection methods** (see [docs/specs/jvm-connection-methods.md](docs/specs/jvm-connection-methods.md))
+
+- [x] Local attach and process list
+- [x] Direct remote JMX (optional username/password)
+- [x] SSH `-L` tunnel (password or key auth, strict `~/.ssh/known_hosts` check)
+- [x] Docker local containers (discovery via Docker Engine API, label `jvm-monitor.enabled=true`)
+- [x] Saved remote connections: add, edit, delete, reconnect. Secrets are never persisted.
+- [ ] SSH SOCKS proxy
 - [ ] SSH jcmd/jstat data source (no JMX)
-- [ ] Docker container JVM connection
-- [ ] Heap / GC metrics view
-- [ ] Thread view
-- [ ] Native image packaging
+
+**Screens**
+
+- [x] Connections: local processes, Docker containers, saved remotes
+- [x] Overview: Heap / CPU / GC / Threads grid + VM info
+- [x] Classes
+- [x] Memory
+- [x] Threads
+- [x] GC log
+
+**Packaging**
+
+- [ ] Native image (`native` Maven profile pending)
+
+Saved connections live in `~/.config/jvm-monitor-tui/connections.json`.
 
 ## Requirements
 
@@ -48,6 +65,10 @@ mvn clean -Pnative package -DskipTests
 >
 > The `native` Maven profile is not yet defined in `pom.xml` — pending.
 
+## Testing connection methods
+
+Manual recipes for remote JMX, SSH tunnel and Docker targets: [docs/specs/how-to-test.md](docs/specs/how-to-test.md).
+
 ## Setting Up Shell Access
 
 For quick access from any directory, set up an alias or add the binary to your PATH.
@@ -70,31 +91,37 @@ source ~/.zshrc
 
 ```
 com.fari
-  JvmMonitorTui.java             Entry point and ToolkitApp subclass — screen
+  JvmMonitorTui.java             Entry point and ToolkitApp subclass: screen
                                   switching, key routing, connect/disconnect flow
 
 com.fari.connection              Connection Layer (docs/specs/architecture.md)
   ConnectionHandle.java           Abstraction the Metrics Layer depends on
   LocalAttachConnection.java      VirtualMachine.attach + local JMX management agent
-  ProcessDiscovery.java           VirtualMachine.list() — no attach performed
-  LocalProcessInfo.java           PID + display name record
-  ConnectionException.java
+  RemoteJmxConnection.java        Direct remote JMX over RMI
+  SshTunnelConnection.java        SSH -L tunnel (JSch) + JMX
+  ProcessDiscovery.java           VirtualMachine.list(), no attach performed
+  DockerDiscovery.java            Docker Engine API over Unix socket (DOCKER_HOST-aware)
+  SavedConnection.java            Saved remote profile record
+  SavedConnectionsStore.java      connections.json persistence
+  MinimalJson.java                Tiny JSON parser (no extra dependency)
+  LocalProcessInfo.java / DockerContainerInfo.java / ConnectionException.java
 
-com.fari.metrics                 Metrics Layer — programmed to an abstraction,
-                                  JMX polling is the default (and only) implementation
+com.fari.metrics                 Metrics Layer, programmed to an abstraction;
+                                  JMX polling is the only implementation
   MetricsSource.java               start()/snapshot()/close()
   JmxPollingMetricsSource.java     background poll loop, volatile snapshot handoff
   MetricsSnapshot.java             top-level immutable snapshot record
-  HeapSnapshot.java / CpuSnapshot.java / GcSnapshot.java / GcCollectorStat.java
-  ThreadSnapshot.java / VmInfoSnapshot.java / ConnectionStatus.java
+  Heap/NonHeap/Cpu/Gc/Thread/Classes/Buffers/VmInfo snapshots, GC pause events,
+  class histogram parser, deadlocked-thread info (see docs/specs/metrics.md)
 
 com.fari.ui                      UI Layer (TamboUI ToolkitApp), one class per screen
-  ConnectionsScreen.java           local JVM picker (process/connection table)
-  AddRemoteDialogScreen.java       static shell only — no remote transports yet
+  ConnectionsScreen.java           local / Docker / saved-remote panels
+  AddRemoteDialogScreen.java       add, edit, reconnect remote dialog
   OverviewScreen.java              2x2 Heap/CPU/GC/Threads grid + VM Info strip
+  ClassesScreen / MemoryScreen / ThreadsScreen / GcLogScreen
   Theme.java                       color palette constants from the design mock
 
 docs/specs/                       Source of truth — read before changing behavior
-  requirements.md, architecture.md, jvm-connection-methods.md,
-  ui-dsl-api-choice.md, open-questions.md, ui-view/
+  requirements.md, architecture.md, jvm-connection-methods.md, metrics.md,
+  how-to-test.md, ui-dsl-api-choice.md, open-questions.md, ui-view/
 ```
