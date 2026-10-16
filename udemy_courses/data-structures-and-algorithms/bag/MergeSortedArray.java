@@ -5,7 +5,7 @@ public class MergeSortedArray {
     public static void main(String[] args) {
         int[] arr1 = {0, 3, 4, 31};
         int[] arr2 = {4, 6, 30};
-        int[] sol = mergeSortedArrays(arr1, arr2);
+        int[] sol = mergeSortedArrays(arr2, arr1);
         System.out.println("Primitive array solution");
         System.out.println(Arrays.toString(sol));
         mergeSortedArrStreamSol(arr1, arr2);
@@ -39,6 +39,11 @@ public class MergeSortedArray {
             indexSol++;
         }
 
+        AddRemainingItems(arr1, arr2, solution, indexSol, cursor1, cursor2);
+        return solution;
+    }
+
+    private static void AddRemainingItems(int[] arr1, int[] arr2, int[] solution, int indexSol, int cursor1, int cursor2) {
         if(cursor1 < arr1.length)
         {
             while(cursor1 < arr1.length)
@@ -50,14 +55,13 @@ public class MergeSortedArray {
         }
         else
         {
-            while(cursor2 < arr1.length)
+            while(cursor2 < arr2.length)
             {
-                solution[indexSol] = arr1[cursor2];
+                solution[indexSol] = arr2[cursor2];
                 cursor2++;
                 indexSol++;
             }
         }
-        return solution;
     }
 
 }
