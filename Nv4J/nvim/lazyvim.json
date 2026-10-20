@@ -5,9 +5,7 @@
     "lazyvim.plugins.extras.coding.blink",
     "lazyvim.plugins.extras.coding.mini-surround",
     "lazyvim.plugins.extras.dap.core",
-    "lazyvim.plugins.extras.formatting.prettier",
-    "lazyvim.plugins.extras.lang.java",
-    "lazyvim.plugins.extras.lang.typescript.vtsls"
+    "lazyvim.plugins.extras.lang.java"
   ],
   "install_version": 8,
   "news": {
