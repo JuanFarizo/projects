@@ -14,35 +14,51 @@ if [ ! -L "$HOME/.config/nv4j" ] || [ ! -d "$HOME/.config/nv4j" ]; then
   exit 2
 fi
 
-# Harness-side workaround (Task 4 owns the permanent fix): JDTLS needs JDK 25 and
-# the shell's `java` is a lazy-loading function, so pin JAVA_HOME here.
-if [ -z "${NV4J_JAVA_HOME:-}" ]; then
-  NV4J_JAVA_HOME="$(ls -d "$HOME"/Library/Java/JavaVirtualMachines/corretto-25*/Contents/Home 2>/dev/null | tail -1)"
-fi
-[ -x "$NV4J_JAVA_HOME/bin/java" ] || { echo "FATAL: JDK 25 not found" >&2; exit 2; }
-export JAVA_HOME="$NV4J_JAVA_HOME"
-export PATH="$JAVA_HOME/bin:$PATH"
+JVMS="$HOME/Library/Java/JavaVirtualMachines"
+find_jdk() { ls -d "$JVMS"/corretto-"$1"*/Contents/Home 2>/dev/null | sort -V | tail -1; }
 
+# The fixture build (mvn) needs a JDK 25 compiler. Used only for this one command; nvim below
+# must find JDK 25 by itself (nv4j.jdk), so JAVA_HOME is not exported to it.
+JDK25="$(find_jdk 25)"
+[ -x "$JDK25/bin/java" ] || { echo "FATAL: JDK 25 not found under $JVMS (needed to compile the fixture)" >&2; exit 2; }
 command -v mvn >/dev/null || { echo "FATAL: mvn not found on PATH" >&2; exit 2; }
-if ! mvn -q -f "$NV4J_FIXTURE/pom.xml" compile >>"$LOG" 2>&1; then
+if ! JAVA_HOME="$JDK25" mvn -q -f "$NV4J_FIXTURE/pom.xml" compile >>"$LOG" 2>&1; then
   echo "FATAL: fixture does not compile (see $LOG)" >&2
   exit 2
 fi
 
+# nvim environment: JAVA_HOME scrubbed; the `java` first on PATH is a JDK of NV4J_PATH_JDK
+# (default 21, the hostile case). Set NV4J_PATH_JDK=25 for the friendly case.
+unset JAVA_HOME
+PATH_JDK="$(find_jdk "${NV4J_PATH_JDK:-21}")"
+[ -x "$PATH_JDK/bin/java" ] || { echo "FATAL: JDK ${NV4J_PATH_JDK:-21} not found under $JVMS" >&2; exit 2; }
+export PATH="$PATH_JDK/bin:$PATH"
+echo "env: java on PATH = $("$PATH_JDK/bin/java" -version 2>&1 | head -1), JAVA_HOME unset" | tee -a "$LOG"
+
 export NVIM_APPNAME=nv4j
 
 # Setup (idempotent): headless runs never reach Mason's ensure_installed, so install jdtls into
-# nv4j's own mason dir if missing. Waits up to 5 min, fails loudly.
-MASON_JDTLS="$(nvim --headless -c 'lua io.stdout:write(vim.fn.stdpath("data").."/mason/bin/jdtls")' -c qa 2>&1)"
+# nv4j's own mason dir if missing. Stops as soon as the install finishes or fails (5 min cap).
+# A previous aborted install can leave stale "already linked" links: clean them and retry once.
+MASON_DIR="$(nvim --headless -c 'lua io.stdout:write(vim.fn.stdpath("data").."/mason")' -c qa 2>&1)"
+MASON_JDTLS="$MASON_DIR/bin/jdtls"
+mason_install() {
+  nvim --headless "+Lazy! load mason.nvim" "+lua _G.__t0 = vim.uv.hrtime()" "+MasonInstall jdtls" \
+    "+lua vim.wait(300000, function() return vim.fn.executable([[$MASON_JDTLS]]) == 1 or (vim.uv.hrtime() > _G.__t0 + 3e9 and not require('mason-registry').get_package('jdtls'):is_installing()) end, 500)" +qa >>"$LOG" 2>&1
+}
 if [ ! -x "$MASON_JDTLS" ]; then
   echo "setup: installing jdtls via Mason (first run)..." | tee -a "$LOG"
-  nvim --headless "+Lazy! load mason.nvim" "+MasonInstall jdtls" \
-    "+lua vim.wait(300000, function() return vim.fn.executable([[$MASON_JDTLS]]) == 1 end, 500)" +qa >>"$LOG" 2>&1
+  mason_install
+  if [ ! -x "$MASON_JDTLS" ] && grep -q "already linked" "$LOG"; then
+    echo "setup: stale Mason links, cleaning and retrying once" | tee -a "$LOG"
+    rm -rf "$MASON_DIR/packages/jdtls" "$MASON_DIR/share/jdtls" "$MASON_DIR/bin/jdtls" "$MASON_DIR/opt/jdtls"
+    mason_install
+  fi
   [ -x "$MASON_JDTLS" ] || { echo "FATAL: jdtls install failed (see $LOG)" >&2; exit 2; }
 fi
 
 rc=0
-for check in "$HERE"/checks/*.lua; do
+for check in "$HERE"/checks/${NV4J_CHECKS:-*}.lua; do
   name="$(basename "$check")"
   echo "== $name" | tee -a "$LOG"
   out="$(nvim --headless --cmd "set rtp+=$HERE/lib" -c "lua package.path='$HERE/lib/?.lua;'..package.path" -c "luafile $check" -c qa 2>&1)"

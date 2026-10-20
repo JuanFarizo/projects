@@ -4,9 +4,10 @@ local M = {
   root = root,
   logs = root .. "/logs",
   jdtls_data = root .. "/jdtls-data",
+  jdtls_config = root .. "/jdtls-config",
 }
 
-for _, dir in ipairs({ M.root, M.logs, M.jdtls_data }) do
+for _, dir in ipairs({ M.root, M.logs, M.jdtls_data, M.jdtls_config }) do
   vim.fn.mkdir(dir, "p")
 end
 

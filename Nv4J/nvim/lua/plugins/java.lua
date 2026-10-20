@@ -36,6 +36,14 @@ return {
         return marker_root
       end
 
+      -- JVM that runs jdtls itself (>= 21): $JAVA_HOME if >= 21, else the newest JDK found by
+      -- nv4j.jdk (SDKMAN, ~/Library/Java/JavaVirtualMachines, /Library/...). Nothing here reads PATH
+      -- or calls the lazy `java` shell function. Raises a clear error if no JDK >= 21 exists.
+      -- The per-project runtimes (java.configuration.runtimes) are set in opts.jdtls below, once the
+      -- project root is known.
+      local server_home = require("nv4j.jdk").server_home()
+      table.insert(opts.cmd, "--java-executable=" .. server_home .. "/bin/java")
+
       -- "0 references" above a method/class = unused, IntelliJ-style. Also
       -- needs opts.codelens.enabled = true on nvim-lspconfig (see lsp.lua) —
       -- jdtls is started directly by nvim-jdtls, not via lspconfig's
@@ -63,6 +71,11 @@ return {
         },
       })
 
+      -- -configuration (jdtls's writable copy of the config) also lives under /tmp/nv4j.
+      opts.jdtls_config_dir = function(project_name)
+        return require("nv4j.paths").jdtls_config .. "/" .. project_name
+      end
+
       -- LazyVim's project_name = basename(root_dir) collides across every
       -- lambda here (lambdas/<name>/app/pom.xml -> root_dir ends in "app"
       -- for all of them), so they all share one jdtls workspace/config
@@ -84,16 +97,24 @@ return {
       -- opts.jdtls)`) into the config it hands to jdtls.start_or_attach —
       -- top-level opts.flags/opts.handlers here are silently ignored, so
       -- anything jdtls.start_or_attach itself needs to see has to go here.
-      opts.jdtls = vim.tbl_deep_extend("force", opts.jdtls or {}, {
+      local static_jdtls = {
+        cmd_env = { JAVA_HOME = server_home },
         -- jdtls re-validates (full diagnostics pass) on every didChange with
         -- no debounce of its own — each keystroke restarts the pass, so on a
         -- slow-ish machine it never catches up and fires a diagnostics
         -- publish ~1s after every word. Debounce didChange so it only fires
         -- once typing pauses, instead of on every keystroke.
-        flags = {
-          debounce_text_changes = 500,
-        },
-      })
+        flags = { debounce_text_changes = 500 },
+      }
+      -- LazyVim calls this with the config it built (root_dir known) and uses the return value.
+      opts.jdtls = function(config)
+        config = vim.tbl_deep_extend("force", config, static_jdtls)
+        local runtimes = require("nv4j.jdk").runtimes(config.root_dir)
+        config.settings = vim.tbl_deep_extend("force", config.settings or {}, {
+          java = { configuration = { runtimes = runtimes } },
+        })
+        return config
+      end
       -- The "Publish Diagnostics" / "Building" / "Validate documents" toasts
       -- (bottom-right, checkmark list) are jdtls's $/progress notifications,
       -- rendered by noice.nvim's lsp_progress view (LazyVim core ships
