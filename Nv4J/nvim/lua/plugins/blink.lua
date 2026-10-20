@@ -13,8 +13,21 @@ return {
       fuzzy = {
         -- Typo-tolerant matching shows items that don't contain what you typed.
         max_typos = function() return 0 end,
-        -- No custom `sorts`: a kind-rank sort buried `return`/`if` under JDK classes and
-        -- benchmarked worse than blink's default (score, sort_text) on real Java code.
+        -- Default (score, sort_text) everywhere; Java adds a project-usage tie breaker
+        -- (nv4j/completion.lua). A kind-rank sort was tried before and buried `return`/`if`
+        -- under JDK classes, so kinds are not ranked here.
+        sorts = function() return require("nv4j.completion").sorts() end,
+      },
+      -- Java-only re-ranking (nv4j/completion.lua); other filetypes see blink's defaults.
+      sources = {
+        providers = {
+          lsp = {
+            transform_items = function(ctx, items) return require("nv4j.completion").transform_lsp(ctx, items) end,
+          },
+          snippets = {
+            should_show_items = function(ctx, items) return require("nv4j.completion").snippets_should_show(ctx, items) end,
+          },
+        },
       },
       completion = {
         ghost_text = { enabled = true },
