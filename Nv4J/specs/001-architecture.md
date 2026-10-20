@@ -27,6 +27,16 @@ Repo: https://github.com/jetbrains/intellij-community (Apache 2.0). It is the re
 - Spring features in IntelliJ are mostly in the closed-source Ultimate plugin, not in Community. For Spring the reference is the IntelliJ user-visible behaviour and the Spring Tools language server, not Community code. This is a known limit.
 - Local copy: shallow sparse clone at `~/.cache/nv4j/intellij-community`. Not committed to this repo, read only.
 
+### More reference repos
+
+| Repo | Use | Priority area |
+|------|-----|---------------|
+| https://github.com/eclipse-jdt/eclipse.jdt.core | JDT core: `CompletionEngine`, relevance computation, search/index, compiler behavior. This is what JDTLS runs on, so completion ranking and code-assist behavior can be tuned or extended against its real source. | P1 |
+| https://github.com/spring-projects/spring-tools | Spring Tools (STS) source: the Spring Boot language server (annotation, `application.properties`/`yml`, bean and request-mapping support), launch and Boot Dash behavior. Reference and likely the Spring server we install. | P2, P4 |
+
+- Same method as IntelliJ: check, adapt, enhance. Local shallow sparse clones in `~/.cache/nv4j/`, read only, not committed.
+- License: both are EPL-2.0 (IntelliJ Community is Apache-2.0). Copying code into this repo is allowed only with the original license header and a note in the feature spec naming the source path. Prefer reusing the tool as a dependency (Mason or release jar) over copying source.
+
 ## Layout
 
 ```
