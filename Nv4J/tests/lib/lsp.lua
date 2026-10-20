@@ -101,7 +101,9 @@ end
 function M.report(name, ok, detail)
   if not ok then failed = true end
   local line = (ok and "PASS " or "FAIL ") .. name .. (detail and detail ~= "" and (" " .. tostring(detail)) or "")
-  print(line)
+  -- Straight to stdout on a line of its own: a message echoed without a newline (e.g. a jdtls
+  -- status echo) must not glue this line to the previous one and hide it from run.sh's grep.
+  io.stdout:write("\n" .. line .. "\n")
   local log = (not vim.env.NV4J_RUNNER) and vim.env.NV4J_LOG or nil -- run.sh logs full output itself
   if log then
     local f = io.open(log, "a")

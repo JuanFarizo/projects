@@ -61,19 +61,74 @@ function M.blink()
   return fuzzy
 end
 
---- Items in the order blink.cmp's menu would show them for the LSP source: the user's fuzzy
---- config (sorts, max_typos, proximity, frecency) applied to `items` at `line`/`col`.
---- Approximation: other sources (snippets, buffer, path) are not mixed in.
-function M.blink_order(fuzzy, buf, lnum, col, items)
+--- What blink.cmp's menu would list, produced by blink's own pipeline instead of a copy of it:
+--- a blink Context at (lnum, col), `sources.request_completions` (every provider enabled for the
+--- buffer: lsp with a real CompletionContext, snippets, path, buffer fallback, each with its
+--- score_offset, should_show_items and transform_items, deprecated items at -2), then
+--- `completion.list.fuzzy` (fuzzy, sorts, per-source and global max_items).
+--- Only the drawing of the menu is missing. Trigger: the character before the cursor when it is
+--- a trigger character and nothing was typed after it (like typing `.`), else a keyword trigger.
+--- Returns { items, ms, lsp_ms } or nil + reason. ms = request until the sorted list exists.
+local ctx_id = 1e6
+function M.menu(buf, lnum, col)
+  local sources = require("blink.cmp.sources.lib")
+  local list = require("blink.cmp.completion.list")
+  vim.wo.virtualedit = "onemore" -- normal mode: allow the cursor after the last character
   vim.api.nvim_win_set_cursor(0, { lnum + 1, col })
   local line = vim.api.nvim_buf_get_lines(buf, lnum, lnum + 1, false)[1]
-  local copy = {}
-  for i, it in ipairs(items) do
-    copy[i] = vim.tbl_extend("force", {}, it, { source_id = "lsp", score_offset = it.score_offset or 0 })
+  local before = line:sub(1, col)
+  local typed = before:match("[%w_]*$")
+  local prev = before:sub(#before - #typed, #before - #typed)
+  -- blink's own rule (trigger characters minus the blocked ones: space, tab, newline). Nothing
+  -- typed after a blocked or non-trigger character means the user pressed <C-Space>: manual.
+  local trig = typed == "" and prev ~= "" and require("blink.cmp.completion.trigger").is_trigger_character(prev)
+    and prev or nil
+  ctx_id = ctx_id + 1
+  local kind = trig and "trigger_character" or (typed == "" and "manual" or "keyword")
+  local ctx = require("blink.cmp.completion.trigger.context").new({
+    id = ctx_id,
+    providers = sources.get_enabled_provider_ids("default"),
+    initial_trigger_kind = kind, initial_trigger_character = trig,
+    trigger_kind = kind, trigger_character = trig,
+  })
+  local got, lsp_ms
+  local function on(ev) if ev.context.id == ctx.id then got = ev end end
+  sources.completions_emitter:on(on)
+  local t0 = vim.uv.hrtime()
+  sources.request_completions(ctx)
+  local ok = vim.wait(30000, function() return got ~= nil end, 1)
+  lsp_ms = (vim.uv.hrtime() - t0) / 1e6
+  sources.completions_emitter:off(on)
+  if not ok then return nil, "blink sources did not answer within 30 s" end
+  -- blink hides the menu when every source that owns the trigger character returned nothing
+  -- (completion/init.lua); mirror that so an empty answer is not padded by other sources.
+  if trig then
+    local owner_has_items = false
+    for _, id in ipairs(ctx.providers) do
+      local its = got.items[id]
+      if its and #its > 0 and vim.tbl_contains(sources.get_provider_by_id(id):get_trigger_characters(), trig) then
+        owner_has_items = true
+      end
+    end
+    if not owner_has_items then
+      return { items = {}, ms = (vim.uv.hrtime() - t0) / 1e6, lsp_ms = lsp_ms, by_source = got.items, hidden = true }
+    end
   end
-  fuzzy.haystacks_by_provider_cache = {}
-  local range = require("blink.cmp.config").completion.keyword.range
-  return fuzzy.fuzzy(line, col, { lsp = copy }, range)
+  local items = list.fuzzy(ctx, got.items)
+  return { items = items, ms = (vim.uv.hrtime() - t0) / 1e6, lsp_ms = lsp_ms, by_source = got.items }
+end
+
+--- The next keystroke on a complete (isIncomplete = false) list: blink does not ask the server
+--- again, it fuzzy-filters the items it already has. `by_source` is M.menu(...).by_source from the
+--- earlier position; the buffer line must already hold the new text. Returns the visible items.
+function M.refilter(buf, lnum, col, by_source)
+  vim.api.nvim_win_set_cursor(0, { lnum + 1, col })
+  ctx_id = ctx_id + 1
+  local ctx = require("blink.cmp.completion.trigger.context").new({
+    id = ctx_id, providers = vim.tbl_keys(by_source),
+    initial_trigger_kind = "keyword", trigger_kind = "keyword",
+  })
+  return require("blink.cmp.completion.list").fuzzy(ctx, by_source)
 end
 
 --- Raw completion result (CompletionList fields like isIncomplete), not timed. nil on failure.
