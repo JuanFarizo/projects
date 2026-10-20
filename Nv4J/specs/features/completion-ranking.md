@@ -136,15 +136,15 @@ Ranked by expected gain against cost and risk. Task 5 tries them one at a time a
 
 All Java-only; other filetypes get blink's defaults (Rust sort path, no transform).
 
-1. `java.completion.filteredTypes` adds `jdk.*`, `com.apple.*`, `apple.*`, `java.awt.*`, `javax.swing.*`, `java.applet.*`, `aj.*`, `org.aspectj.internal.*` (`nvim/lua/plugins/java.lua`).
+1. `java.completion.filteredTypes` (`nvim/lua/nv4j/completion.lua` `DEFAULT_FILTERED_TYPES`, user override `vim.g.nv4j_filtered_types`, see 002): `com.sun.*`, `sun.*`, `jdk.internal.*`, `jdk.javadoc.internal.*`, `com.apple.*`, `apple.*`, `java.applet.*`, `aj.*`, `org.aspectj.internal.*`, `java.awt.List`, `java.awt.peer.*`. Public `jdk.*` APIs, `java.awt.*` and `javax.swing.*` stay visible.
 2. blink `sources.providers.lsp.transform_items` (`nvim/lua/nv4j/completion.lua`):
    - postfix templates: `filterText` reduced to the template key and `score_offset - 6`, so they come after members (and after deprecated members, -2) but stay reachable by key (`http.va` lists `var` first);
    - fully qualified packages dropped for a bare identifier, root packages kept unless `filteredTypes` removes the whole root;
    - per item: jdt.ls relevance from `sortText` minus the `java.*` bonus, project usage count, jdt.ls position.
 3. blink `fuzzy.sorts` for Java: `score`, then `java_sort` (relevance without the `java.*` bonus, then project usage, then jdt.ls order). It replaces `sort_text`, so blink sorts in Lua for Java buffers (strict weak order, about 1 ms).
-4. Project usage (`nvim/lua/nv4j/usage.lua`): ripgrep counts `.name` and `@Name` tokens in the project's `.java` files (import/package lines skipped) in the background at attach, and again after each `.java` write. Name level, not resolved references (`save` used on any receiver counts). Object's methods get no count. Without ripgrep the step is a no-op.
+4. Project usage (`nvim/lua/nv4j/usage.lua`): ripgrep counts `.name` and `@Name` tokens in the project's `.java` files (import/package lines skipped) in the background at attach (`java.lua` on_attach, the only place), and again 1.5 s after the last `.java` write (debounced). A run that fails (rg exit >= 2) or passes 10 s (process group killed) keeps the previous counts. Name level, not resolved references (`save` used on any receiver counts). Object's methods get no count. Without ripgrep the step is a no-op. Check: `tests/checks/12_usage_index.lua`.
 5. blink `sources.providers.snippets.should_show_items`: no live templates after `.` or `@`.
-6. Warm-up (`nvim/lua/nv4j/warmup.lua`): on jdt.ls `ServiceReady`, one completion request at an existing annotation (`@|Foo`) or `new |Foo` position, result discarded, buffer untouched.
+6. Warm-up (`nvim/lua/nv4j/warmup.lua`): one completion request at an existing annotation (`@|Foo`) or `new |Foo` position on jdt.ls `Started` (pays the one-time cost during import, before the start-up build competes) and one on `ServiceReady` (about 70 ms then); results discarded, buffer untouched, once per client and phase.
 
 What was tried and dropped is in the 002 trial log.
 

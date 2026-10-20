@@ -60,23 +60,9 @@ return {
             -- (specs/002-p1-completion.md): `@` becomes a complete list, but identifier lists
             -- stay incomplete and their per-keystroke round trip gets slower, so 200 stays.
             maxResults = 200,
-            -- Types never wanted in a Spring/server project: JDK internals, macOS look-and-feel
-            -- resources (com.apple.laf.resources.aqua_*), AWT/Swing/applets (java.awt.List vs
-            -- java.util.List), AspectJ internals and its shaded ASM (aj.*). Also kept out of
-            -- auto-import and organize imports; an explicit `import java.awt.Color;` still works.
-            -- Desktop projects can drop java.awt/javax.swing here.
-            filteredTypes = {
-              "com.sun.*",
-              "sun.*",
-              "jdk.*",
-              "com.apple.*",
-              "apple.*",
-              "java.awt.*",
-              "javax.swing.*",
-              "java.applet.*",
-              "aj.*",
-              "org.aspectj.internal.*",
-            },
+            -- Hidden from completion, auto-import and quick fix (explicit imports still work).
+            -- Defaults and the vim.g.nv4j_filtered_types override: nv4j/completion.lua.
+            filteredTypes = require("nv4j.completion").filtered_types(),
             favoriteStaticMembers = {
               "org.junit.Assert.*",
               "org.junit.jupiter.api.Assertions.*",
@@ -138,8 +124,8 @@ return {
         })
         return config
       end
-      -- Project usage counts for completion ranking (nv4j/usage.lua), started at attach so the
-      -- first completion already has them. LazyVim's java extra calls opts.on_attach from LspAttach.
+      -- Project usage counts for completion ranking (nv4j/usage.lua), started here at attach
+      -- (the only place) so the first completion already has them. LazyVim's java extra calls opts.on_attach from LspAttach.
       local prev_on_attach = opts.on_attach
       opts.on_attach = function(args)
         if prev_on_attach then prev_on_attach(args) end

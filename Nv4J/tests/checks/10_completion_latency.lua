@@ -44,11 +44,58 @@ local fuzzy = C.blink()
 lsp.report("10_completion_latency.blink_loaded", fuzzy ~= nil and fuzzy.implementation_type == "rust",
   fuzzy and fuzzy.implementation_type or "blink.cmp not loaded")
 
-local cold_done = false
+local function place(buf, cs)
+  local lnum, col
+  if cs.replace then
+    lnum, col = C.put_line(buf, C.find_line(buf, cs.replace), cs.line)
+  else
+    lnum, col = C.put_line(buf, C.find_line(buf, cs.after) + 1, cs.line, true)
+  end
+  return lnum, col - (cs.back or 0)
+end
+
+-- cold_first: the first completion of the jdtls process, sent exactly COLD_DELAY_MS after jdt.ls
+-- reports ServiceReady (timestamp recorded by the config, nv4j/warmup.lua), in the first case's
+-- position. Fixed delay so runs compare; the warm-up state at that moment is reported.
+local COLD_DELAY_MS = 1000
+local t_open = vim.uv.hrtime()
+do
+  local cs = cases[1]
+  local buf = lsp.open(src .. cs.file)
+  local got_sr = vim.wait(120000, function() return vim.g.nv4j_service_ready_ms ~= nil end, 5)
+  if not got_sr then
+    lsp.report("10_completion_latency.cold_first", false, "no ServiceReady within 120 s (vim.g.nv4j_service_ready_ms unset)")
+  else
+    C.scratch(buf, function()
+      local lnum, col = place(buf, cs)
+      local sr = vim.g.nv4j_service_ready_ms
+      -- Poll real time: vim.wait's own timeout overshot by ~260 ms here.
+      vim.wait(10000, function() return vim.uv.hrtime() / 1e6 >= sr + COLD_DELAY_MS end, 1)
+      local delay = vim.uv.hrtime() / 1e6 - sr
+      local warm_at_first = vim.g.nv4j_warmup -- nil: the config's warm-up request still runs
+      local first = lsp.complete(buf, lnum, col)
+      vim.wait(5000, function() return vim.g.nv4j_warmup ~= nil end, 10)
+      C.append_latency("cold_first", first.ms, #first.items)
+      lsp.report("10_completion_latency.cold_first", not first.err and first.ms <= BUDGET_COLD_MS,
+        ("%.0f ms (budget %d) sent %.0f ms after ServiceReady, case=%s count=%d warmup=%s%s"):format(
+          first.ms, BUDGET_COLD_MS, delay, cs.name, #first.items,
+          (warm_at_first and "done" or (vim.g.nv4j_warmup and "overlapped" or "none"))
+            .. (vim.g.nv4j_warmup and (":started=%sms,service_ready=%.0fms"):format(
+              vim.g.nv4j_warmup.started_ms and ("%.0f"):format(vim.g.nv4j_warmup.started_ms) or "-",
+              vim.g.nv4j_warmup.ms) or ""),
+          first.err and (" err=" .. first.err) or ""))
+    end)
+  end
+end
+-- NV4J_COLD_ONLY=1: stop after cold_first (repeat runs of the cold measurement only).
+if vim.env.NV4J_COLD_ONLY then
+  lsp.finish()
+  return
+end
+
 local import_reported = false
 for _, cs in ipairs(cases) do
   local tag = "10_completion_latency." .. cs.name
-  local t_open = vim.uv.hrtime()
   local first_open = not import_reported
   local buf = C.open_ready(lsp, src .. cs.file, 120000)
   if first_open then
@@ -61,26 +108,10 @@ for _, cs in ipairs(cases) do
     lsp.report(tag, false, "jdtls not ready within 120 s")
   else
     C.scratch(buf, function()
-      local lnum, col
-      if cs.replace then
-        lnum, col = C.put_line(buf, C.find_line(buf, cs.replace), cs.line)
-      else
-        lnum, col = C.put_line(buf, C.find_line(buf, cs.after) + 1, cs.line, true)
-      end
-      col = col - (cs.back or 0)
-
-      local warm_at_first = vim.g.nv4j_warmup -- nil: the config's warm-up request still runs
+      local lnum, col = place(buf, cs)
+      -- "first" = first request in this case's file position (cold for that case, not for the process)
       local first = lsp.complete(buf, lnum, col)
       C.append_latency(cs.name .. ".first", first.ms, #first.items)
-      if not cold_done then
-        cold_done = true
-        C.append_latency("cold_first", first.ms, #first.items)
-        lsp.report("10_completion_latency.cold_first", not first.err and first.ms <= BUDGET_COLD_MS,
-          ("%.0f ms (budget %d) case=%s count=%d warmup=%s%s"):format(first.ms, BUDGET_COLD_MS, cs.name, #first.items,
-            warm_at_first and ("done:%.0fms"):format(warm_at_first.ms)
-              or (vim.g.nv4j_warmup and ("overlapped:%.0fms"):format(vim.g.nv4j_warmup.ms) or "none"),
-            first.err and (" err=" .. first.err) or ""))
-      end
 
       local errs, ms, counts = {}, {}, {}
       for i = 1, WARMUP + N do

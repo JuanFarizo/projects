@@ -5,6 +5,36 @@ local M = {}
 
 local Kind = vim.lsp.protocol.CompletionItemKind
 
+-- java.completion.filteredTypes defaults: only packages measured as noise in the Spring fixture
+-- (specs/002-p1-completion.md) or never public API. java.awt and javax.swing stay visible
+-- (BufferedImage, Color, Graphics2D are used by server code); only java.awt.List is hidden, so
+-- `List` completes and auto-imports java.util.List.
+M.DEFAULT_FILTERED_TYPES = {
+  "com.sun.*", "sun.*", -- JDK internals
+  "jdk.internal.*", "jdk.javadoc.internal.*", -- JDK internals (standard_de, ... resource classes)
+  "com.apple.*", "apple.*", -- macOS look-and-feel resources (aqua_de, aqua_fr, ...)
+  "java.applet.*", -- removed from the JDK API, never wanted
+  "aj.*", "org.aspectj.internal.*", -- AspectJ's shaded ASM and internal annotations (ajc*)
+  "java.awt.List", -- the AWT widget: ranked above java.util.List when neither is imported
+  "java.awt.peer.*", -- AWT implementation interfaces (ListPeer next to List)
+}
+
+--- Effective filteredTypes: the defaults, plus/minus the user's
+--- vim.g.nv4j_filtered_types = { add = { "java.awt.*", "javax.swing.*" }, remove = { "java.awt.List" } }
+--- (set it before jdtls starts, e.g. in lua/config/options.lua).
+function M.filtered_types()
+  local user = vim.g.nv4j_filtered_types or {}
+  local remove = {}
+  for _, f in ipairs(user.remove or {}) do remove[f] = true end
+  local out = {}
+  for _, list in ipairs({ M.DEFAULT_FILTERED_TYPES, user.add or {} }) do
+    for _, f in ipairs(list) do
+      if not remove[f] and not vim.tbl_contains(out, f) then out[#out + 1] = f end
+    end
+  end
+  return out
+end
+
 local function is_java(ctx) return vim.bo[ctx.bufnr].filetype == "java" end
 
 --- Character just before the keyword under the cursor ("" at line start).
@@ -63,8 +93,7 @@ local roots = {} -- client id -> project root
 local function project_counts(client_id)
   if roots[client_id] == nil then
     local client = vim.lsp.get_client_by_id(client_id)
-    roots[client_id] = client and client.config.root_dir or false
-    if roots[client_id] then require("nv4j.usage").watch(roots[client_id]) end
+    roots[client_id] = client and client.config.root_dir or false -- counted from java.lua on_attach
   end
   return roots[client_id] and require("nv4j.usage").get(roots[client_id])
 end

@@ -60,6 +60,9 @@ local cases = {
 -- `replace`: the case line replaces the first line matching it instead of being inserted.
 local function label_is(l) return function(it) return it.label == l end end
 local spring = {
+  -- `List` where java.util.List is not imported: java.util.List first (java.awt.List is filtered;
+  -- without the filter jdt.ls ranks it first).
+  { name = "list_type_not_imported", file = "App.java", after = "Repo repo = new Repo", lines = { "        List" }, label = "List", pkg = "java.util" },
   { name = "spring_annotation_list", file = "CustomerController.java", after = "^@RequestMapping", lines = { "@" }, label = "RestController" },
   { name = "spring_anno_auto", file = "CustomerController.java", after = "private final CustomerRepository repository;", lines = { "    @Auto" }, label = "Autowired" },
   { name = "spring_anno_rest", file = "CustomerController.java", after = "^@RequestMapping", lines = { "@Rest" }, label = "RestController" },
@@ -80,6 +83,11 @@ local spring = {
 }
 for _, s in ipairs(spring) do
   s.expect, s.expect_label = label_is(s.label), s.label
+  if s.pkg then
+    local want = s.pkg
+    s.expect = function(it) return it.label == s.label and pkg(it) == want end
+    s.expect_label = want .. "." .. s.label
+  end
   if s.worse then s.worse, s.worse_label = is_foreign_type, "first non-project type" else s.worse = nil end
   cases[#cases + 1] = s
 end
@@ -97,14 +105,17 @@ local function snippets_after_members(shown)
 end
 -- Types filtered by java.completion.filteredTypes and fully qualified package names must not be
 -- listed for a bare identifier (blink transform in nv4j/completion.lua drops the packages).
-local NOISE = { "^com%.apple", "^apple%.", "^sun%.", "^com%.sun%.", "^jdk%.", "^java%.awt", "^javax%.swing", "^aj%.", "^org%.aspectj%.internal" }
+-- Patterns on the fully qualified name (package description .. "." .. label) or a package label.
+local NOISE = { "^com%.apple%.", "^apple%.", "^sun%.", "^com%.sun%.", "^jdk%.internal%.", "^jdk%.javadoc%.internal%.",
+  "^java%.awt%.List$", "^java%.awt%.peer%.", "^java%.applet%.", "^aj%.", "^org%.aspectj%.internal%." }
 local function no_noise(shown)
   local bad = {}
   for _, it in ipairs(shown) do
     local d = pkg(it)
+    local fq = d .. "." .. it.label
     local noisy = it.kind == Kk.Module and it.label:find(".", 1, true)
     for _, pat in ipairs(NOISE) do
-      if d:find(pat) or (it.kind == Kk.Module and it.label:find(pat)) then noisy = true end
+      if fq:find(pat) or (it.kind == Kk.Module and (it.label .. "."):find(pat)) then noisy = true end
     end
     if noisy and #bad < 5 then bad[#bad + 1] = it.label .. "(" .. d .. ")" end
   end
@@ -116,6 +127,7 @@ local rules = {
   { name = "no_noise_a", file = "CustomerController.java", after = "public ResponseEntity<Customer> update", lines = { "        a" }, rule = no_noise },
   { name = "no_noise_s", file = "CustomerController.java", after = "public List<Customer> search", lines = { "        s" }, rule = no_noise },
   { name = "no_noise_m", file = "CustomerController.java", after = "public List<Customer> search", lines = { "        m" }, rule = no_noise },
+  { name = "no_noise_list", file = "App.java", after = "Repo repo = new Repo", lines = { "        List" }, rule = no_noise },
 }
 for _, r in ipairs(rules) do cases[#cases + 1] = r end
 
