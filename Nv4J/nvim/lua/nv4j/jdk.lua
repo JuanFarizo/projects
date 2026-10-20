@@ -33,18 +33,26 @@ local function parse_version(v)
   return key[1], key
 end
 
---- Describe a JDK home dir, or nil if it is not one.
+--- Describe a JDK home dir, or nil if it is not one. The version comes from the `release` file;
+--- JDKs without one (SDKMAN 8.x) fall back to the leading number of the directory name.
 local function describe(home)
   if not vim.uv.fs_stat(home .. "/bin/java") then return nil end
   local rel = read(home .. "/release")
   local ver = rel and rel:match('JAVA_VERSION="([^"]+)"')
+  if not ver then
+    local name = vim.fs.basename(home)
+    if name == "Home" then name = vim.fs.basename(vim.fs.dirname(vim.fs.dirname(home))) end
+    ver = name:match("^%a*[%-_]?(%d+[%d%._]*)")
+  end
   if not ver then return nil end
   local major, key = parse_version(ver)
   if not major then return nil end
-  return { home = home, real = real(home), major = major, version = ver, key = key }
+  local ea = ver:lower():find("ea") ~= nil or vim.fs.basename(home):lower():find("[%-_.]ea") ~= nil
+  return { home = home, real = real(home), major = major, version = ver, key = key, ea = ea }
 end
 
 local function newer(a, b)
+  if a.ea ~= b.ea then return not a.ea end -- early-access builds sort last
   for i = 1, math.max(#a.key, #b.key) do
     local x, y = a.key[i] or 0, b.key[i] or 0
     if x ~= y then return x > y end
@@ -66,6 +74,10 @@ function M.discover()
       end
     end
   end
+  -- $JAVA_HOME's JDK counts even when it lives outside the scan roots (Homebrew, asdf, mise).
+  local jh = vim.env.JAVA_HOME
+  local d = jh and jh ~= "" and describe(jh)
+  if d and not seen[d.real] then out[#out + 1] = d end
   table.sort(out, newer)
   return out
 end
@@ -88,31 +100,40 @@ function M.server_home()
   local jh = java_home_jdk()
   if jh and jh.major >= 21 then return jh.home end
   for _, d in ipairs(M.discover()) do
-    if d.major >= 21 then return d.home end
+    if d.major >= 21 and not d.ea then return d.home end
   end
-  error(("nv4j: no JDK >= 21 found for jdtls. Searched: %s. JAVA_HOME=%s. Install one, e.g. `sdk install java 25-amzn` "
-    .. "or the Corretto 25 pkg (~/Library/Java/JavaVirtualMachines)."):format(
+  error(("nv4j: no JDK >= 21 found for jdtls. Searched: %s. JAVA_HOME=%s. Install one, e.g. `sdk install java 25-amzn`."):format(
     table.concat(M.roots(), ", "), tostring(vim.env.JAVA_HOME)), 0)
 end
 
---- Java major the project asks for: .sdkmanrc java=, then pom release / java.version / source.
-function M.project_major(root)
+--- Java majors the project asks for, in priority order: .sdkmanrc java=, then pom
+--- maven.compiler.release, plugin <release>, java.version, maven.compiler.source, <source>,
+--- maven.compiler.target, <target>. Only the project's own pom is read (no parent poms).
+---@return integer[]
+function M.project_majors(root)
+  local out = {}
+  local function add(v)
+    local m = v and v:match("^[%d%.]+$") and parse_version(v)
+    if m then out[#out + 1] = m end
+  end
   local rc = root and read(root .. "/.sdkmanrc")
-  local v = rc and rc:match("\njava%s*=%s*([%d%.]+)") or (rc and rc:match("^java%s*=%s*([%d%.]+)"))
-  if v then return (parse_version(v)), ".sdkmanrc" end
+  if rc then add(("\n" .. rc):match("\njava%s*=%s*([%d%.]+)")) end
   local pom = root and read(root .. "/pom.xml")
   if pom then
     pom = pom:gsub("<!%-%-.-%-%->", "")
-    local function prop(name)
+    local function prop(name, depth)
+      if depth > 5 then return nil end
       local val = pom:match("<" .. name:gsub("%.", "%%.") .. ">%s*([^<%s]+)%s*</")
-      if val and val:match("^%${(.+)}$") then val = prop(val:match("^%${(.+)}$")) end
+      local ref = val and val:match("^%${(.+)}$")
+      if ref then return prop(ref, depth + 1) end
       return val
     end
-    for _, name in ipairs({ "maven.compiler.release", "java.version", "maven.compiler.source" }) do
-      local val = prop(name)
-      if val and val:match("^[%d%.]+$") then return (parse_version(val)), "pom " .. name end
+    for _, name in ipairs({ "maven.compiler.release", "release", "java.version", "maven.compiler.source", "source",
+      "maven.compiler.target", "target" }) do
+      add(prop(name, 0))
     end
   end
+  return out
 end
 
 local function rt_name(major) return major == 8 and "JavaSE-1.8" or ("JavaSE-" .. major) end
@@ -139,8 +160,11 @@ function M.runtimes(root)
       if prefer then by_major[d.major].preferred = true end
     end
   end
-  local want = M.project_major(root)
-  local default = (want and by_major[want] and want) or (jh and by_major[jh.major] and jh.major) or order[1]
+  local default
+  for _, want in ipairs(M.project_majors(root)) do
+    if by_major[want] then default = want; break end
+  end
+  default = default or (jh and by_major[jh.major] and jh.major) or order[1]
   local rts = {}
   for _, m in ipairs(order) do
     rts[#rts + 1] = { name = rt_name(m), path = by_major[m].home, default = (m == default) or nil }

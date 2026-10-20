@@ -54,8 +54,18 @@ for _, l in ipairs(vim.fn.systemlist({ "ps", "-axo", "command=" })) do
 end
 local expect = require("nv4j.jdk").server_home()
 lsp.report("20_java25.server_jvm", jvm ~= nil and jvm == expect .. "/bin/java", "jdtls runs on " .. tostring(jvm) .. " (expected " .. expect .. ")")
-local jv = jvm and vim.fn.system({ jvm, "-version" }) or ""
-lsp.report("20_java25.server_not_path_java", jvm ~= nil and not jv:find('version "21%.') , "server java: " .. (jv:match('version "[^"]+"') or "?"))
+-- The server JVM must come from nv4j.jdk, not from PATH: compare with the real PATH java home.
+-- If they are legitimately the same JDK the test cannot tell the two apart: report SKIP, not PASS.
+local path_java = vim.fn.exepath("java")
+local path_real = path_java ~= "" and vim.uv.fs_realpath(path_java) or nil
+local jvm_real = jvm and vim.uv.fs_realpath(jvm) or nil
+if not path_real or not jvm_real then
+  lsp.report("20_java25.server_not_path_java", jvm_real ~= nil, "no java on PATH (" .. tostring(path_java) .. "), server " .. tostring(jvm))
+elseif path_real == jvm_real then
+  print("SKIP 20_java25.server_not_path_java PATH java and server JVM are the same JDK (" .. path_real .. ")")
+else
+  lsp.report("20_java25.server_not_path_java", true, "server " .. jvm_real .. " != PATH java " .. path_real)
+end
 
 -- case 2: release 21 project
 local dir = "/tmp/nv4j/proj21"
