@@ -16,6 +16,7 @@ vim.fn.writefile({
   "class A { void f() { repo.save(x); repo.save(y); repo.findById(1); } }",
 }, root .. "/src/A.java")
 local real_path = vim.env.PATH
+local real_rg = vim.fn.exepath("rg")
 
 local function wait_run(prev, ms) return vim.wait(ms or 15000, function() return usage.runs > prev end, 20) end
 
@@ -40,6 +41,20 @@ ok = wait_run(n)
 c = usage.get(root)
 lsp.report("12_usage_index.rg_fails_keeps_counts", ok and c and c.member.save == 2,
   ("run finished=%s save=%s"):format(tostring(ok), c and tostring(c.member.save) or "nil"))
+
+-- 2b. only the second rg (token extraction) fails: previous counts stay, not replaced by empty ones
+vim.fn.writefile({
+  "#!/bin/sh",
+  'if [ "$1" = "--only-matching" ]; then echo "rg: boom" >&2; exit 2; fi',
+  'exec "' .. real_rg .. '" "$@"',
+}, bin .. "/rg")
+n = usage.runs
+usage.build(root)
+ok = wait_run(n)
+c = usage.get(root)
+lsp.report("12_usage_index.second_rg_fails_keeps_counts", ok and c and c.member.save == 2 and c.anno.Service == 1,
+  ("run finished=%s save=%s @Service=%s"):format(tostring(ok), c and tostring(c.member.save) or "nil",
+    c and tostring(c.anno.Service) or "nil"))
 
 -- 3. rg hangs past the timeout: killed, previous counts stay
 vim.fn.writefile({ "#!/bin/sh", "sleep 5" }, bin .. "/rg")

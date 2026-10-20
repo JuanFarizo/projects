@@ -14,11 +14,12 @@ M.runs = 0 -- finished runs (tests)
 local by_root = {} -- root -> { member = {name=n}, anno = {name=n}, busy, dirty, timer, watched }
 
 -- One pipeline, all filtering outside Lua so a large project costs no main-loop time: every
--- non-import line of every .java file, then each `.name`/`@Name` token, counted. The first rg's
--- exit status goes to stderr ("RGRC n"; 0 = found, 1 = nothing found, 2+ = error) because a
+-- non-import line of every .java file, then each `.name`/`@Name` token, counted. Each rg's exit
+-- status goes to stderr ("RG1 n", "RG2 n"; 0 = found, 1 = nothing found, 2+ = error) because a
 -- POSIX sh pipeline only reports the last command's status.
-local SCRIPT = [[{ rg --no-filename --no-line-number --no-messages -g '*.java' -v '^\s*(import|package)\s' -- "$1"; ]]
-  .. [[echo "RGRC $?" >&2; } | rg --only-matching --no-line-number '[.@][A-Za-z_][A-Za-z0-9_]*' | sort | uniq -c]]
+local SCRIPT = [[{ { rg --no-filename --no-line-number --no-messages -g '*.java' -v '^\s*(import|package)\s' -- "$1"; ]]
+  .. [[echo "RG1 $?" >&2; } | rg --only-matching --no-line-number '[.@][A-Za-z_][A-Za-z0-9_]*'; echo "RG2 $?" >&2; } ]]
+  .. [[| sort | uniq -c]]
 
 local function entry_for(root)
   by_root[root] = by_root[root] or {}
@@ -40,8 +41,10 @@ function M.build(root)
   local ok, proc = pcall(vim.system, { "sh", "-c", SCRIPT, "sh", root }, { text = true, detach = true }, function(res)
     timer:stop()
     timer:close()
-    local rgrc = tonumber((res.stderr or ""):match("RGRC (%d+)"))
-    local good = not timed_out and res.code == 0 and res.signal == 0 and rgrc ~= nil and rgrc <= 1
+    local rg1 = tonumber((res.stderr or ""):match("RG1 (%d+)"))
+    local rg2 = tonumber((res.stderr or ""):match("RG2 (%d+)"))
+    local good = not timed_out and res.code == 0 and res.signal == 0
+      and rg1 ~= nil and rg1 <= 1 and rg2 ~= nil and rg2 <= 1
     local member, anno = {}, {}
     if good then
       for n, sigil, name in (res.stdout or ""):gmatch("(%d+) ([.@])([%w_]+)") do
