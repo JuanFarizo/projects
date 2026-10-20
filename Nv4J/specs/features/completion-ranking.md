@@ -1,6 +1,6 @@
 # Feature: Java completion ranking and filtering
 
-Priority: P1. Status: research done (Task 3), tuning pending (Task 5). Baseline numbers are in `specs/002-p1-completion.md`.
+Priority: P1. Status: implemented (Task 5), see "Implemented design" below; trial log and final numbers in `specs/002-p1-completion.md`. Baseline numbers are in `specs/002-p1-completion.md`.
 
 Pass/fail tests: `tests/checks/10_completion_latency.lua` (latency, result counts) and `tests/checks/11_completion_ranking.lua` (rank of the expected item in the order the user sees).
 
@@ -121,7 +121,35 @@ Ranked by expected gain against cost and risk. Task 5 tries them one at a time a
 5. **Lazy resolve and fewer extras**: `java.completion.lazyResolveTextEdit.enabled`, `guessMethodArguments` off or `insertParameterNames`, chain/postfix off if they add items. Only if latency on a large project needs it.
 6. **Small Lua re-ranker** using `labelDetails.description` (package) and the buffer's package declaration. Only if 1 to 3 are not enough. More code to keep.
 
+## Findings added in Task 5
+
+- **Why blink pushed members below postfix templates.** jdt.ls sends postfix templates as Snippet items whose `filterText` repeats the receiver (`http.cast`) and whose edit starts at the receiver. blink guesses the match needle from that text (`keyword.rs` `guess_keyword_range`), so it matches `http.` against `http.cast` and scores 89, while real members score 0 against the empty keyword. That is why ranks were worse in blink's order than in jdt.ls's.
+- **Member lists are alphabetical in jdt.ls.** After `http.` every member has the same relevance (`sortText` 999999035), so without usage data the order is alphabetical: removing the postfix templates alone leaves `authorizeHttpRequests` at 9 and `save` at 32.
+- **IntelliJ's `PreferMostUsedWeigher`** (`java/java-impl/src/com/intellij/codeInsight/completion/PreferMostUsedWeigher.java`) ranks members by their compile-time occurrence count in the project, skips `java.lang.Object`'s methods (`hashCode`, `equals`, `toString`, ...) and helper methods taking or returning `Object`. It sits after the kind, expected-type and proximity weighers.
+- **JDT gives `java.*` types +2** (`R_JAVA_LIBRARY`), which in sortText is exactly the gap between `@Deprecated`/`@SuppressWarnings` (999998732) and the project's imported annotations (999998764).
+- **Packages are not filtered.** jdt.ls applies `filteredTypes` to types, constructors and methods (`CompletionProposalRequestor.isFiltered`), not to `PACKAGE_REF`; a bare `s` returned 187 fully qualified `sun.*` packages out of 211 items.
+- **The 200-item cap on `@` is alphabetical by package.** The class-level `@` list has 504 candidates; with `maxResults = 200` it ends inside `jakarta.*`, so `@Service`/`@Component` only appear after a letter is typed (the list is `isIncomplete`, blink asks again).
+- **The first type list after start is slow** (0.7 to 0.9 s with Spring Boot) because JDT opens the library jars and reads the binary type of every candidate (JFR: `ZipFile$Source.initCEN`, `BinaryTypeFactory.readType`); later lists reuse that. A prefixed completion, a `workspace/symbol` query, an idle wait, a CDS archive, ParallelGC and `maxResults` 50 or 1000 do not change it. The cache is reset by the build at ServiceReady.
+- IntelliJ's postfix completion contributor is not in the sparse clone; "postfix templates after members" is IntelliJ's visible behaviour, not verified from source.
+
+## Implemented design (Task 5)
+
+All Java-only; other filetypes get blink's defaults (Rust sort path, no transform).
+
+1. `java.completion.filteredTypes` adds `jdk.*`, `com.apple.*`, `apple.*`, `java.awt.*`, `javax.swing.*`, `java.applet.*`, `aj.*`, `org.aspectj.internal.*` (`nvim/lua/plugins/java.lua`).
+2. blink `sources.providers.lsp.transform_items` (`nvim/lua/nv4j/completion.lua`):
+   - postfix templates: `filterText` reduced to the template key and `score_offset - 6`, so they come after members (and after deprecated members, -2) but stay reachable by key (`http.va` lists `var` first);
+   - fully qualified packages dropped for a bare identifier, root packages kept unless `filteredTypes` removes the whole root;
+   - per item: jdt.ls relevance from `sortText` minus the `java.*` bonus, project usage count, jdt.ls position.
+3. blink `fuzzy.sorts` for Java: `score`, then `java_sort` (relevance without the `java.*` bonus, then project usage, then jdt.ls order). It replaces `sort_text`, so blink sorts in Lua for Java buffers (strict weak order, about 1 ms).
+4. Project usage (`nvim/lua/nv4j/usage.lua`): ripgrep counts `.name` and `@Name` tokens in the project's `.java` files (import/package lines skipped) in the background at attach, and again after each `.java` write. Name level, not resolved references (`save` used on any receiver counts). Object's methods get no count. Without ripgrep the step is a no-op.
+5. blink `sources.providers.snippets.should_show_items`: no live templates after `.` or `@`.
+6. Warm-up (`nvim/lua/nv4j/warmup.lua`): on jdt.ls `ServiceReady`, one completion request at an existing annotation (`@|Foo`) or `new |Foo` position, result discarded, buffer untouched.
+
+What was tried and dropped is in the 002 trial log.
+
 ## Pass/fail criteria
 
 - Latency: p95 <= 150 ms warm per case, <= 400 ms for the first request after jdtls is ready (provisional, see 002).
 - Ranking: expected item in the top 5 of the blink-visible order, plus the relative rule of each case (local above keywords, field above non-project types).
+- Task 5 added: ranks measured through blink's own pipeline (`M.menu` in `tests/lib/completion.lua`), `menu_p95` under the same 150 ms budget, typed-prefix and postfix-key cases, and rule cases (snippets after every member after `.`; no filtered type or qualified package for a bare identifier).
