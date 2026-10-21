@@ -1,6 +1,6 @@
 # 004 - P2: run, debug and Spring awareness
 
-Status: Task 0 done (research, fixture, failing baselines); Task 1 done (debug works: `DONE 40_debug 13 0`, 5 of 5 consecutive runs; review fix round: `DONE 40_debug 16 0`, 3 of 3)); Task 2 done (run Spring Boot: `DONE 41_run 18 0`, 3 of 3; review fix round 1: `DONE 41_run 22 0`, 3 of 3); Task 3 done (Spring Boot language server: `DONE 50_spring_ls 11 0`, 3 of 3; review fix round 1: `DONE 50_spring_ls 13 0`, 3 of 3); Task 4 done (Spring completion, hover and navigation: `DONE 51_spring_completion 20 0`, `DONE 52_spring_nav 12 0`, 3 of 3 after review round 1). Plan: `docs/superpowers/plans/2026-10-21-nv4j-p2-spring-run-debug.md`. Does not contradict `001-architecture.md`; decisions D14 and later live in its decisions table.
+Status: Task 0 done (research, fixture, failing baselines); Task 1 done (debug works: `DONE 40_debug 13 0`, 5 of 5 consecutive runs; review fix round: `DONE 40_debug 16 0`, 3 of 3)); Task 2 done (run Spring Boot: `DONE 41_run 18 0`, 3 of 3; review fix round 1: `DONE 41_run 22 0`, 3 of 3); Task 3 done (Spring Boot language server: `DONE 50_spring_ls 11 0`, 3 of 3; review fix round 1: `DONE 50_spring_ls 13 0`, 3 of 3); Task 4 done (Spring completion, hover and navigation: `DONE 51_spring_completion 20 0`, `DONE 52_spring_nav 12 0`, 3 of 3 after review round 1); Task 5 done (docs and three consecutive final full runs, 218 PASS 0 FAIL each, see "Task 5 final runs"). Plan: `docs/superpowers/plans/2026-10-21-nv4j-p2-spring-run-debug.md`. Does not contradict `001-architecture.md`; decisions D14 and later live in its decisions table.
 
 ## Goal
 
@@ -22,6 +22,7 @@ Run and debug a Spring Boot app from Neovim (profiles, env, breakpoints that hit
 ## Decisions
 
 - D14 (Spring LS wiring): `JavaHello/spring-boot.nvim` pinned at `9880be4` + Mason `vscode-spring-boot-tools` 2.2.0, configured by nv4j. Reason and trials: `001` D14, `specs/features/spring-language-server.md`. Built in Task 3.
+- D15 (run via `java -cp`, build tool opt-in), D16 (build before every launch, errors warn), D17 (one shared Boot detector), D18 (Spring client on Java buffers, Spring item order, project keys first), D19 (`<leader>sp`), D20 (1.0 s pins for first Spring requests): `001` decisions table.
 
 ## Rulings in Task 0 (cost if wrong)
 
@@ -89,7 +90,7 @@ Rulings: the `spring-boot` client stays on Java buffers with full capabilities (
 
 ## Task 4 (Spring completion, hover and navigation)
 
-`nvim/lua/nv4j/completion.lua`: Spring items keep the server's order inside blink (`java_sort` tie breaker; jdt.ls's sortText formula read only for `jdtls` items), no snippets in Spring yml/properties buffers or inside Java string literals. `nvim/lua/nv4j/spring_nav.lua` + `<leader>sp` (beans `@+` and request mappings `@/` via `workspace/symbol` on the Spring client, Telescope). Checks `51_spring_completion` (19 cases) and `52_spring_nav` (10 cases). Much already worked from Task 3 (properties/yml keys, `@Profile`, broken files, hover, `@Value` definition, symbols); the failing baseline was `DONE 51 13 3` (`@Value("${")` lost the project keys to `max_items`) and `DONE 52 6 4` (no key). Negative controls: Spring items dropped from blink `DONE 51 4 15`, empty Spring answers 3 PASS 7 FAIL in 52, `NV4J_SPRING=0` both stop at `attached`. Trials c1t4 to c8, n1 to n4, f1, f2: `specs/features/spring-language-server.md`.
+`nvim/lua/nv4j/completion.lua`: Spring items keep the server's order inside blink (`java_sort` tie breaker; jdt.ls's sortText formula read only for `jdtls` items), no snippets in Spring yml/properties buffers or inside Java string literals. `nvim/lua/nv4j/spring_nav.lua` + `<leader>sp` (beans `@+` and request mappings `@/` via `workspace/symbol` on the Spring client, Telescope). Checks `51_spring_completion` (19 cases, 20 since review round 1) and `52_spring_nav` (10 cases, 12 since review round 1). Much already worked from Task 3 (properties/yml keys, `@Profile`, broken files, hover, `@Value` definition, symbols); the failing baseline was `DONE 51 13 3` (`@Value("${")` lost the project keys to `max_items`) and `DONE 52 6 4` (no key). Negative controls: Spring items dropped from blink `DONE 51 4 15`, empty Spring answers 3 PASS 7 FAIL in 52, `NV4J_SPRING=0` both stop at `attached`. Trials c1t4 to c8, n1 to n4, f1, f2: `specs/features/spring-language-server.md`.
 
 3 consecutive runs: `DONE 51_spring_completion 19 0` and `DONE 52_spring_nav 10 0` (logs `test-20261021-150741.log`, `-150817`, `-150852`; `51` again 3 of 3 after the c8 pin, `-151625`, `-151649`, `-151712`). Final full run (log `/tmp/nv4j/logs/test-20261021-151747.log`), exit 0: P1 135 PASS 0 FAIL (worst warm p95 69 ms, cold first 45 ms, RestController rank 1, diagnostics 452 ms), `DONE 40_debug 16 0`, `DONE 41_run 22 0`, `DONE 50_spring_ls 13 0`, `DONE 51_spring_completion 19 0`, `DONE 52_spring_nav 10 0`. 215 PASS. One earlier full run (`-150938`) had `32_code_actions` `remove_unused_import` FAIL once (no diagnostic in the code action context yet; 3 of 3 PASS alone) and the `profile` case before its pin.
 
@@ -102,7 +103,19 @@ Rulings (cost if wrong):
 - Snippets hidden inside Java `"..."` (one-line quote count) and in Spring config files. Cost: a user who wants a snippet there must leave the string; text block bodies are not detected.
 - `@Value("${`: keys set in the project's own config files come first, the project's own namespaces before Boot's (`spring`, `server`, `management`, `logging`, `debug`, `trace`, `info`) (review round 1, trial c9); the rest keeps the server's alphabetical order and blink's 200 limit. Cost: a Boot-only key late in the alphabet needs a typed prefix; a fixed namespace list (a library's keys set in the project count as the project's own).
 
-Review fix round 1: project keys first in `@Value("${` (fixture key `zz.sample.flag`, case `value_project_late`), `hover_yml_port` with a 1 s limit, `<leader>sp` warns on no answer within 5 s (case `no_answer`), `32_code_actions` waits for jdt.ls's own unused-import diagnostic (flake fix), n4 control re-run with its log. 3 consecutive runs `DONE 51_spring_completion 20 0`, `DONE 52_spring_nav 12 0`; two full runs (logs `/tmp/nv4j/logs/test-20261021-153309.log`, `-153754.log`), both all pass: P1 135 PASS, `40 16 0`, `41 22 0`, `50 13 0`, `51 20 0`, `52 12 0`, 219 PASS; worst warm p95 52 ms and 64 ms.
+Review fix round 1: project keys first in `@Value("${` (fixture key `zz.sample.flag`, case `value_project_late`), `hover_yml_port` with a 1 s limit, `<leader>sp` warns on no answer within 5 s (case `no_answer`), `32_code_actions` waits for jdt.ls's own unused-import diagnostic (flake fix), n4 control re-run with its log. 3 consecutive runs `DONE 51_spring_completion 20 0`, `DONE 52_spring_nav 12 0`; two full runs (logs `/tmp/nv4j/logs/test-20261021-153309.log`, `-153754.log`), both all pass: P1 135 PASS, `40 16 0`, `41 22 0`, `50 13 0`, `51 20 0`, `52 12 0`, 218 PASS (the sum of the `DONE` lines; an earlier version of this line said 219); worst warm p95 52 ms and 64 ms.
+
+## Task 5 final runs
+
+Three consecutive full `tests/run.sh` runs, all exit 0, 218 PASS 0 FAIL 0 SKIP each, every check printed its `DONE` line (00: 11, 01: 2, 10: 17, 11: 26, 12: 7, 20: 10, 30: 24, 31: 10, 32: 28, 40: 16, 41: 22, 50: 13, 51: 20, 52: 12). Logs `/tmp/nv4j/logs/test-20261021-154523.log`, `-154956.log`, `-155439.log`. No flake, no Spring LS or app process left after the runs. The budget table with the ranges is in `001` ("P2 budgets and final results").
+
+| Run | Worst warm p95 | Cold first | Breakpoint main / test | `rs` Started (Boot) | Spring init / props first / warm p95 / hover / RSS | `@Value` first / warm | yml `server.port` hover |
+|-----|----------------|------------|------------------------|---------------------|-----------------------------------------------------|-----------------------|-------------------------|
+| 1 (`-154523`) | 50 ms | 61 ms | 3284 / 792 ms | 3888 ms (2.055 s) | 42 / 18 / 3.8 / 4 ms / 429 MB | 74 / 53.2 ms | 255 ms |
+| 2 (`-154956`) | 41 ms | 48 ms | 3598 / 777 ms | 4438 ms (2.279 s) | 49 / 21 / 4.0 / 4 ms / 416 MB | 87 / 51.2 ms | 286 ms |
+| 3 (`-155439`) | 54 ms | 56 ms | 3237 / 768 ms | 3827 ms (1.997 s) | 34 / 19 / 3.4 / 8 ms / 477 MB | 82 / 42.5 ms | 225 ms |
+
+`@` RestController rank 1 and diagnostics 443 to 455 ms in all three.
 
 ## Task 0 full run
 

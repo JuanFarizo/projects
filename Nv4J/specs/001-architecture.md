@@ -1,6 +1,6 @@
 # 001 - Architecture and workflow
 
-Status: P1 confirmed and built (all 9 checks pass, 135 PASS on the last full runs). P2 in progress (debug, run and the Spring Boot LS wiring built: `specs/004-p2-spring-run-debug.md`), P3 to P5 not started. Source of truth for Nv4J. Later specs must not contradict this file. User-facing summary: `README.md` (keep both consistent; each later plan updates the README Capabilities section in its last task).
+Status: P1 and P2 confirmed and built (14 checks, 218 PASS 0 FAIL in each of the three consecutive final P2 runs; P2 details in `specs/004-p2-spring-run-debug.md`), P3 to P5 not started. Source of truth for Nv4J. Later specs must not contradict this file. User-facing summary: `README.md` (keep both consistent; each later plan updates the README Capabilities section in its last task).
 
 ## Goal
 
@@ -27,8 +27,13 @@ D1 to D6 are confirmed by P1 (nothing was reversed). D7 to D13 are decisions tak
 | D13 | Budgets stay as set below, not weakened. `cold_first` is measured 1.0 s after jdt.ls ServiceReady. | Task 5 ruling | Confirmed with the numbers below. |
 | D14 | Spring Boot language server wiring: the `JavaHello/spring-boot.nvim` plugin (pinned, commit `9880be4`) with the Mason `vscode-spring-boot-tools` server, configured by nv4j (root = the jdt.ls project root, `java_cmd` from `nv4j.jdk`, start only for Spring Boot projects), not our own thin Lua client. Reason: the plugin already implements the client half of the `sts/*` protocol (12 forwarders to jdt.ls, classpath-listener callbacks, language ids, settings push after classpath events), which our own client would have to re-implement in at least about 150 lines; it is Neovim 0.12 native and met every P2 Spring LS budget in the Task 0 trial (first completion 195 to 205 ms, warm p95 5 to 6 ms, hover 7 ms, RSS about 300 to 430 MB). Ponytail rule: a plugin only because it removes real code. Revisit if the pinned plugin breaks or costs a budget. Details: `specs/features/spring-language-server.md`. | Claude (P2 Task 0), user can overturn | Built (P2 Task 3): `nvim/lua/nv4j/spring.lua`, `nvim/lua/plugins/spring.lua`, `50_spring_ls` 13 of 13. |
 | D15 | Spring Boot run (`<leader>rs`) starts the `@SpringBootApplication` main class with plain `java -cp <jdt.ls classpath>` on the project JDK (`nv4j.jdk`), after jdt.ls's refresh + build, not `mvn spring-boot:run`; the build tool (Maven first, then Gradle `bootRun`) is the fallback without jdt.ls and an opt-in (`<leader>rS`, `vim.g.nv4j_run_tool`) for projects that need the plugin's `<configuration>` or pom profiles. Stop kills the whole process tree. | Task 2 trials | Built: `nvim/lua/nv4j/run.lua`, `41_run`. Measured 2.5 s against 5 to 7 s to "Started", and `spring-boot:run` hung on plugin resolution over the network (`specs/features/run.md`). |
+| D16 | Every Java debug or run launch first refreshes the project's source folders in jdt.ls and runs two incremental builds (VS Code builds before launch too; nvim-jdtls does not). Compile errors, a failed build or a 60 s timeout only warn, then the launch goes ahead (VS Code asks). | P2 Task 1 ruling | Built: `nvim/lua/nv4j/debug.lua` (`M.build`, `M.refresh_and_build`), `40_debug` `breakpoint_hit`, `build_guard`. Cost if wrong: a launch on stale classes after a warning the user may miss. |
+| D17 | One Spring Boot detector, shared by run and the Spring Boot LS (`nvim/lua/nv4j/root.lua` `boot_build`/`boot_project`): Boot groupId, starters, Maven plugin, BOM, Gradle plugin/group/starters, catalog aliases, outside comments; a bare `spring-boot` text (a `spring-boot.version` property) does not count. Root plus modules up to 2 levels down, memoized per session. | P2 Task 3 review | Built: `41_run` `detect`, `50_spring_ls` `detect`. Cost: a Boot parent brought only by a corporate parent pom outside the repo is not seen; adding Boot needs a restart. |
+| D18 | The `spring-boot` client stays on Java buffers with full capabilities (needed for `@Value`/`@Profile` completion and go to definition). Spring items keep the server's order inside blink; jdt.ls's sortText formula is read only for `jdtls` items; inside `@Value("${` the keys set in the project's own config files rank first. | P2 Tasks 3 and 4 | Built: `nvim/lua/nv4j/completion.lua`, `51_spring_completion`. A/B with the Spring LS off: worst warm p95 +5 ms (budget 150). |
+| D19 | The Spring symbols picker is `<leader>sp` (beans `@+`, request mappings `@/`, Spring client only). `<leader>ss` stays LazyVim's Goto Symbol. | P2 Task 4 ruling | Built: `nvim/lua/nv4j/spring_nav.lua`, `52_spring_nav` `key`, `picker`. Cost: collides with the snacks picker extra's plugin-spec search if that extra is enabled. |
+| D20 | First requests to the Spring Boot LS (properties completion, `@Value`, `@Profile`, yml hover) are measured 1.0 s after the client initializes or the file opens, the D13 rule applied to P2. Outliers get their own case with a regression limit instead of a warm-up (`hover_yml_port`, 1 s). | P2 Tasks 0 and 4 rulings | Confirmed by `50_spring_ls`, `51_spring_completion`, `52_spring_nav`. Deviation listed in README Known limitations. |
 
-## Budgets and final P1 results
+## Budgets and results (P1, P2)
 
 Budgets are confirmed (they were provisional until the Task 5 re-baseline). Measured on the Spring Boot fixture `tests/fixtures/demo`; details, per-case tables and trial logs in the linked feature specs. Result columns are the ranges over the consecutive full runs recorded there.
 
@@ -47,7 +52,33 @@ Budgets are confirmed (they were provisional until the Task 5 re-baseline). Meas
 
 Last full `tests/run.sh` runs (final review, two consecutive): 135 PASS, 0 FAIL, 0 SKIP each, a `DONE` line for every check (00: 11, 01: 2, 10: 17, 11: 26, 12: 7, 20: 10, 30: 24, 31: 10, 32: 28). Logs `/tmp/nv4j/logs/test-20261020-225853.log`, `-230137.log`. Earlier (Task 7): 129 PASS, log `test-20261020-223125.log`.
 
-Feature specs: [`specs/002-p1-completion.md`](002-p1-completion.md) (budget, baseline, trials), [`specs/features/completion-ranking.md`](features/completion-ranking.md), [`specs/features/diagnostics-imports-actions.md`](features/diagnostics-imports-actions.md), [`specs/features/jdk-java25.md`](features/jdk-java25.md).
+P1 budgets with the Spring Boot LS running, in the three final P2 runs (logs below): completion worst warm p95 41 to 54 ms, menu p95 worst 43 to 49 ms, first completion 48 to 61 ms, `@` `RestController` rank 1 (the P2 completion changes moved it from 4 to 1), diagnostics errors 443 to 455 ms and unused 590 to 656 ms, unused pass p95 1.3 to 2.1 ms, first `List` accept 676 to 749 ms, second type 307 to 466 ms, code action round trip worst 114 to 144 ms, jdt.ls open to ready 6.1 to 6.9 s. All inside the P1 budgets. Worst warm p95 rose from about 43 ms (P1) to 41 to 54 ms: the A/B in `specs/features/spring-language-server.md` (trial `ab`) attributes about 5 ms to the Spring LS sharing the CPU.
+
+### P2 budgets and final results
+
+Budgets set at P2 plan start, not weakened. Ranges over the three consecutive final full runs (P2 Task 5): logs `/tmp/nv4j/logs/test-20261021-154523.log`, `-154956.log`, `-155439.log`, each exit 0, 218 PASS 0 FAIL, a `DONE` line for every check (P1 as above; 40: 16, 41: 22, 50: 13, 51: 20, 52: 12).
+
+| Metric | Budget | Result | Check |
+|--------|--------|--------|-------|
+| Breakpoint hit in a Spring Boot main class, from launch (includes refresh + build) | <= 20 s | 3.24 to 3.60 s | `40_debug` `breakpoint_hit` |
+| Breakpoint hit in a JUnit 5 test | <= 20 s | 768 to 792 ms | `40_debug` `test_breakpoint_hit` |
+| Debuggee gone after terminate (no orphan JVM) | <= 10 s | pass, 3 of 3 | `40_debug` `no_orphan`, `41_run` `debug_no_orphan` |
+| `<leader>rd` breakpoint with profile and env | <= 20 s | 2.71 to 2.95 s | `41_run` `debug_stop` |
+| `<leader>rs` to "Started" (refresh, build, classpath, Boot start) | none (info) | 3.8 to 4.4 s; Boot's own start 2.0 to 2.3 s | `41_run` `started` |
+| Stop a process tree that ignores SIGTERM | <= 10 s | 1.95 to 2.00 s | `41_run` `tree_kill` |
+| Spring LS initialized after jdt.ls ready | <= 10 s | 34 to 49 ms | `50_spring_ls` `attached` |
+| `application.properties` first completion (1.0 s after init, D20) | <= 400 ms | 18 to 21 ms | `50_spring_ls` `props_first` |
+| `application.properties` warm completion p95 | <= 150 ms | 3.4 to 4.0 ms | `50_spring_ls` `props_warm` |
+| Hover (properties / yml `logging.level`) | <= 500 ms | 4 to 8 ms / 16 to 26 ms | `50_spring_ls` `props_hover`, `52_spring_nav` `hover_yml` |
+| First yml hover of `server.port` | <= 1 s (regression limit, D20) | 225 to 286 ms | `52_spring_nav` `hover_yml_port` |
+| Extra RSS of the Spring LS | <= 1 GB (hard 1.5 GB) | 416 to 477 MB | `50_spring_ls` `rss` |
+| yml completion first / warm p95 | <= 400 / 150 ms | 28 to 39 ms / 9.5 to 10.9 ms | `51_spring_completion` `yml_first`, `yml_warm` |
+| `@Value("${` completion first / warm p95 | <= 400 / 150 ms | 74 to 87 ms / 42.5 to 53.2 ms | `51_spring_completion` `value_first`, `value_warm` |
+| Expected Spring item rank (properties, yml, `@Value`, `@Profile`) | top 3 | 1 (`zz.sample.flag` 3) | `51_spring_completion` |
+| `@Value` go to definition | <= 500 ms | 44 to 68 ms | `52_spring_nav` `definition` |
+| `<leader>sp` picker (17 entries) | <= 1 s | 108 to 150 ms | `52_spring_nav` `picker` |
+
+Feature specs: [`specs/002-p1-completion.md`](002-p1-completion.md) (budget, baseline, trials), [`specs/features/completion-ranking.md`](features/completion-ranking.md), [`specs/features/diagnostics-imports-actions.md`](features/diagnostics-imports-actions.md), [`specs/features/jdk-java25.md`](features/jdk-java25.md). P2: [`specs/004-p2-spring-run-debug.md`](004-p2-spring-run-debug.md), [`specs/features/debug-run.md`](features/debug-run.md), [`specs/features/run.md`](features/run.md), [`specs/features/spring-language-server.md`](features/spring-language-server.md).
 
 Open follow-ups from P1 (carried to the P3 plan): async import apply (removes the up to 0.8 s accept wait), frecency vs project ranking, cosmetic gaps versus IntelliJ (see README, Known limitations).
 
@@ -111,8 +142,8 @@ Principle: build, measure, compare against the spec number, iterate.
   - Latency: completion p50/p95 against the budget set in the P1 spec.
   - Ranking: expected item appears in the top N.
   - Diagnostics: planted errors are reported, valid Java 25 code reports none.
-  - Spring: annotation, attribute and property-key completion, including a custom annotation. (P2, not built yet.)
-  - Run, debug, test (P2/P3, not built yet): start the fixture app or one test through DAP and the jdtls test bundles, assert a breakpoint hit or a pass result.
+  - Spring (P2, built): Spring Boot LS gating and memory, `application.properties`/yml and `@Value`/`@Profile` completion, hover, `@Value` go to definition, beans and request mappings (`50_spring_ls`, `51_spring_completion`, `52_spring_nav`).
+  - Run and debug (P2, built): start the fixture app or one JUnit test through DAP and the jdtls test bundles, assert a breakpoint hit, the project JDK, no orphan JVM (`40_debug`); run the Boot app with profile and env, port in use, process-tree stop (`41_run`). Test runner polish is P3.
 - Not testable here, done by hand by the user: how typing and UI plugins feel.
 
 ## Logs and temp files
@@ -131,5 +162,14 @@ Logs and test output under `/tmp/nv4j/`; the jdt.ls workspace and config copy un
 
 ## Open items
 
-- Spring language server: built (D14, Mason `vscode-spring-boot-tools` through `spring-boot.nvim`, P2 Task 3), check `50_spring_ls`: ready about 40 ms after jdt.ls, RSS about 410 MB; P1 budgets unchanged with it running. `application.properties` completion/hover numbers are in `specs/004-p2-spring-run-debug.md`.
-- Run and debug (P2): the "m2e.launchconfig.classpathProvider" warning is a race in JDT launching hit by nvim-jdtls's parallel classpath requests (root cause and three more debug blockers in `specs/features/debug-run.md`); fixed in P2 Task 1, check `40_debug`.
+Carried to P3 or later (each also in README Not yet or Known limitations):
+
+- Async import apply on accept (removes the up to 0.8 s wait), and project ranking weighted above blink's frecency (P1 follow-ups, P3 plan).
+- Saved run configurations (profile, env, VM args per project); `<leader>rp` asks each time.
+- The real `mvn spring-boot:run` / `gradle bootRun` path and the kill of Maven's forked JVM are not run by the checks (company mirror unreachable here): run once on a machine with the plugin in `~/.m2`.
+- JUnit debug depends on the engine-matching `junit-platform-launcher` jar in `~/.m2`; why jdt.ls adds its bundled launcher only in some sessions is unknown. Gradle projects are not handled.
+- `nvim/lua/nv4j/debug.lua` wraps nvim-jdtls/nvim-dap internals at runtime (`client.request`, `jdtls.start_or_attach`, `dap.adapters.java`); re-run `40_debug` after any update of those plugins, and drop a wrap when upstream fixes the race.
+- Spring Boot LS: with two Spring Boot projects open the plugin's jdt.ls forwarders use the first `jdtls` client (untested); Boot detection misses Boot brought only by a parent pom outside the repo and modules deeper than 2 levels; the first yml hover of some keys (`server.port`) takes up to about 0.5 s once; the `@Value` project-key tiers use a fixed Boot namespace list; `project_keys` has no size cap (fine for normal config files).
+- Spring server diagnostics (unknown keys, bad values) and annotation attribute checks beyond jdt.ls are not covered by checks.
+- Gradle (P4) is untested end to end.
+- jdt.ls logs "Failed to save JDT index" at every headless shutdown (index rebuilt next session); not investigated.

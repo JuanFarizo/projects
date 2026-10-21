@@ -1,6 +1,6 @@
 # 002 - P1 completion: budget, baseline, trials
 
-Status: done (P1). Every latency and ranking budget passes on 3 consecutive full runs (see "Final (Task 5)" and "Fix round 1"). `cold_first`, pinned at ServiceReady + 1.0 s since fix round 1, is 44-59 ms over 16 runs (budget 400 ms). Budgets are confirmed in `specs/001-architecture.md` (D13, "Budgets and final P1 results"). Research and approach: `specs/features/completion-ranking.md`.
+Status: done (P1). Every latency and ranking budget passes on 3 consecutive full runs (see "Final (Task 5)" and "Fix round 1"). `cold_first`, pinned at ServiceReady + 1.0 s since fix round 1, is 44-59 ms over 16 runs (budget 400 ms). Budgets are confirmed in `specs/001-architecture.md` (D13, "Budgets and results (P1, P2)"). Research and approach: `specs/features/completion-ranking.md`.
 
 ## Budget (confirmed)
 
