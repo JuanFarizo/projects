@@ -1,6 +1,6 @@
 # 001 - Architecture and workflow
 
-Status: draft. Source of truth for Nv4J. Later specs must not contradict this file.
+Status: P1 confirmed and built (all 9 checks pass, 129 PASS on the last full run). P2 to P5 not started. Source of truth for Nv4J. Later specs must not contradict this file. User-facing summary: `README.md` (keep both consistent; each later plan updates the README Capabilities section in its last task).
 
 ## Goal
 
@@ -8,14 +8,46 @@ A fast, lightweight Neovim setup for Java and Spring development. IntelliJ is th
 
 ## Decisions
 
-| # | Decision | Owner |
-|---|----------|-------|
-| D1 | Start from the existing LazyVim-based config, keep only what Java/Spring needs. No rewrite from scratch. | Claude (user agreed to approach) |
-| D2 | Maven is first-class. Gradle is supported but second. | User |
-| D3 | The existing `~/.config/nvim` is never modified. | User |
-| D4 | Config lives in this repo under `nvim/` and runs as a separate Neovim app named `nv4j`. | User |
-| D5 | Logs and temporary test output live under `/tmp/nv4j/`. | User |
-| D6 | Priorities: P1 completion/diagnostics/imports/code actions/Java 25; P2 Spring awareness, run, debug; P3 tests, scaffolding, refactors; P4 Gradle, Spring navigation, JPA checks; P5 everything else. | User |
+D1 to D6 are confirmed by P1 (nothing was reversed). D7 to D13 are decisions taken during P1.
+
+| # | Decision | Owner | Status |
+|---|----------|-------|--------|
+| D1 | Start from the existing LazyVim-based config, keep only what Java/Spring needs. No rewrite from scratch. | Claude (user agreed to approach) | Confirmed. `lazyvim.json` dropped `lang.typescript.vtsls` and `formatting.prettier` (nothing used them). |
+| D2 | Maven is first-class. Gradle is supported but second. | User | Confirmed. Gradle is untested (P4). |
+| D3 | The existing `~/.config/nvim` is never modified. | User | Confirmed. |
+| D4 | Config lives in this repo under `nvim/` and runs as a separate Neovim app named `nv4j`. | User | Confirmed. `~/.config/nv4j` is a symlink to `nvim/`. |
+| D5 | Logs and temporary test output live under `/tmp/nv4j/`. | User | Confirmed (`nvim/lua/nv4j/paths.lua`). |
+| D6 | Priorities: P1 completion/diagnostics/imports/code actions/Java 25; P2 Spring awareness, run, debug; P3 tests, scaffolding, refactors; P4 Gradle, Spring navigation, JPA checks; P5 everything else. | User | Confirmed. P1 done. |
+| D7 | Nothing is pinned to one JDK. JDKs come from SDKMAN (`~/.sdkman/candidates/java`), `~/Library/Java/JavaVirtualMachines`, `/Library/Java/JavaVirtualMachines`. jdt.ls runs on `$JAVA_HOME` if >= 21, else the newest >= 21; the project JDK follows `.sdkmanrc` and the pom. | User (Task 4) | Built: `nvim/lua/nv4j/jdk.lua`, `specs/features/jdk-java25.md`. |
+| D8 | Unused-import warnings must show even when the file has compile errors (jdt.ls/ECJ drops them then, IntelliJ keeps them). | User (Task 6) | Built: `nvim/lua/nv4j/unused_imports.lua`. |
+| D9 | `<leader>co` is Organize Imports (removes unused, orders groups). Outgoing calls moved to `<leader>cO` so each key means one thing. | User (Task 6) | Built, checked in `31_imports`. |
+| D10 | Organize imports on save stays off (IntelliJ default). | User (Task 6) | Built (`java.saveActions.organizeImports = false`). |
+| D11 | Completion ranking uses project usage counts, counted with ripgrep (IntelliJ `PreferMostUsedWeigher` idea), as a tie breaker after jdt.ls relevance. | Claude, accepted by user (Task 5) | Built: `nvim/lua/nv4j/usage.lua`; without `rg` ranking falls back to jdt.ls order. |
+| D12 | `java.awt.List` is hidden from completion by default so `List` completes to `java.util.List`. Override with `vim.g.nv4j_filtered_types = { add = {...}, remove = {...} }`. | User (Task 5 review) | Built: `nvim/lua/nv4j/completion.lua`. |
+| D13 | Budgets stay as set below, not weakened. `cold_first` is measured 1.0 s after jdt.ls ServiceReady. | Task 5 ruling | Confirmed with the numbers below. |
+
+## Budgets and final P1 results
+
+Budgets are confirmed (they were provisional until the Task 5 re-baseline). Measured on the Spring Boot fixture `tests/fixtures/demo`; details, per-case tables and trial logs in the linked feature specs. Result columns are the ranges over the consecutive full runs recorded there.
+
+| Metric | Budget | Result | Check |
+|--------|--------|--------|-------|
+| Warm completion round trip p95, per case | <= 150 ms | worst case 38 to 45 ms (baseline 43 ms) | `10_completion_latency` |
+| Menu list (blink sort) p95, per case | <= 150 ms | worst about 40 ms | `10_completion_latency` |
+| First completion, 1.0 s after jdt.ls ServiceReady | <= 400 ms | 51 to 55 ms (baseline 740 to 827 ms) | `10_completion_latency` |
+| Expected item rank in the order the user sees | top 5 plus a relative rule | `@` `RestController` 4 (jdt.ls order 6), `http.` `authorizeHttpRequests` 2 (baseline 19), `repository.` `save` 1 (baseline 42) | `11_completion_ranking` |
+| Edit to diagnostics in `vim.diagnostic` | <= 3 s | errors 462 to 476 ms, unused 674 to 684 ms, fix clears 471 to 511 ms, burst settles 633 to 683 ms, Java 25 file clean 490 to 521 ms | `30_diagnostics` |
+| Unused imports shown while the file has errors | <= 3 s | 473 to 506 ms; pass cost on 3000 lines p95 about 3 ms (budget 5 ms) | `30_diagnostics` |
+| Accept a completion with its import | <= 1.5 s | first `List` 685 to 746 ms, second type 379 to 439 ms | `31_imports` |
+| One code action round trip | <= 1 s | 9 to 120 ms | `32_code_actions` |
+| jdt.ls open to ready | none (info) | about 6.1 to 6.4 s warm workspace, about 15 s first import | `01_jdtls_ready`, `10_completion_latency` |
+| Java 25 / Java 21 project correctness, JDK discovery | zero errors, right runtime | pass with `JAVA_HOME` unset and JDK 21 first on `PATH` | `20_java25` |
+
+Last full `tests/run.sh` (Task 7): 129 PASS, 0 FAIL, 0 SKIP (00: 8, 01: 2, 10: 17, 11: 26, 12: 6, 20: 10, 30: 22, 31: 10, 32: 28). Log `/tmp/nv4j/logs/test-20261020-223125.log`.
+
+Feature specs: [`specs/002-p1-completion.md`](002-p1-completion.md) (budget, baseline, trials), [`specs/features/completion-ranking.md`](features/completion-ranking.md), [`specs/features/diagnostics-imports-actions.md`](features/diagnostics-imports-actions.md), [`specs/features/jdk-java25.md`](features/jdk-java25.md).
+
+Open follow-ups from P1 (carried to the P3 plan): async import apply (removes the up to 0.8 s accept wait), frecency vs project ranking, cosmetic gaps versus IntelliJ (see README, Known limitations).
 
 ## Reference: IntelliJ Community source
 
@@ -41,12 +73,14 @@ Repo: https://github.com/jetbrains/intellij-community (Apache 2.0). It is the re
 
 ```
 Nv4J/
+  README.md         user guide: capabilities, install, keys, limits
   specs/            source of truth (this folder)
   nvim/             the Neovim config (init.lua, lua/, lazyvim.json)
   tests/
-    fixtures/       sample Spring Boot Maven project used by tests
+    fixtures/       demo/ (Spring Boot Maven project) and planted/ (broken sources, in-memory only)
     run.sh          runs all checks headlessly
     checks/         one script per measurable requirement
+    lib/            headless helpers (lsp, completion, edit, jdk_home)
 ```
 
 ## How to run
@@ -59,7 +93,7 @@ NVIM_APPNAME=nv4j nvim                                                  # use it
 nvim                                                                    # old config, unchanged
 ```
 
-Rollback: stop using `NVIM_APPNAME=nv4j`, delete the symlink.
+Rollback: stop using `NVIM_APPNAME=nv4j` (plain `nvim` is the old config), delete the symlink. The `nv4j` shell alias is `alias nv4j="NVIM_APPNAME=nv4j nvim"`. Requirements and first-start steps: `README.md`.
 
 Side effect to know: data, state and cache go to `~/.local/share/nv4j`, `~/.local/state/nv4j`, `~/.cache/nv4j`. Plugins and Mason tools install again there. They do not share the old config's installs.
 
@@ -73,8 +107,8 @@ Principle: build, measure, compare against the spec number, iterate.
   - Latency: completion p50/p95 against the budget set in the P1 spec.
   - Ranking: expected item appears in the top N.
   - Diagnostics: planted errors are reported, valid Java 25 code reports none.
-  - Spring: annotation, attribute and property-key completion, including a custom annotation.
-  - Run, debug, test: start the fixture app or one test through DAP and the jdtls test bundles, assert a breakpoint hit or a pass result.
+  - Spring: annotation, attribute and property-key completion, including a custom annotation. (P2, not built yet.)
+  - Run, debug, test (P2/P3, not built yet): start the fixture app or one test through DAP and the jdtls test bundles, assert a breakpoint hit or a pass result.
 - Not testable here, done by hand by the user: how typing and UI plugins feel.
 
 ## Logs and temp files
@@ -85,13 +119,13 @@ All under `/tmp/nv4j/`:
 |------|---------|
 | `/tmp/nv4j/logs/test-<timestamp>.log` | output of `tests/run.sh` |
 | `/tmp/nv4j/logs/lsp.log` | Neovim LSP client log |
-| `/tmp/nv4j/logs/jdtls.log` | JDTLS server log |
+| `/tmp/nv4j/jdtls-data/<project>-<hash>/.metadata/.log` | JDTLS server log (inside the workspace) |
 | `/tmp/nv4j/logs/latency.jsonl` | completion timing samples |
-| `/tmp/nv4j/jdtls-data/` | JDTLS workspace data |
+| `/tmp/nv4j/jdtls-data/`, `/tmp/nv4j/jdtls-config/` | JDTLS workspace data and writable config copy |
 
 `/tmp` is cleared by macOS from time to time. Nothing there is needed after a run finishes.
 
 ## Open items
 
 - Spring language server choice and install method (Mason or manual). To be decided in the P2 spec.
-- Latency budgets (numbers) for P1. To be set after the first baseline measurement of the current config.
+- Run and debug (P2): the debug bundles are installed by the LazyVim java extra, but no check covers them; a headless start prints "Could not resolve classpath ... m2e.launchconfig.classpathProvider" for the main-class debug configs. Investigate in P2.
