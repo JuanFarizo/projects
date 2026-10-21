@@ -9,7 +9,7 @@
 --    identifier/type_identifier anywhere after the imports (types, calls, annotations, scoped
 --    references) or a javadoc reference ({@link X}, {@linkplain X}, {@value X}, @see X,
 --    @throws X, @exception X), like JDT/IntelliJ which count javadoc references as uses;
---  * static imports are checked by member name; wildcard imports are skipped;
+--  * static imports are checked by member name; wildcard and module imports are skipped;
 --  * runs on jdt.ls's DiagnosticChanged (each publish) and 400 ms after the last text change, never
 --    in the completion or keystroke path. Measured cost: tests/checks/30_diagnostics.lua (unused_pass_perf).
 -- Message and range as jdt.ls: "The import a.b.C is never used" on the qualified name, Warning,
@@ -33,20 +33,21 @@ function M.scan(buf)
   for node in root:iter_children() do
     local t = node:type()
     if t == "import_declaration" then
-      local text = vim.treesitter.get_node_text(node, buf)
       local wildcard, qname = false, nil
       for child in node:iter_children() do
         if child:type() == "asterisk" then wildcard = true end
         if child:type() == "scoped_identifier" or child:type() == "identifier" then qname = child end
       end
-      if qname and not wildcard then
+      -- `import module m;` (Java 25) imports whole packages: no simple name to search for, so it is
+      -- skipped like a wildcard (the grammar parses `module` into the name, under an ERROR node).
+      local module = vim.treesitter.get_node_text(node, buf):find("^import%s+module%s") ~= nil
+      if qname and not wildcard and not module then
         local name_node = qname:field("name")[1] or qname
         local sr, sc, er, ec = qname:range()
         imports[#imports + 1] = {
           lnum = sr, col = sc, end_lnum = er, end_col = ec,
           name = vim.treesitter.get_node_text(qname, buf),
           simple = vim.treesitter.get_node_text(name_node, buf),
-          static = text:find("^import%s+static%s") ~= nil,
         }
       end
       body_row = select(3, node:range()) + 1
@@ -139,7 +140,10 @@ function M.run(buf)
         end
       end
     end
-    vim.diagnostic.set(M.ns, buf, diags)
+    -- nothing before and nothing now: no set, so no extra DiagnosticChanged per jdt.ls publish
+    if #diags > 0 or #vim.diagnostic.get(buf, { namespace = M.ns }) > 0 then
+      vim.diagnostic.set(M.ns, buf, diags)
+    end
   end)
   busy[buf] = nil
   if not ok then vim.notify("nv4j.unused_imports: " .. tostring(err), vim.log.levels.DEBUG) end

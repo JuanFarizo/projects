@@ -8,6 +8,7 @@
 --  cleared  : fixing the code clears the diagnostics
 --  java25   : Java 25 code (module import, flexible constructor, `_`, record patterns, Markdown
 --             doc comments) -> no diagnostic at all
+--  module   : `import module java.base;` in a file with a compile error -> never flagged by the nv4j pass
 --  maven    : temp project /tmp/nv4j/pomcase: malformed pom.xml -> error on pom.xml AND a visible
 --             notification; fixed pom -> errors gone and no "may need reload" leftover (pom changes
 --             are applied automatically); missing artifact -> error + notification.
@@ -23,7 +24,10 @@ local notes = E.capture_notify()
 local buf = lsp.open(vim.env.NV4J_FIXTURE .. "/src/main/java/demo/App.java")
 local client = lsp.wait_ready(buf, 120000)
 lsp.report(P .. "attached", client ~= nil, client and "jdtls ready" or "jdtls not ready")
-if not client then return lsp.finish() end
+if not client then
+  lsp.finish()
+  return
+end
 vim.wait(1000) -- let the first publish settle
 local orig = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
 
@@ -113,6 +117,31 @@ local ok_all, err = pcall(function()
   E.log("diag_unused_import_removed", msr, #dr)
   lsp.report(P .. "unused_import_cleared_on_remove", okr and msr <= BUDGET_MS, ("%.0f ms (budget %d) %s"):format(msr, BUDGET_MS, E.fmt(dr)))
 
+  -- Java 25 module import with a compile error: `import module java.base;` cannot be judged by a
+  -- name search, so the nv4j pass never flags it; the unused java.util.Map next to it is flagged
+  -- (proves the pass ran on this text).
+  do
+    local lines = E.planted("java25.java.txt")
+    for i, l in ipairs(lines) do
+      if l:find("^import module java%.base;") then table.insert(lines, i + 1, "import java.util.Map;") break end
+    end
+    for i, l in ipairs(lines) do
+      if l:find("public static void main", 1, true) then table.insert(lines, i + 1, '        int broken = "x";') break end
+    end
+    local function module_case(x)
+      return E.has(x, S.ERROR, "Type mismatch") ~= nil and nv4j_has(x, "java.util.Map") ~= nil
+    end
+    local okm, dm = timed("unused_import_module_with_errors", lines, module_case)
+    local held, bad = E.stays(buf, function(x)
+      for _, y in ipairs(x) do
+        if y.namespace == unused_ns and y.message:find("module", 1, true) then return false end
+      end
+      return true
+    end, 1500)
+    lsp.report(P .. "unused_import_module_not_flagged", okm and held,
+      held and "no nv4j warning for `import module java.base;` for 1.5 s (Map flagged)" or E.fmt(bad or dm))
+  end
+
   -- cost of one pass on a 3000-line file (treesitter parse + scan, no LSP)
   do
     local UI = require("nv4j.unused_imports")
@@ -126,20 +155,27 @@ local ok_all, err = pcall(function()
     big[#big + 1] = "}"
     local sb = vim.api.nvim_create_buf(false, true)
     vim.api.nvim_buf_set_lines(sb, 0, -1, false, big)
-    local samples, found = {}, nil
-    for k = 1, 30 do
+    -- pass 0 is the first parse of the whole buffer (cold, reported apart); passes 1..N are timed
+    local N = 100
+    local samples, cold, found = {}, nil, nil
+    for k = 0, N do
       -- an edit before each pass, so the parser re-parses like after a keystroke
       vim.api.nvim_buf_set_lines(sb, 9, 10, false, { ("    /** Method %d. */"):format(k) })
       local t = E.now()
       found = UI.scan(sb)
-      samples[#samples + 1] = E.now() - t
-      E.log("unused_pass_3000_lines", samples[#samples], #big)
+      local ms = E.now() - t
+      if k == 0 then cold = ms else samples[#samples + 1] = ms end
     end
-    table.sort(samples)
-    local p50, p95, mx = samples[15], samples[29], samples[30]
+    -- logged after the loop: a file open/append/close plus JSON between passes is harness cost that
+    -- leaked into the next pass (measured: p95 3.9-5.2 ms with per-pass logging, 1.1-1.2 ms without)
+    E.log("unused_pass_3000_lines.first", cold, #big)
+    for _, ms in ipairs(samples) do E.log("unused_pass_3000_lines", ms, #big) end
+    local C = require("completion")
+    local p50, p95, mx = C.pct(samples, 50), C.pct(samples, 95), C.pct(samples, 100)
     local names = vim.tbl_map(function(f) return f.name end, found or {})
-    lsp.report(P .. "unused_pass_perf", p95 <= 5 and #names == 1 and names[1] == "java.util.Map",
-      ("%d lines: p50=%.2f p95=%.2f max=%.2f ms (budget p95 <= 5) unused=%s"):format(#big, p50, p95, mx, table.concat(names, ",")))
+    lsp.report(P .. "unused_pass_perf", #samples == N and p95 <= 5 and #names == 1 and names[1] == "java.util.Map",
+      ("%d lines, %d passes: p50=%.2f p95=%.2f max=%.2f ms (budget p95 <= 5); first parse %.2f ms (info) unused=%s"):format(
+        #big, N, p50, p95, mx, cold, table.concat(names, ",")))
     vim.api.nvim_buf_delete(sb, { force = true })
   end
 
