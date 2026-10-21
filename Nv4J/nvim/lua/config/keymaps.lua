@@ -322,6 +322,9 @@ map("n", "<leader>cP", function()
 end, { desc = "Supertype hierarchy" })
 map("n", "<leader>ci", vim.lsp.buf.incoming_calls, { desc = "Incoming calls" })
 map("n", "<leader>co", vim.lsp.buf.outgoing_calls, { desc = "Outgoing calls" })
+-- In Java buffers LazyVim's jdtls extra maps <leader>co (buffer-local) to Organize Imports, which
+-- hides the global one above; <leader>cO reaches outgoing calls everywhere.
+map("n", "<leader>cO", vim.lsp.buf.outgoing_calls, { desc = "Outgoing calls" })
 
 -- ── Diagnostics / error navigation (VS Code F8 style; LazyVim core already
 -- binds ]d/[d next/prev diagnostic and ]e/[e next/prev error) ──────────────

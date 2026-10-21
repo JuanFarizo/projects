@@ -30,6 +30,12 @@ return {
         },
       },
       completion = {
+        -- jdt.ls sends the auto-import (additionalTextEdits) only in completionItem/resolve, and
+        -- resolving a well documented type (List, HashMap, ObjectMapper) takes 0.4-0.7 s because it
+        -- also renders the javadoc. With blink's default 100 ms the item was inserted without its
+        -- import. Accept now waits for resolve up to 1.5 s (only as long as resolve really takes).
+        -- Measured: specs/features/diagnostics-imports-actions.md.
+        accept = { resolve_timeout_ms = 1500 },
         ghost_text = { enabled = true },
         documentation = {
           auto_show = true,

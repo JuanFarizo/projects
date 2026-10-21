@@ -71,9 +71,34 @@ return {
               "java.util.Objects.*",
             },
             guessMethodArguments = "insertBestGuessedArguments",
+            -- Import groups, IntelliJ-like (its default: all other, javax, java, static), with
+            -- jakarta next to javax. "" = every package no other entry matches, "#" = static imports.
+            -- Used by auto-import on completion, quick fix imports and organize imports.
+            importOrder = { "", "javax", "jakarta", "java", "#" },
+          },
+          -- No wildcard imports (jdt.ls default 99; IntelliJ folds at 5/3, Spring's style forbids *).
+          sources = { organizeImports = { starThreshold = 99, staticStarThreshold = 99 } },
+          -- Organize imports on save stays off, like IntelliJ's default: it would drop an import added
+          -- just before its first use. <leader>co organizes on demand.
+          saveActions = { organizeImports = false },
+          -- Apply pom.xml / build.gradle changes without asking (default "interactive" leaves a
+          -- "may need reload" diagnostic on the build file and a stale classpath).
+          configuration = { updateBuildConfiguration = "automatic" },
+          -- Generated code close to IntelliJ's defaults: braces, java.util.Objects in
+          -- equals/hashCode, ClassName{field=value, ...} toString, no comments.
+          codeGeneration = {
+            useBlocks = true,
+            generateComments = false,
+            hashCodeEquals = { useJava7Objects = true, useInstanceof = false },
+            toString = {
+              template = "${object.className}{${member.name()}=${member.value}, ${otherMembers}}",
+              codeStyle = "STRING_CONCATENATION",
+            },
           },
         },
       })
+      -- Visible notification when jdt.ls reports errors on pom.xml / build.gradle (nv4j/buildfile.lua).
+      require("nv4j.buildfile").setup()
 
       -- -configuration (jdtls's writable copy of the config) also lives under /tmp/nv4j.
       opts.jdtls_config_dir = function(project_name)
@@ -103,11 +128,10 @@ return {
       -- anything jdtls.start_or_attach itself needs to see has to go here.
       local static_jdtls = {
         cmd_env = { JAVA_HOME = server_home },
-        -- jdtls re-validates (full diagnostics pass) on every didChange with
-        -- no debounce of its own — each keystroke restarts the pass, so on a
-        -- slow-ish machine it never catches up and fires a diagnostics
-        -- publish ~1s after every word. Debounce didChange so it only fires
-        -- once typing pauses, instead of on every keystroke.
+        -- Batch didChange while typing. jdt.ls also debounces on its side (validation <= 400 ms,
+        -- publish 400-2000 ms adaptive, BaseDocumentLifeCycleHandler), and Neovim's semantic-token
+        -- request flushes pending changes after 200 ms anyway: edit-to-diagnostics measured 460-690 ms
+        -- with 500 and the same with 200 (specs/features/diagnostics-imports-actions.md), so 500 stays.
         flags = { debounce_text_changes = 500 },
         -- On ServiceReady, one throw-away completion takes jdt.ls's one-time index cost off the
         -- user's first completion (nv4j/warmup.lua). nvim-jdtls wraps this handler.
@@ -131,6 +155,8 @@ return {
         if prev_on_attach then prev_on_attach(args) end
         local client = vim.lsp.get_client_by_id(args.data.client_id)
         if client then require("nv4j.usage").watch(client.config.root_dir) end
+        -- toString and equals/hashCode field pickers start with all fields selected (nv4j/codegen.lua).
+        require("nv4j.codegen").setup()
       end
       -- The "Publish Diagnostics" / "Building" / "Validate documents" toasts
       -- (bottom-right, checkmark list) are jdtls's $/progress notifications,
