@@ -5,6 +5,9 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 LOGS=/tmp/nv4j/logs
 mkdir -p "$LOGS"
 LOG="$LOGS/test-$(date +%Y%m%d-%H%M%S).log"
+# Timing samples: one run per file (the previous run's stays as latency.prev.jsonl), so the file
+# does not grow forever.
+[ -f "$LOGS/latency.jsonl" ] && mv -f "$LOGS/latency.jsonl" "$LOGS/latency.prev.jsonl"
 export NV4J_FIXTURE="$HERE/fixtures/demo"
 export NV4J_LOG="$LOG"
 export NV4J_RUNNER=1
@@ -83,14 +86,23 @@ for check in "${CHECKS[@]}"; do
   # qa! and no stdin: a check that dies with a buffer still modified in memory must never reach
   # a "Save changes?" prompt (an aborted manual run answered it at EOF and saved in-memory test
   # edits into the fixture).
-  out="$(nvim --headless --cmd "set rtp+=$HERE/lib" -c "lua package.path='$HERE/lib/?.lua;'..package.path" -c "luafile $check" -c "qa!" </dev/null 2>&1)"
+  out="$(NV4J_CHECK="${name%.lua}" nvim --headless --cmd "set rtp+=$HERE/lib" -c "lua package.path='$HERE/lib/?.lua;'..package.path" -c "luafile $check" -c "qa!" </dev/null 2>&1)"
   crc=$?
   # Full output goes to the log (NV4J_RUNNER makes lsp.report skip its own append);
-  # console shows just PASS/FAIL, everything else (jdtls progress noise, errors) goes to the log.
-  printf '%s\n' "$out" | grep '^\(PASS\|FAIL\|SKIP\) '
+  # console shows just PASS/FAIL/DONE, everything else (jdtls progress noise, errors) goes to the log.
+  printf '%s\n' "$out" | grep '^\(PASS\|FAIL\|SKIP\|DONE\) '
   printf '%s\n' "$out" >>"$LOG"
   if ! printf '%s\n' "$out" | grep -q '^\(PASS\|FAIL\) '; then
     echo "FAIL $name produced no PASS/FAIL lines (exit $crc; details in $LOG)" | tee -a "$LOG"
+    rc=1
+    continue
+  fi
+  # lsp.finish() prints `DONE <check> <pass> <fail>` as the check's last act. Without it the check
+  # died part-way (an error outside its pcall blocks, then `qa!` exits 0) and its later cases are
+  # missing: fail loudly with the last output lines.
+  if ! printf '%s\n' "$out" | grep -q "^DONE ${name%.lua} "; then
+    echo "FAIL $name did not finish: no 'DONE ${name%.lua}' line, cases after the last one above are missing (exit $crc). Last output lines:" | tee -a "$LOG"
+    printf '%s\n' "$out" | grep -v '^[[:space:]]*$' | tail -n 15 | sed 's/^/    | /' | tee -a "$LOG"
     rc=1
     continue
   fi

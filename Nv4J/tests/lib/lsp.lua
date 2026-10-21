@@ -98,8 +98,10 @@ function M.diagnostics(bufnr)
 end
 
 --- Print PASS|FAIL and append to the shared test log.
+local n_pass, n_fail = 0, 0
 function M.report(name, ok, detail)
   if not ok then failed = true end
+  if ok then n_pass = n_pass + 1 else n_fail = n_fail + 1 end
   local line = (ok and "PASS " or "FAIL ") .. name .. (detail and detail ~= "" and (" " .. tostring(detail)) or "")
   -- Straight to stdout on a line of its own: a message echoed without a newline (e.g. a jdtls
   -- status echo) must not glue this line to the previous one and hide it from run.sh's grep.
@@ -111,8 +113,22 @@ function M.report(name, ok, detail)
   end
 end
 
---- Call at the end of a check: non-zero exit if anything failed.
+--- Call at the end of a check: prints `DONE <check> <n_pass> <n_fail>` (run.sh requires it: a check
+--- that dies before reaching it fails even if every case it printed passed), then exits non-zero
+--- if anything failed. <check> is the check file's name without `.lua` ($NV4J_CHECK from run.sh,
+--- else the first caller frame from a .lua file).
 function M.finish()
+  local check = vim.env.NV4J_CHECK
+  for level = 2, 20 do
+    if check then break end
+    local info = debug.getinfo(level, "S")
+    if not info then break end
+    if info.source:match("%.lua$") and not info.source:match("/lib/lsp%.lua$") then
+      check = vim.fn.fnamemodify((info.source:gsub("^@", "")), ":t:r")
+    end
+  end
+  io.stdout:write(("\nDONE %s %d %d\n"):format(check or "?", n_pass, n_fail))
+  io.stdout:flush()
   if failed then vim.cmd("cquit 1") end
 end
 
