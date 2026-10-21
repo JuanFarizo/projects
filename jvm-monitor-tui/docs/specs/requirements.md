@@ -35,7 +35,7 @@ Full catalog with status (implemented / approved / rejected / parked): [metrics.
 
 **Non-goals:** heap dump/object histogram analysis, CPU/memory sampling profiler, flame graphs — out of scope, conflicts pillar 2.
 
-Collection mechanism: JMX polling is the default. JFR event streaming stays parked — only add it if polling demonstrably misses events (e.g. short GC pauses) that matter to the UI. GC last-pause duration/cause uses a JMX notification listener alongside the poll loop (still JMX, not JFR) — see [metrics.md](metrics.md) GC section for the implementation approach and the connection-method restriction.
+Collection mechanism: JMX polling is the default. JFR event streaming stays parked — only add it if polling demonstrably misses events (e.g. short GC pauses) that matter to the UI. **Evaluation pending:** assess JFR for JIT activity (what/when compiled or deoptimized), GC pauses/collections beyond what the JMX listener gives, and memory allocation (rate and sources). Scope, questions and exit criteria in [jfr-evaluation.md](jfr-evaluation.md); allocation detail must not cross the sampling-profiler non-goal above without an explicit requirements change. GC last-pause duration/cause uses a JMX notification listener alongside the poll loop (still JMX, not JFR) — see [metrics.md](metrics.md) GC section for the implementation approach and the connection-method restriction.
 
 ### Screens (see [ui-view mock](ui-view/jvm-monitor-tui-implementation-handoff.html))
 1. Connections (process picker + saved remotes).
