@@ -1,0 +1,11 @@
+package demo;
+
+public class App {
+    private String name;
+    private int age;
+
+    public int score() {
+        int base = 10;
+        return base + 2 * 3;
+    }
+}

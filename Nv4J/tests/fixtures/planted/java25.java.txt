@@ -1,0 +1,42 @@
+package demo;
+
+import module java.base;
+
+/// Markdown doc comment (JEP 467).
+/// - flexible constructor bodies (JEP 513)
+/// - module import declarations (JEP 511)
+public class App {
+    sealed interface Shape permits Circle, Square {}
+    record Circle(double r) implements Shape {}
+    record Square(double side) implements Shape {}
+
+    private final int size;
+
+    App(int size) {
+        if (size < 0) throw new IllegalArgumentException("size");
+        this.size = size;
+        super();
+    }
+
+    static double area(Shape s) {
+        return switch (s) {
+            case Circle(var r) -> Math.PI * r * r;
+            case Square(double side) when side > 0 -> side * side;
+            case Square _ -> 0;
+        };
+    }
+
+    public static void main(String[] args) {
+        List<Shape> shapes = List.of(new Circle(1), new Square(2));
+        var total = 0d;
+        for (Shape s : shapes) total += area(s);
+        String text = """
+            total: %s
+            """.formatted(total);
+        try { Integer.parseInt(text); } catch (NumberFormatException _) { }
+        Object o = shapes;
+        if (o instanceof List<?> l && !l.isEmpty()) System.out.println(l.size() + new App(3).size);
+        ScopedValue<String> sv = ScopedValue.newInstance();
+        ScopedValue.where(sv, "x").run(() -> System.out.println(sv.get()));
+    }
+}

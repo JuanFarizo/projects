@@ -1,0 +1,9 @@
+package demo;
+
+public class App {
+    public static void main(String[] args) {
+        String name = 42;
+        Repo repo = new Repo();
+        repo.doesNotExist();
+    }
+}

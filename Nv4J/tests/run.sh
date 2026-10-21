@@ -36,6 +36,10 @@ export PATH="$PATH_JDK/bin:$PATH"
 echo "env: java on PATH = $("$PATH_JDK/bin/java" -version 2>&1 | head -1), JAVA_HOME unset" | tee -a "$LOG"
 
 export NVIM_APPNAME=nv4j
+# The user's nv4j state (blink.cmp's frecency database, shada, sessions) stays out of the checks:
+# items the user accepts boost those labels in blink's ranking (checks 10/11), and checks must not
+# write into it. Plugins and Mason (stdpath data) are shared.
+export XDG_STATE_HOME=/tmp/nv4j/state
 
 # Setup (idempotent): headless runs never reach Mason's ensure_installed, so install jdtls into
 # nv4j's own mason dir if missing. Stops as soon as the install finishes or fails (5 min cap).
@@ -76,7 +80,10 @@ fi
 for check in "${CHECKS[@]}"; do
   name="$(basename "$check")"
   echo "== $name" | tee -a "$LOG"
-  out="$(nvim --headless --cmd "set rtp+=$HERE/lib" -c "lua package.path='$HERE/lib/?.lua;'..package.path" -c "luafile $check" -c qa 2>&1)"
+  # qa! and no stdin: a check that dies with a buffer still modified in memory must never reach
+  # a "Save changes?" prompt (an aborted manual run answered it at EOF and saved in-memory test
+  # edits into the fixture).
+  out="$(nvim --headless --cmd "set rtp+=$HERE/lib" -c "lua package.path='$HERE/lib/?.lua;'..package.path" -c "luafile $check" -c "qa!" </dev/null 2>&1)"
   crc=$?
   # Full output goes to the log (NV4J_RUNNER makes lsp.report skip its own append);
   # console shows just PASS/FAIL, everything else (jdtls progress noise, errors) goes to the log.

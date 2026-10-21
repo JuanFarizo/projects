@@ -1,0 +1,12 @@
+package demo;
+
+public class App implements Runnable {
+    public static void main(String[] args) {
+        Repo repo = new Repo();
+        repo.doesNotExist();
+        int doubled = twice(21);
+        undefinedVar = 3;
+        Undef thing = null;
+        List<String> names = null;
+    }
+}

@@ -1,0 +1,23 @@
+package demo;
+
+import static java.util.Objects.requireNonNull;
+import org.springframework.http.ResponseEntity;
+import java.util.List;
+import jakarta.validation.Valid;
+import java.util.Map;
+import javax.sql.DataSource;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import java.util.ArrayList;
+import static org.springframework.http.HttpStatus.OK;
+
+public class App {
+    public static void main(String[] args) {
+        List<String> names = new ArrayList<>();
+        ResponseEntity<String> response = null;
+        Valid valid = null;
+        DataSource dataSource = null;
+        ObjectMapper mapper = null;
+        requireNonNull(names);
+        Object status = OK;
+    }
+}

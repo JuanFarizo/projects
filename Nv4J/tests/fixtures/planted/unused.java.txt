@@ -1,0 +1,17 @@
+package demo;
+
+import java.util.Map;
+
+// Warnings only (JDT reports unused code only in a file without errors).
+public class App {
+    private int neverRead;
+
+    public static void main(String[] args) {
+        int unused = 3;
+        Repo repo = new Repo();
+        repo.save(new Person("Ada", 36));
+    }
+
+    private void helper() {
+    }
+}
