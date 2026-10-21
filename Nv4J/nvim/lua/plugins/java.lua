@@ -101,6 +101,8 @@ return {
       require("nv4j.buildfile").setup()
       -- Unused-import warnings also while the file has compile errors (JDT drops them; nv4j/unused_imports.lua).
       require("nv4j.unused_imports").setup()
+      -- No jdt.ls for unnamed buffers (nvim-dap's terminal setup makes one, nv4j/debug.lua).
+      require("nv4j.debug").setup()
 
       -- -configuration (jdtls's writable copy of the config) lives under stdpath("cache")/jdtls-config
       -- (~/.cache/nv4j/jdtls-config), see lua/nv4j/paths.lua.
@@ -163,6 +165,10 @@ return {
         if client then require("nv4j.usage").watch(client.config.root_dir) end
         -- toString and equals/hashCode field pickers start with all fields selected (nv4j/codegen.lua).
         require("nv4j.codegen").setup()
+        -- Debug fixes (nv4j/debug.lua): first JDT launching calls one at a time, refresh + build before every
+        -- Java launch, no debuggee left after terminate. Runs after LazyVim's setup_dap, which
+        -- registers the java adapter wrapped here.
+        require("nv4j.debug").on_attach(client)
       end
       -- The "Publish Diagnostics" / "Building" / "Validate documents" toasts
       -- (bottom-right, checkmark list) are jdtls's $/progress notifications,

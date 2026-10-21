@@ -2,14 +2,14 @@
 
 A fast, lightweight Neovim setup for Java and Spring development. It is built on LazyVim and runs next to your normal Neovim: your own `~/.config/nvim` is never touched. IntelliJ is the feature reference. Every feature has a priority and a pass/fail number, and the numbers are re-measured by a headless test suite you can run yourself.
 
-Status: **P1 is built and passing** (completion, diagnostics, imports, code actions, JDK handling). P2 to P5 are planned, not built. The "Not yet" list below is honest about that.
+Status: **P1 is built and passing** (completion, diagnostics, imports, code actions, JDK handling). P2 is in progress: debugging a main class or a JUnit test works and is checked (`40_debug`); Spring Boot run and Spring awareness are not built yet. P3 to P5 are planned, not built. The "Not yet" list below is honest about that.
 
 ## Priorities
 
 | Priority | Scope | Status |
 |----------|-------|--------|
 | P1 | Completion speed and ranking, diagnostics, imports, code actions, Java 25 and JDK handling | Done (this README, Capabilities) |
-| P2 | Spring awareness (annotations, attributes, `application.properties`/`yml`), run and debug Spring Boot | Not yet |
+| P2 | Spring awareness (annotations, attributes, `application.properties`/`yml`), run and debug Spring Boot | In progress: debug done (Capabilities, Debug) |
 | P3 | Tests runner polish, scaffolding (package/class creation), refactors beyond what jdt.ls already offers | Not yet |
 | P4 | Gradle, Spring navigation, JPA checks | Not yet |
 | P5 | Everything else | Not yet |
@@ -78,17 +78,32 @@ Nothing is pinned to one JDK. `nvim/lua/nv4j/jdk.lua` finds JDKs in SDKMAN (`~/.
 - Every JDK found is registered with jdt.ls. The one used to compile a project follows the build file: `.sdkmanrc`, then the pom's `maven.compiler.release`, `java.version` or `maven.compiler.source`, then `$JAVA_HOME`, then the newest.
 - Proven by `20_java25` with a hostile setup (`JAVA_HOME` unset, a JDK 21 first on `PATH`): the Java 25 fixture reports release 25 and a JDK 25 location with zero errors, jdt.ls does not run on `PATH`'s Java 21, and a second Maven project with release 21 gets a JDK 21 runtime.
 
-### Also available (from LazyVim, not covered by the P1 checks)
+### Debug (P2, main class and JUnit test)
 
-Debug adapter and test bundles (Mason: `java-debug-adapter`, `java-test`), the keymaps below for tests and debugging, Telescope, neo-tree, git signs, `lemminx` for XML (`pom.xml` formatting and validation), and a basic Java file template when you create a new `.java` file (class, package, and a Spring annotation for controller/service/repository/entity). They are here because the base config had them, they are not part of P1's measured work.
+Breakpoints hit, also in files added while Neovim was closed (a `git pull`), and the debugged program runs on the project's JDK. Fixes in `nvim/lua/nv4j/debug.lua`, details in `specs/features/debug-run.md`. Numbers from 5 consecutive runs of `40_debug` (13 of 13 PASS each):
+
+| What you get | Measured (budget) | Check |
+|--------------|-------------------|-------|
+| Debug a Spring Boot main class (`<leader>dc`, pick the class): stops at the breakpoint, frame and variables readable | stop 2.9 to 3.1 s after launch, including a refresh and build of the project (20 s) | `40_debug` `breakpoint_hit`, `variable` |
+| Debug the nearest JUnit 5 test (`<leader>tr`): stops at the breakpoint, then the test finishes and passes | stop 0.7 to 0.9 s (20 s) | `40_debug` `test_breakpoint_hit`, `test_variable`, `test_finished` |
+| No "Could not resolve classpath ... m2e.launchconfig.classpathProvider" at start, every main class gets a debug config | 0 errors, 3 of 3 main classes, in 69 of 69 runs (before: failed 4 of 4) | `40_debug` `classpath_first`, `configs` |
+| The debugged JVM runs on the project's JDK, not on `PATH`'s (JDK 21 first on `PATH`, `JAVA_HOME` unset) | `java.version` 25.0.4 for the main class and the test | `40_debug` `debuggee_jdk`, `test_debuggee_jdk` |
+| Terminate leaves no JVM behind | gone within 10 s (10 s) | `40_debug` `no_orphan`, `test_finished` |
+| A debug launch starts no second jdt.ls | 0 extra starts | `40_debug` `one_jdtls` |
+
+Before each launch the project's source folders are refreshed and built (VS Code builds too). If the build has compile errors you get a warning and the launch goes ahead.
+
+### Also available (from LazyVim, not covered by the checks)
+
+Telescope, neo-tree, git signs, `lemminx` for XML (`pom.xml` formatting and validation), and a basic Java file template when you create a new `.java` file (class, package, and a Spring annotation for controller/service/repository/entity). They are here because the base config had them, they are not part of P1's measured work.
 
 ## Not yet
 
 Be aware before you rely on Nv4J for a full workday:
 
 - **P2: Spring awareness.** No Spring language server. No completion or checking for annotation attributes beyond what jdt.ls does (`@Table(`/`@Column(` lists come from jdt.ls only), no `application.properties`/`yml` key completion, no bean or request mapping support.
-- **P2: run and debug Spring Boot.** There is no Spring Boot run/debug workflow yet. `<leader>rj` runs a plain `java -cp ... Main` in a terminal and works (checked by hand against the fixture), but it is not a Spring Boot launch with profiles or env. The debug keys exist (LazyVim) and are not tested here. During this work a notice `Could not resolve classpath and modulepath ... m2e.launchconfig.classpathProvider` appeared at start in headless runs, so treat debugging as unverified.
-- **P3: tests runner polish.** `<leader>tt`, `<leader>tr`, `<leader>tT` (nvim-jdtls) and `<leader>tp` (whole project via `mvn test`) exist, they are not covered by checks.
+- **P2: run Spring Boot.** Debugging works (Capabilities, Debug). There is no Spring Boot run workflow with profiles or env yet. `<leader>rj` runs a plain `java -cp ... Main` in a terminal and works (checked by hand against the fixture), but it is not a Spring Boot launch.
+- **P3: tests runner polish.** `<leader>tr` (debug the nearest test) is covered by `40_debug`. `<leader>tt`, `<leader>tT` (nvim-jdtls) and `<leader>tp` (whole project via `mvn test`) exist, they are not covered by checks.
 - **P3: scaffolding** (create package, class, with a wizard). Only the basic new-file template above exists.
 - **P3: refactors beyond what jdt.ls already offers.** Extract and rename work through jdt.ls. Move, inline, change signature, safe delete are not set up or tested.
 - **P4: Gradle** (supported by jdt.ls, not tested, only the build-file notification code knows `build.gradle`), Spring navigation, JPA checks.
@@ -187,12 +202,12 @@ Generate getters, constructors, `toString`, `equals`/`hashCode`: put the cursor 
 | `<C-b>` / `<leader>e` / `<leader>ef` | file explorer / explorer at root / reveal current file |
 | `<leader>cc` / `<leader>cC` | run / refresh code lens ("n references" above methods) |
 
-**Run, debug, test** (not covered by P1 checks, see Not yet):
+**Run, debug, test** (debugging a main class and `<leader>tr` are covered by `40_debug`; the rest is not checked, see Not yet):
 
 | Key | Does |
 |-----|------|
 | `<leader>rj` | run a main class with plain `java` in a terminal (picks the class if several; uses the project's JDK from jdt.ls) |
-| `<leader>tt` / `<leader>tr` / `<leader>tT` | run all tests in this class / nearest test / pick a test |
+| `<leader>tt` / `<leader>tr` / `<leader>tT` | run all tests in this class / nearest test / pick a test, in the debugger (breakpoints stop) |
 | `<leader>tp` | run all project tests (`mvnw test` or `mvn test`) in a terminal |
 | `<leader>db` / `<leader>dc` / `<leader>dO` / `<leader>di` / `<leader>dB` / `<leader>dt` / `<leader>du` | toggle breakpoint / run or continue / step over / step into / conditional breakpoint / terminate / debug UI |
 

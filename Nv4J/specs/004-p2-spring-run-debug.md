@@ -1,6 +1,6 @@
 # 004 - P2: run, debug and Spring awareness
 
-Status: Task 0 done (research, fixture, failing baselines). Plan: `docs/superpowers/plans/2026-10-21-nv4j-p2-spring-run-debug.md`. Does not contradict `001-architecture.md`; decisions D14 and later live in its decisions table.
+Status: Task 0 done (research, fixture, failing baselines); Task 1 done (debug works: `DONE 40_debug 13 0`, 5 of 5 consecutive runs). Plan: `docs/superpowers/plans/2026-10-21-nv4j-p2-spring-run-debug.md`. Does not contradict `001-architecture.md`; decisions D14 and later live in its decisions table.
 
 ## Goal
 
@@ -41,11 +41,23 @@ Run and debug a Spring Boot app from Neovim (profiles, env, breakpoints that hit
 
 `50_spring_ls`: `DONE 50_spring_ls 0 5` (no `spring-boot` client: "no 'spring-boot' client on application.properties after 30741 ms (filetype jproperties, clients: none)"). Log `/tmp/nv4j/logs/test-20261021-100352.log`.
 
-`40_debug`, 3 runs (logs `/tmp/nv4j/logs/test-20261021-100947.log`, `-101122.log`, `-101216.log`): `classpath_first` FAIL 3/3 (the m2e provider race), `configs` FAIL 3/3 (nvim-jdtls drops main classes or never calls back), `breakpoint_hit` FAIL 3/3 (planted classes not built at launch), `no_orphan` FAIL 2/3.
+`40_debug`, 3 runs (logs `/tmp/nv4j/logs/test-20261021-100947.log`, `-101122.log`, `-101216.log`): `classpath_first` FAIL 3/3 (the m2e provider race), `configs` FAIL 3/3 (nvim-jdtls drops main classes or never calls back), `breakpoint_hit` FAIL 3/3 (planted classes not built at launch), `no_orphan` FAIL 2/3 (the third run passed only because the app had died by itself; with the full run below, 2 of 4 runs passed that way, which is why Task 1 made the case require the JVM alive before terminate).
 
 Root causes and the full trial logs: `specs/features/debug-run.md`, `specs/features/spring-language-server.md`.
 
 Full `tests/run.sh` after the fixture change: see "Task 0 full run" below.
+
+## Task 1 (debug)
+
+Fixes in `nvim/lua/nv4j/debug.lua` (no helper API; `require("nv4j.debug").junit_launcher(config)` is exported for the check): first JDT launching calls one at a time until a classpath resolved, source-folder refresh + two incremental builds before every Java launch, terminal job stopped when a Java launch session closes, no jdt.ls for unnamed buffers, JDT's bundled JUnit launcher replaced by the engine-matching one. Details, controls and the trial log (f1 to f15): `specs/features/debug-run.md`.
+
+Fixture: `src/test/java/demo/GreetingPropertiesTest.java` (plain JUnit 5, no Spring context) for the JUnit case.
+
+`40_debug` now has 13 cases (Task 0's 5 plus `variable`, `debuggee_jdk`, `one_jdtls`, `test_breakpoint_hit`, `test_variable`, `test_debuggee_jdk`, `test_finished`, `junit_launcher`). 5 consecutive runs: `DONE 40_debug 13 0` 5 of 5, breakpoint hit 2941 to 3095 ms and test breakpoint 715 to 894 ms (budget 20 s), debuggee `java.version` 25.0.4 with JDK 21 first on PATH and `JAVA_HOME` unset, debuggee gone after terminate.
+
+Full `tests/run.sh` (log `/tmp/nv4j/logs/test-20261021-112341.log`): P1 unchanged at 135 PASS (00: 11, 01: 2, 10: 17, 11: 26, 12: 7, 20: 10, 30: 24, 31: 10, 32: 28, all 0 FAIL), `DONE 40_debug 13 0`, `DONE 50_spring_ls 0 5` (no `spring-boot` client yet, Task 3). 148 PASS, exit 1 only because of `50_spring_ls`.
+
+Ruling: a build before launch that ends with compile errors only warns and launches (VS Code asks). Cost if wrong: a launch on stale classes after a warning the user may miss.
 
 ## Task 0 full run
 

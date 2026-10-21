@@ -1,22 +1,35 @@
--- P2 debug. Run via tests/run.sh. Spec: specs/features/debug-run.md.
+-- P2 debug. Run via tests/run.sh. Spec: specs/features/debug-run.md. Fixes: nvim/lua/nv4j/debug.lua.
 --  classpath_first : no debug-classpath resolution fails in a fresh jdt.ls. nvim-jdtls's
 --                    fetch_main_configs (LazyVim's main-class configs at attach, :JdtUpdateDebugConfig,
---                    <leader>rj) sends one vscode.java.resolveClasspath per main class in parallel; JDT
---                    launching publishes its lazy provider table (JavaRuntime.getClasspathProviders)
---                    before filling it, so a concurrent first call fails with "Referenced classpath
---                    provider does not exist: org.eclipse.m2e.launchconfig.classpathProvider", and
---                    nvim-jdtls then drops that main class (its callback never fires when the failed
---                    call is the last to answer). Here LazyVim's own call runs as in a user session,
---                    plus BURST more fetch_main_configs the moment jdt.ls attaches. The race is timing
---                    dependent: before the fix it failed in part of the runs only (debug-run.md).
---  configs         : every fetch_main_configs above calls back with all 3 main classes.
+--                    <leader>rj) sends java executable / project settings / classpath requests per main
+--                    class in parallel; JDT launching publishes its lazy provider table
+--                    (JavaRuntime.getClasspathProviders) before filling it, so a concurrent first call
+--                    fails with "Referenced classpath provider does not exist:
+--                    org.eclipse.m2e.launchconfig.classpathProvider". Here LazyVim's own call runs as in
+--                    a user session, plus BURST more fetch_main_configs the moment jdt.ls attaches. The
+--                    race is timing dependent: before the fix it failed in part of the runs only.
+--  configs         : every fetch_main_configs above calls back with all 3 main classes (a race loser is
+--                    dropped by nvim-jdtls, or its callback never fires).
 --  breakpoint_hit  : DemoApplication launched through nvim-dap (the user's config: integratedTerminal)
 --                    stops at a breakpoint in LateRunner<N>.run <= 20 s after dap.run. LateRunner<N>
 --                    and LateGreeting<N> (N new each run) are written by this check BEFORE jdt.ls starts,
 --                    like files a `git pull` brings while Neovim is closed; only LateRunner<N> is opened
---                    (to set the breakpoint). Both are removed at the end, with their class files.
---  no_orphan       : after dap.terminate() the debuggee JVM is gone within 10 s.
--- Timings: /tmp/nv4j/logs/latency.jsonl (debug_breakpoint_hit).
+--                    (to set the breakpoint). Both are removed after the main-class cases, with their
+--                    class files.
+--  variable        : at that stop, `text` evaluates to "late".
+--  debuggee_jdk    : the debuggee's java.version is 25 (project JDK, nv4j.jdk) although run.sh puts JDK
+--                    21 first on PATH and unsets JAVA_HOME (the hostile case).
+--  one_jdtls       : no jdt.ls start/attach with another root than the project (nvim-dap's terminal setup
+--                    used to start a stray one with root ".").
+--  no_orphan       : the marked debuggee JVM is seen alive before dap.terminate() and is gone <= 10 s after
+--                    (a JVM that died by itself proves nothing and fails the case).
+--  test_*          : the same for a JUnit 5 test method (java-test bundle) through nvim-jdtls's
+--                    test_nearest_method (<leader>tr): stop at the breakpoint in
+--                    GreetingPropertiesTest.keepsText <= 20 s, `text` = "hi", java.version 25, then continue:
+--                    the run ends with 1 test, 0 failures and no JVM left.
+--  junit_launcher  : nv4j.debug.junit_launcher on a synthetic classpath: JDT's bundled
+--                    junit-platform-launcher is replaced by the engine-matching one from the Maven repo.
+-- Timings: /tmp/nv4j/logs/latency.jsonl (debug_breakpoint_hit, debug_test_breakpoint_hit).
 vim.o.confirm = false
 local lsp = require("lsp")
 local E = require("edit")
@@ -71,12 +84,31 @@ local function wait_until(ms, pred, errs)
 end
 
 -- nvim-jdtls reports a failed resolveClasspath only with print(): collect those.
-local printed = {}
+local printed, all_printed = {}, {}
 local orig_print = print
 _G.print = function(...)
   local msg = table.concat(vim.tbl_map(tostring, { ... }), " ")
   if msg:find("classpath", 1, true) then printed[#printed + 1] = msg end
+  all_printed[#all_printed + 1] = msg
   return orig_print(...)
+end
+
+-- Every jdt.ls start/attach request, by root: a debug launch must not start a second jdt.ls (nvim-dap's
+-- terminal setup fires FileType java on an unnamed scratch buffer; that stray server dies in
+-- `initialize`, so counting live clients would miss it).
+local starts = {}
+local orig_start = vim.lsp.start
+vim.lsp.start = function(config, ...)
+  if config and config.name == "jdtls" then starts[#starts + 1] = tostring(config.root_dir) end
+  return orig_start(config, ...)
+end
+
+-- vim.notify messages (nvim-jdtls reports "No suitable test method found" and friends this way)
+local notes = {}
+local orig_notify = vim.notify
+vim.notify = function(msg, ...)
+  notes[#notes + 1] = tostring(msg):gsub("\n.*", "")
+  return orig_notify(msg, ...)
 end
 
 -- BURST more fetch_main_configs the moment jdt.ls attaches, next to LazyVim's own.
@@ -102,6 +134,80 @@ if not client then
 end
 
 local errs = {}
+local dap = require("dap")
+-- Every Java launch (main class and test) gets the marker, so its JVM can be found and killed.
+dap.listeners.on_config["nv4j_40"] = function(c)
+  c = vim.deepcopy(c)
+  if c.type == "java" then c.vmArgs = ((c.vmArgs and (c.vmArgs .. " ")) or "") .. "-D" .. MARKER end
+  return c
+end
+local function alive() return vim.fn.system({ "pgrep", "-f", MARKER }) ~= "" end
+local function pids() return (vim.trim(vim.fn.system({ "pgrep", "-f", MARKER })):gsub("\n", " ")) end
+
+-- Synchronous DAP request on the current session (nil on error/timeout).
+local function dap_req(cmd, args)
+  local session = dap.session()
+  if not session then return nil end
+  local res
+  session:request(cmd, args, function(e, r) res = e and false or r end)
+  wait_until(5000, function() return res ~= nil end, errs)
+  return res or nil
+end
+
+-- Breakpoint at buf:lnum, launch(), wait for `stopped`; then read the top frame, `var` and the
+-- debuggee's java.version. Returns a table describing what was seen.
+local function stop_at(buf, lnum, launch)
+  require("dap.breakpoints").set({}, buf, lnum)
+  local r = {}
+  dap.listeners.after.event_stopped["nv4j_40"] = function(_, body) r.stopped = r.stopped or body end
+  local t0 = E.now()
+  launch()
+  wait_until(BREAK_BUDGET_MS + 20000, function() return r.stopped ~= nil end, errs)
+  r.ms = E.now() - t0
+  dap.listeners.after.event_stopped["nv4j_40"] = nil
+  if r.stopped and dap.session() then
+    local st = dap_req("stackTrace", { threadId = r.stopped.threadId, levels = 1 })
+    r.frame = st and st.stackFrames and st.stackFrames[1]
+    local function eval(expr)
+      local e = r.frame and dap_req("evaluate", { expression = expr, frameId = r.frame.id, context = "repl" })
+      return e and (e.result:gsub('^"(.*)"$', "%1")) or nil
+    end
+    r.eval = eval
+    r.jdk = eval('System.getProperty("java.version")')
+  end
+  r.at = r.frame and ("%s line %s"):format(r.frame.name, tostring(r.frame.line)) or "no frame"
+  r.ok = r.stopped ~= nil and r.stopped.reason == "breakpoint" and r.ms <= BREAK_BUDGET_MS and r.frame ~= nil
+    and r.frame.line == lnum
+  return r
+end
+
+-- The debuggee's own output (integratedTerminal) explains a launch that never stops.
+local function terminal_text()
+  local log = ""
+  for _, b in ipairs(vim.api.nvim_list_bufs()) do
+    if vim.bo[b].buftype == "terminal" then log = log .. table.concat(vim.api.nvim_buf_get_lines(b, 0, -1, false), "") end
+  end
+  return log
+end
+
+local function report_stop(name, r, want_frame, lnum, explain)
+  local ok = r.ok and r.frame.name:find(want_frame, 1, true) ~= nil
+  lsp.report(P .. name, ok, r.stopped
+    and ("stopped (%s) after %.0f ms (budget %d) at %s (want %s line %d)"):format(r.stopped.reason, r.ms, BREAK_BUDGET_MS, r.at, want_frame, lnum)
+    or ("no stop within %.0f ms; %s"):format(r.ms, explain()))
+end
+
+local function report_value(name, r, var, want)
+  local got = r.eval and r.eval(var)
+  lsp.report(P .. name, got == want, ("%s = %s (want %s)"):format(var, tostring(got), want))
+end
+
+local function report_jdk(name, r)
+  lsp.report(P .. name, r.jdk ~= nil and r.jdk:match("^25[%.%-+]?") ~= nil,
+    ("debuggee java.version = %s (want 25; java on PATH: %s, JAVA_HOME %s)"):format(tostring(r.jdk),
+      vim.trim(vim.fn.system({ "sh", "-c", "java -version 2>&1 | head -1" })), vim.env.JAVA_HOME and "set" or "unset"))
+end
+
 local ok_all, err = pcall(function()
   local function all_back()
     for _, f in ipairs(fetches) do if not f then return false end end
@@ -115,11 +221,15 @@ local ok_all, err = pcall(function()
   for i, f in ipairs(fetches) do
     short[#short + 1] = f and tostring(#f) or "no callback"
     if f and #f ~= #MAINS then short[i] = short[i] .. "!" end
+    for _, c in ipairs(f or {}) do -- classpath size per main class: a short one misses the Maven deps
+      short[i] = short[i] .. (" %s:%d"):format(c.mainClass:gsub("^demo%.", ""), #(c.classPaths or {}))
+    end
   end
   local configs = fetches[1] or nil
   for _, f in ipairs(fetches) do if not f or #f ~= #MAINS then configs = nil end end
   lsp.report(P .. "configs", configs ~= nil,
-    ("main classes per fetch_main_configs (want %d each): %s"):format(#MAINS, table.concat(short, ", ")))
+    ("main classes per fetch_main_configs (want %d each): %s%s"):format(#MAINS, table.concat(short, ", "),
+      (configs or not all_printed[1]) and "" or ("; printed: " .. table.concat(all_printed, " | "):sub(1, 300))))
   if not configs then
     -- launch with a fresh fetch (the table is warm now) so breakpoint_hit is still measured
     local again
@@ -131,54 +241,105 @@ local ok_all, err = pcall(function()
   for _, c in ipairs(configs or {}) do
     if c.mainClass == "demo.DemoApplication" then cfg = vim.deepcopy(c) end
   end
+
+  -- 1. main class: DemoApplication, breakpoint in the planted LateRunner<N>
   if not cfg then
-    lsp.report(P .. "breakpoint_hit", false, "no launch config for demo.DemoApplication")
-    lsp.report(P .. "no_orphan", false, "nothing launched")
-    return
-  end
-  cfg.args = "--server.port=0"
-  cfg.vmArgs = ((cfg.vmArgs and (cfg.vmArgs .. " ")) or "") .. "-D" .. MARKER
-
-  local rbuf = lsp.open(src .. runner .. ".java")
-  local lnum = E.line_of(rbuf, "String text = greeting%.text%(%);") + 1
-  local dap = require("dap")
-  require("dap.breakpoints").set({}, rbuf, lnum)
-  local stopped, output = nil, {}
-  dap.listeners.after.event_stopped["nv4j_40"] = function(_, body) stopped = stopped or body end
-  dap.listeners.after.event_output["nv4j_40"] = function(_, body) output[#output + 1] = body.output end
-  local had_class = vim.uv.fs_stat(classes .. greeting .. ".class") ~= nil
-  local t0 = E.now()
-  dap.run(cfg)
-  wait_until(BREAK_BUDGET_MS + 20000, function() return stopped ~= nil end, errs)
-  local hit_ms = E.now() - t0
-  local frame
-  local session = dap.session()
-  if stopped and session then
-    session:request("stackTrace", { threadId = stopped.threadId, levels = 1 }, function(_, r)
-      frame = r and r.stackFrames and r.stackFrames[1] or false
+    for _, n in ipairs({ "breakpoint_hit", "variable", "debuggee_jdk", "one_jdtls", "no_orphan" }) do
+      lsp.report(P .. n, false, "no launch config for demo.DemoApplication")
+    end
+  else
+    cfg.args = "--server.port=0"
+    local rbuf = lsp.open(src .. runner .. ".java")
+    local lnum = E.line_of(rbuf, "System%.out%.println%(text%);") + 1
+    vim.api.nvim_set_current_buf(buf) -- launch from DemoApplication.java, as a user would
+    local had_class = vim.uv.fs_stat(classes .. greeting .. ".class") ~= nil
+    local r = stop_at(rbuf, lnum, function() dap.run(cfg) end)
+    E.log("debug_breakpoint_hit", r.stopped and r.ms or -1, 1)
+    report_stop("breakpoint_hit", r, runner, lnum, function()
+      local log = terminal_text()
+      local why = log:match("(Unresolved compilation problems?:.-cannot be resolved[%w ]-)%s%s") or log:match("(NoClassDefFoundError: [%w%.$/]+)")
+        or log:match("([%w%.]*Exception: [%w%.$/]+)")
+      return ("%s.class at launch: %s; app: %s"):format(greeting, had_class and "yes" or "MISSING", why or "no error captured")
     end)
-    wait_until(5000, function() return frame ~= nil end, errs)
-  end
-  -- the app's own output (integratedTerminal) explains a launch that never stops
-  local term = ""
-  for _, b in ipairs(vim.api.nvim_list_bufs()) do
-    if vim.bo[b].buftype == "terminal" then term = term .. table.concat(vim.api.nvim_buf_get_lines(b, 0, -1, false), "") end
-  end
-  local log = term .. table.concat(output, "")
-  local why = log:match("(Unresolved compilation problems?:.-cannot be resolved[%w ]-)%s%s") or log:match("(NoClassDefFoundError: [%w%.$/]+)")
-    or log:match("([%w%.]*Exception: [%w%.$/]+)")
-  local at = frame and ("%s line %s"):format(frame.name, tostring(frame.line)) or "no frame"
-  E.log("debug_breakpoint_hit", stopped and hit_ms or -1, 1)
-  lsp.report(P .. "breakpoint_hit", stopped ~= nil and stopped.reason == "breakpoint" and hit_ms <= BREAK_BUDGET_MS
-      and frame and frame.name:find(runner, 1, true) ~= nil and frame.line == lnum,
-    stopped and ("stopped (%s) after %.0f ms (budget %d) at %s (want %s line %d)"):format(stopped.reason, hit_ms, BREAK_BUDGET_MS, at, runner, lnum)
-      or ("no stop within %.0f ms; %s.class at launch: %s; app: %s"):format(hit_ms, greeting, had_class and "yes" or "MISSING", why or "no error captured"))
+    report_value("variable", r, "text", "late")
+    report_jdk("debuggee_jdk", r)
+    local other = vim.tbl_filter(function(r) return r ~= fixture end, starts)
+    lsp.report(P .. "one_jdtls", #starts > 0 and #other == 0,
+      ("%d jdtls start/attach calls, %d with another root than the project%s"):format(#starts, #other,
+        other[1] and (": " .. table.concat(other, ", ")) or ""))
 
-  dap.terminate()
-  wait_until(ORPHAN_WAIT_MS, function() return dap.session() == nil end, errs)
-  local gone = wait_until(ORPHAN_WAIT_MS, function() return vim.fn.system({ "pgrep", "-f", MARKER }) == "" end, errs)
-  lsp.report(P .. "no_orphan", gone, gone and "debuggee JVM gone after terminate"
-    or ("debuggee JVM still running %d s after terminate: pid %s"):format(ORPHAN_WAIT_MS / 1000, vim.trim(vim.fn.system({ "pgrep", "-f", MARKER })):gsub("\n", " ")))
+    -- no_orphan: the marked JVM must be seen alive before terminate (else the check is vacuous)
+    if dap.session() then dap.continue() end
+    local was_alive = wait_until(3000, alive, errs)
+    dap.terminate()
+    wait_until(ORPHAN_WAIT_MS, function() return dap.session() == nil end, errs)
+    local gone = wait_until(ORPHAN_WAIT_MS, function() return not alive() end, errs)
+    lsp.report(P .. "no_orphan", was_alive and gone,
+      not was_alive and "debuggee JVM not running before terminate (died by itself: nothing proven)"
+        or gone and "debuggee JVM alive before terminate, gone after"
+        or ("debuggee JVM still running %d s after terminate: pid %s"):format(ORPHAN_WAIT_MS / 1000, pids()))
+    require("dap.breakpoints").clear()
+  end
+  cleanup()
+
+  -- 2. JUnit test method (java-test bundle), through nvim-jdtls's test_nearest_method (<leader>tr)
+  local tbuf = lsp.open(fixture .. "/src/test/java/demo/GreetingPropertiesTest.java")
+  local tlnum = E.line_of(tbuf, 'assertEquals%("hi", text%);') + 1
+  local test_done
+  -- trace of the jdt.ls commands the test launch sends (explains a launch that never starts)
+  local trace = {}
+  local tclient = vim.lsp.get_clients({ name = "jdtls" })[1]
+  local trequest = tclient.request
+  tclient.request = function(self, method, params, handler, bufnr)
+    if method ~= "workspace/executeCommand" or type(handler) ~= "function" then
+      return trequest(self, method, params, handler, bufnr)
+    end
+    local i = #trace + 1
+    trace[i] = (params.command or "?"):gsub("^vscode%.java%.", "") .. ":sent"
+    return trequest(self, method, params, function(e, res, ...)
+      trace[i] = trace[i]:gsub(":sent$", e and ":err" or res == nil and ":nil" or ":ok")
+      return handler(e, res, ...)
+    end, bufnr)
+  end
+  local r = stop_at(tbuf, tlnum, function()
+    require("jdtls.dap").test_nearest_method({ bufnr = tbuf, lnum = tlnum,
+      after_test = function(items, tests) test_done = { items = items or {}, tests = tests or {} } end })
+  end)
+  E.log("debug_test_breakpoint_hit", r.stopped and r.ms or -1, 1)
+  report_stop("test_breakpoint_hit", r, "keepsText", tlnum, function()
+    return ("test launch never stopped; commands: %s; notifications: %s; terminal: %s"):format(table.concat(trace, " "),
+      notes[1] and table.concat(notes, " | "):sub(-300) or "none", terminal_text():gsub("%s+", " "):sub(-400))
+  end)
+  tclient.request = trequest
+  report_value("test_variable", r, "text", "hi")
+  report_jdk("test_debuggee_jdk", r)
+  local test_alive = alive()
+  if dap.session() then dap.continue() end
+  wait_until(30000, function() return test_done ~= nil end, errs)
+  local gone = wait_until(ORPHAN_WAIT_MS, function() return not alive() end, errs)
+  lsp.report(P .. "test_finished", test_done ~= nil and #test_done.items == 0 and test_alive and gone,
+    test_done and ("test run ended after continue: %d tests, %d failures; JVM alive at the stop: %s, gone after: %s; bundled JUnit launcher replaced: %s"):format(
+      #test_done.tests, #test_done.items, tostring(test_alive), tostring(gone), (require("nv4j.debug").launchers_replaced or 0) > 0 and "yes" or "no")
+      or "test run did not end within 30 s after continue")
+
+  -- 3. the JUnit launcher fix itself, on a synthetic classpath (the real mismatch shows up in part
+  --    of the jdt.ls sessions only): bundled launcher folder -> engine-matching launcher jar.
+  local tmp = "/tmp/nv4j/40_debug_launcher"
+  vim.fn.delete(tmp, "rf")
+  local m2 = tmp .. "/m2/org/junit/platform"
+  local engine = m2 .. "/junit-platform-engine/1.12.2/junit-platform-engine-1.12.2.jar"
+  local launcher = m2 .. "/junit-platform-launcher/1.12.2/junit-platform-launcher-1.12.2.jar"
+  local bundle = tmp .. "/org.eclipse.osgi/122/0/.cp"
+  vim.fn.mkdir(vim.fs.dirname(engine), "p"); vim.fn.mkdir(vim.fs.dirname(launcher), "p"); vim.fn.mkdir(bundle .. "/META-INF", "p")
+  vim.fn.writefile({}, engine); vim.fn.writefile({}, launcher)
+  vim.fn.writefile({ "Manifest-Version: 1.0", "Bundle-SymbolicName: junit-platform-launcher", "Bundle-Version: 1.14.4" }, bundle .. "/META-INF/MANIFEST.MF")
+  local junit = { mainClass = "org.eclipse.jdt.internal.junit.runner.RemoteTestRunner", classPaths = { "/x/test-classes", engine, bundle } }
+  local fixed = require("nv4j.debug").junit_launcher(junit)
+  local same = require("nv4j.debug").junit_launcher({ mainClass = junit.mainClass, classPaths = { engine, launcher, bundle } })
+  lsp.report(P .. "junit_launcher", fixed.classPaths[3] == launcher and #fixed.classPaths == 3 and same.classPaths[3] == bundle,
+    ("bundled launcher replaced by %s; untouched when the project has one: %s"):format(
+      vim.fs.basename(fixed.classPaths[3]), tostring(same.classPaths[3] == bundle)))
+  vim.fn.delete(tmp, "rf")
 end)
 _G.print = orig_print
 cleanup()
