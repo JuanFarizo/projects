@@ -47,7 +47,7 @@ check_case("20_java25", nil, fixture, 25, buf1)
 local jvm
 for _, l in ipairs(vim.fn.systemlist({ "ps", "-axo", "command=" })) do
   local exe = l:match("^(%S+/bin/java) ")
-  if exe and l:find("org.eclipse.equinox.launcher", 1, true) and l:find("/tmp/nv4j/jdtls-data/", 1, true) then
+  if exe and l:find("org.eclipse.equinox.launcher", 1, true) and l:find(require("nv4j.paths").jdtls_data .. "/", 1, true) then
     jvm = exe
     break
   end

@@ -65,7 +65,9 @@ function M.run(client, phase)
 end
 
 --- language/status handler for nvim-jdtls (keeps its default echo of the status message).
-function M.status_handler(_, result)
+--- `root_dir` is the sending client's project root (nvim-jdtls passes no ctx): only that client warms
+--- up, so a second project reaching ServiceReady never re-sends requests to the first one's server.
+function M.status_handler(_, result, root_dir)
   if not result then return end
   -- Same echo as nvim-jdtls's default handler (quote-safe).
   pcall(vim.cmd, "echohl Function | echo " .. vim.fn.string((result.message or ""):sub(1, vim.v.echospace)) .. " | echohl None")
@@ -75,7 +77,9 @@ function M.status_handler(_, result)
   end
   if result.type == "Started" or result.type == "ServiceReady" then
     vim.schedule(function()
-      for _, c in ipairs(vim.lsp.get_clients({ name = "jdtls" })) do M.run(c, result.type) end
+      for _, c in ipairs(vim.lsp.get_clients({ name = "jdtls" })) do
+        if root_dir == nil or c.config.root_dir == root_dir then M.run(c, result.type) end
+      end
     end)
   end
 end

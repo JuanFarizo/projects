@@ -102,7 +102,8 @@ return {
       -- Unused-import warnings also while the file has compile errors (JDT drops them; nv4j/unused_imports.lua).
       require("nv4j.unused_imports").setup()
 
-      -- -configuration (jdtls's writable copy of the config) also lives under /tmp/nv4j.
+      -- -configuration (jdtls's writable copy of the config) lives under stdpath("cache")/jdtls-config
+      -- (~/.cache/nv4j/jdtls-config), see lua/nv4j/paths.lua.
       opts.jdtls_config_dir = function(project_name)
         return require("nv4j.paths").jdtls_config .. "/" .. project_name
       end
@@ -116,8 +117,8 @@ return {
         return root_dir and (vim.fs.basename(root_dir) .. "-" .. vim.fn.sha256(root_dir):sub(1, 8))
       end
 
-      -- JDTLS workspace (-data) lives under /tmp/nv4j/jdtls-data/<project_name>
-      -- instead of stdpath("cache"), see lua/nv4j/paths.lua.
+      -- JDTLS workspace (-data) lives under stdpath("cache")/jdtls-data/<project_name>
+      -- (~/.cache/nv4j/jdtls-data; not /tmp, which macOS empties), see lua/nv4j/paths.lua.
       opts.jdtls_workspace_dir = function(project_name)
         return require("nv4j.paths").jdtls_data .. "/" .. project_name
       end
@@ -135,15 +136,18 @@ return {
         -- request flushes pending changes after 200 ms anyway: edit-to-diagnostics measured 460-690 ms
         -- with 500 and the same with 200 (specs/features/diagnostics-imports-actions.md), so 500 stays.
         flags = { debounce_text_changes = 500 },
-        -- On ServiceReady, one throw-away completion takes jdt.ls's one-time index cost off the
-        -- user's first completion (nv4j/warmup.lua). nvim-jdtls wraps this handler.
-        handlers = {
-          ["language/status"] = function(err, result) require("nv4j.warmup").status_handler(err, result) end,
-        },
       }
       -- LazyVim calls this with the config it built (root_dir known) and uses the return value.
       opts.jdtls = function(config)
         config = vim.tbl_deep_extend("force", config, static_jdtls)
+        -- On Started/ServiceReady, one throw-away completion takes jdt.ls's one-time index cost off
+        -- the user's first completion (nv4j/warmup.lua). nvim-jdtls wraps this handler and calls it
+        -- without ctx, so the root_dir tells warmup which client (project) sent the status.
+        local root_dir = config.root_dir
+        config.handlers = config.handlers or {}
+        config.handlers["language/status"] = function(err, result)
+          require("nv4j.warmup").status_handler(err, result, root_dir)
+        end
         local runtimes = require("nv4j.jdk").runtimes(config.root_dir)
         config.settings = vim.tbl_deep_extend("force", config.settings or {}, {
           java = { configuration = { runtimes = runtimes } },

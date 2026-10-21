@@ -208,7 +208,7 @@ local ok_l, err_l = pcall(function()
   E.restore(ubuf, lorig)
   local agent
   for _, l in ipairs(vim.fn.systemlist({ "ps", "-axo", "command=" })) do
-    if l:find("org.eclipse.equinox.launcher", 1, true) and l:find("/tmp/nv4j/jdtls-data/lombokcase", 1, true) then
+    if l:find("org.eclipse.equinox.launcher", 1, true) and l:find(require("nv4j.paths").jdtls_data .. "/lombokcase", 1, true) then
       agent = l:match("%-javaagent:(%S*lombok%S*%.jar)")
     end
   end
