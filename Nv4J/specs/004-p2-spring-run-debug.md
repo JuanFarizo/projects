@@ -1,6 +1,6 @@
 # 004 - P2: run, debug and Spring awareness
 
-Status: Task 0 done (research, fixture, failing baselines); Task 1 done (debug works: `DONE 40_debug 13 0`, 5 of 5 consecutive runs). Plan: `docs/superpowers/plans/2026-10-21-nv4j-p2-spring-run-debug.md`. Does not contradict `001-architecture.md`; decisions D14 and later live in its decisions table.
+Status: Task 0 done (research, fixture, failing baselines); Task 1 done (debug works: `DONE 40_debug 13 0`, 5 of 5 consecutive runs; review fix round: `DONE 40_debug 16 0`, 3 of 3). Plan: `docs/superpowers/plans/2026-10-21-nv4j-p2-spring-run-debug.md`. Does not contradict `001-architecture.md`; decisions D14 and later live in its decisions table.
 
 ## Goal
 
@@ -53,9 +53,11 @@ Fixes in `nvim/lua/nv4j/debug.lua` (no helper API; `require("nv4j.debug").junit_
 
 Fixture: `src/test/java/demo/GreetingPropertiesTest.java` (plain JUnit 5, no Spring context) for the JUnit case.
 
-`40_debug` now has 13 cases (Task 0's 5 plus `variable`, `debuggee_jdk`, `one_jdtls`, `test_breakpoint_hit`, `test_variable`, `test_debuggee_jdk`, `test_finished`, `junit_launcher`). 5 consecutive runs: `DONE 40_debug 13 0` 5 of 5, breakpoint hit 2941 to 3095 ms and test breakpoint 715 to 894 ms (budget 20 s), debuggee `java.version` 25.0.4 with JDK 21 first on PATH and `JAVA_HOME` unset, debuggee gone after terminate.
+`40_debug` now has 13 cases (Task 0's 5 plus `variable`, `debuggee_jdk`, `one_jdtls`, `test_breakpoint_hit`, `test_variable`, `test_debuggee_jdk`, `test_finished`, `junit_launcher`; the review fix round added `junit_launcher_missing`, `gate_robust`, `build_guard`, 16 in all). 5 consecutive runs: `DONE 40_debug 13 0` 5 of 5, breakpoint hit 2941 to 3095 ms and test breakpoint 715 to 894 ms (budget 20 s), debuggee `java.version` 25.0.4 with JDK 21 first on PATH and `JAVA_HOME` unset, debuggee gone after terminate.
 
 Full `tests/run.sh` (log `/tmp/nv4j/logs/test-20261021-112341.log`): P1 unchanged at 135 PASS (00: 11, 01: 2, 10: 17, 11: 26, 12: 7, 20: 10, 30: 24, 31: 10, 32: 28, all 0 FAIL), `DONE 40_debug 13 0`, `DONE 50_spring_ls 0 5` (no `spring-boot` client yet, Task 3). 148 PASS, exit 1 only because of `50_spring_ls`.
+
+Review fix round full run (log `/tmp/nv4j/logs/test-20261021-113449.log`): P1 135 PASS 0 FAIL (same per-check counts), `DONE 40_debug 16 0`, `DONE 50_spring_ls 0 5`. 151 PASS, exit 1 only because of `50_spring_ls`.
 
 Ruling: a build before launch that ends with compile errors only warns and launches (VS Code asks). Cost if wrong: a launch on stale classes after a warning the user may miss.
 

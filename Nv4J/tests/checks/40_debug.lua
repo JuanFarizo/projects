@@ -29,6 +29,11 @@
 --                    the run ends with 1 test, 0 failures and no JVM left.
 --  junit_launcher  : nv4j.debug.junit_launcher on a synthetic classpath: JDT's bundled
 --                    junit-platform-launcher is replaced by the engine-matching one from the Maven repo.
+--  junit_launcher_missing : same, matching jar not downloaded: config unchanged, one warning naming it.
+--  gate_robust     : the launching-command gate on a stub client: a throwing handler does not stall the
+--                    queue; a stopped client answers every queued request with an error.
+--  build_guard     : build before launch on stub clients: timeout, failed build (status 0) and stopped
+--                    client each warn visibly and launch anyway.
 -- Timings: /tmp/nv4j/logs/latency.jsonl (debug_breakpoint_hit, debug_test_breakpoint_hit).
 vim.o.confirm = false
 local lsp = require("lsp")
@@ -339,7 +344,69 @@ local ok_all, err = pcall(function()
   lsp.report(P .. "junit_launcher", fixed.classPaths[3] == launcher and #fixed.classPaths == 3 and same.classPaths[3] == bundle,
     ("bundled launcher replaced by %s; untouched when the project has one: %s"):format(
       vim.fs.basename(fixed.classPaths[3]), tostring(same.classPaths[3] == bundle)))
+  -- launcher jar not downloaded: config unchanged, one warning naming the jar (synthetic version)
+  local engine9 = m2 .. "/junit-platform-engine/9.9.9/junit-platform-engine-9.9.9.jar"
+  vim.fn.mkdir(vim.fs.dirname(engine9), "p"); vim.fn.writefile({}, engine9)
+  local n0 = #notes
+  local miss = { mainClass = junit.mainClass, classPaths = { engine9, bundle } }
+  local kept = require("nv4j.debug").junit_launcher(miss)
+  local n1 = #notes
+  require("nv4j.debug").junit_launcher(miss)
+  local warn = notes[n0 + 1] or ""
+  lsp.report(P .. "junit_launcher_missing", kept.classPaths[2] == bundle and n1 == n0 + 1 and #notes == n1
+      and warn:find("junit-platform-launcher-9.9.9.jar", 1, true) ~= nil and warn:find("mvn dependency:get", 1, true) ~= nil,
+    ("bundled launcher kept: %s; warnings %d then %d (want 1, once): %s"):format(tostring(kept.classPaths[2] == bundle),
+      n1 - n0, #notes - n1, warn:sub(1, 160)))
   vim.fn.delete(tmp, "rf")
+
+  -- 4. the launching-command gate on a stub client: a throwing handler does not stall the queue, and
+  --    when the client stops, every queued request is answered with an error (none stranded).
+  local D = require("nv4j.debug")
+  local sent, got = {}, {}
+  local stub = { stopped = false }
+  stub.request = function(self, _, params, handler)
+    if self.stopped then return false end
+    sent[#sent + 1] = { cmd = params.command, handler = handler }
+    return true, #sent
+  end
+  D.serialize_until_warm(stub)
+  local function ask(cmd, key)
+    stub:request("workspace/executeCommand", { command = cmd }, function(e)
+      if key == "A" then error("handler boom") end
+      got[key] = e and e.message or "ok"
+    end)
+  end
+  ask("vscode.java.resolveJavaExecutable", "A"); ask("vscode.java.checkProjectSettings", "B")
+  ask("vscode.java.resolveClasspath", "C"); ask("vscode.java.resolveClasspath", "Dq")
+  local queued_at_start = #sent
+  local threw = not pcall(sent[1].handler, nil, "x") -- A answered, its handler throws
+  local b_sent = #sent == 2 and sent[2].cmd == "vscode.java.checkProjectSettings"
+  stub.stopped = true
+  pcall(sent[2].handler, nil, true) -- B answered; sending C fails: C and Dq get the error
+  local gate = stub.nv4j_gate
+  lsp.report(P .. "gate_robust", queued_at_start == 1 and threw and b_sent and got.B == "ok"
+      and got.C == "jdtls client stopped" and got.Dq == "jdtls client stopped" and not gate.busy and #gate.queue == 0,
+    ("in flight at start %d (want 1); throwing handler rethrown %s, next sent %s; after stop: B=%s C=%s D=%s busy=%s queue=%d"):format(
+      queued_at_start, tostring(threw), tostring(b_sent), tostring(got.B), tostring(got.C), tostring(got.Dq),
+      tostring(gate.busy), #gate.queue))
+
+  -- 5. build before launch on stub clients: timeout, failed build, client stopped. Each one launches
+  --    anyway (done called) with a visible warning.
+  local function run_build(reqfn, timeout)
+    local before, t0, took = #notes, E.now(), nil
+    D.build({ request = reqfn }, function() took = E.now() - t0 end, timeout)
+    vim.wait(timeout + 2000, function() return took ~= nil end, 10)
+    return took, table.concat(vim.list_slice(notes, before + 1), " | ")
+  end
+  -- (libuv timers run on the cached loop time, so the measured wait can be ~60 ms short of 1 s)
+  local t_ms, t_msg = run_build(function() return true end, 1000)
+  local f_ms, f_msg = run_build(function(_, _, _, h) vim.schedule(function() h(nil, 0) end) return true end, 5000)
+  local s_ms, s_msg = run_build(function() return false end, 5000)
+  lsp.report(P .. "build_guard", t_ms and t_ms >= 900 and t_ms < 2500 and t_msg:find("Building before debug", 1, true)
+      and t_msg:find("timed out after 1 s", 1, true) and f_ms and f_ms < 1000 and f_msg:find("failed (jdt.ls build status FAILED", 1, true)
+      and s_ms and s_ms < 1000 and s_msg:find("could not be sent", 1, true),
+    ("timeout: %s ms '%s'; status 0: %s ms '%s'; stopped: %s ms '%s'"):format(tostring(t_ms and math.floor(t_ms)), t_msg:sub(-70),
+      tostring(f_ms and math.floor(f_ms)), f_msg:sub(-80), tostring(s_ms and math.floor(s_ms)), s_msg:sub(-70)))
 end)
 _G.print = orig_print
 cleanup()

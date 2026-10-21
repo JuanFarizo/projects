@@ -80,7 +80,7 @@ Nothing is pinned to one JDK. `nvim/lua/nv4j/jdk.lua` finds JDKs in SDKMAN (`~/.
 
 ### Debug (P2, main class and JUnit test)
 
-Breakpoints hit, also in files added while Neovim was closed (a `git pull`), and the debugged program runs on the project's JDK. Fixes in `nvim/lua/nv4j/debug.lua`, details in `specs/features/debug-run.md`. Numbers from 5 consecutive runs of `40_debug` (13 of 13 PASS each):
+Breakpoints hit, also in files added while Neovim was closed (a `git pull`), and the debugged program runs on the project's JDK. Fixes in `nvim/lua/nv4j/debug.lua`, details in `specs/features/debug-run.md`. Numbers from 5 consecutive runs of `40_debug` (all cases PASS each; 16 cases since the review fix round, 3 of 3 runs):
 
 | What you get | Measured (budget) | Check |
 |--------------|-------------------|-------|
@@ -91,7 +91,7 @@ Breakpoints hit, also in files added while Neovim was closed (a `git pull`), and
 | Terminate leaves no JVM behind | gone within 10 s (10 s) | `40_debug` `no_orphan`, `test_finished` |
 | A debug launch starts no second jdt.ls | 0 extra starts | `40_debug` `one_jdtls` |
 
-Before each launch the project's source folders are refreshed and built (VS Code builds too). If the build has compile errors you get a warning and the launch goes ahead.
+Before each launch the project's source folders are refreshed and built (VS Code builds too, you see "Building before debug..."). If the build has compile errors, fails or takes more than 60 s you get a warning and the launch goes ahead. If a JUnit run needs a `junit-platform-launcher` jar that is not in your Maven repository, a warning names it and the `mvn dependency:get` command that fetches it.
 
 ### Also available (from LazyVim, not covered by the checks)
 
