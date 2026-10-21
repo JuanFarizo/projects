@@ -1,0 +1,21 @@
+package demo;
+
+import static java.util.Objects.isNull;
+import static java.util.Objects.requireNonNull;
+import jakarta.validation.Valid;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.*;
+
+/**
+ * Compile error below; unused imports must still be reported.
+ * Javadoc reference counts as a use: {@link Set}.
+ */
+public class App {
+    public static void main(@Valid String[] args) {
+        String name = 42;
+        if (isNull(args)) {
+            return;
+        }
+    }
+}

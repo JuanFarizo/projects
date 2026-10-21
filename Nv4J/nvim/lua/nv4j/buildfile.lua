@@ -13,6 +13,7 @@ local BUILD_FILES = {
   ["settings.gradle.kts"] = true,
 }
 local last = {} -- file name -> last notified error text
+local wiping = {} -- buf -> true while it is being wiped (its diagnostics are cleared, not fixed)
 
 local function jdtls_errors(buf)
   local out = {}
@@ -26,6 +27,7 @@ local function jdtls_errors(buf)
 end
 
 function M.on_changed(buf)
+  if wiping[buf] or not vim.api.nvim_buf_is_valid(buf) then return end
   local name = vim.api.nvim_buf_get_name(buf)
   if not BUILD_FILES[vim.fs.basename(name)] then return end
   local errs = jdtls_errors(buf)
@@ -43,9 +45,21 @@ function M.on_changed(buf)
 end
 
 function M.setup()
+  local g = vim.api.nvim_create_augroup("nv4j_buildfile", { clear = true })
   vim.api.nvim_create_autocmd("DiagnosticChanged", {
-    group = vim.api.nvim_create_augroup("nv4j_buildfile", { clear = true }),
+    group = g,
     callback = function(args) M.on_changed(args.buf) end,
+  })
+  -- Forget a wiped build file: no stale entry, and no "fixed" notice for the cleared diagnostics.
+  vim.api.nvim_create_autocmd("BufWipeout", {
+    group = g,
+    callback = function(args)
+      local name = vim.api.nvim_buf_get_name(args.buf)
+      if not BUILD_FILES[vim.fs.basename(name)] then return end
+      wiping[args.buf] = true
+      last[name] = nil
+      vim.schedule(function() wiping[args.buf] = nil end)
+    end,
   })
 end
 

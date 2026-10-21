@@ -190,7 +190,13 @@ local ok_l, err_l = pcall(function()
   local c2 = lsp.wait_ready(ubuf, 120000)
   lsp.report(P .. "lombok_attached", c2 ~= nil, c2 and "jdtls ready (lombokcase)" or "jdtls not ready")
   if not c2 then return end
+  -- wait_ready already saw a publish for Use.java; also require 0 diagnostics to hold for 2 s so a
+  -- later publish (classpath with Lombok) cannot be missed
   local okd, _, d = E.wait_diags(ubuf, function(x) return #x == 0 end, 15000)
+  if okd then
+    local held, bad = E.stays(ubuf, function(x) return #x == 0 end, 2000)
+    okd, d = held, bad or d
+  end
   lsp.report(P .. "lombok_members_resolve", okd, okd and "0 diagnostics in Use.java (getName/getCount/ctor from Lombok)" or E.fmt(d))
   local lnum = 4
   local lorig = vim.api.nvim_buf_get_lines(ubuf, 0, -1, false)

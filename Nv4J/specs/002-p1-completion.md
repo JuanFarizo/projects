@@ -193,6 +193,11 @@ ParallelGC, AppCDS, codelens off during start, prefixed or symbol warm-ups, `max
 
 Menu drawing (colorful-menu labels, treesitter in the menu), documentation auto-show and its `completionItem/resolve`, signature help, ghost text, diagnostics redraw after the 500 ms debounce, and the real keystroke-to-screen time. `menu_p95` covers everything up to the sorted list; the rest needs `:CompletionProfile on` (`nvim/lua/util/profile.lua`, keystroke-to-menu stamps and per-update menu snapshots) in a real session. The checks also type each case in one step: blink's cached-list path is covered only by the two `_typed` cases.
 
+## Follow-ups (logged in Task 6 fix round 1, for the P3 plan)
+
+- **Frecency noise on empty-prefix lists.** blink.cmp's frecency boosts every item whose label the user accepted, even with an empty prefix. In testing, accepting `List` a few times pushed the nested `@...List` container annotations to the top of `@` and `RestController` fell from rank 4 to 27. The checks are isolated from it (`XDG_STATE_HOME=/tmp/nv4j/state`, frecency writes stubbed in check 31), but the user's own sessions are not. Candidate: for Java, weight jdt.ls relevance and project usage above frecency (e.g. frecency only as a tie breaker after `nv4j_rel`, or off for empty prefixes). Not built now.
+- **Async import apply**: see `specs/features/diagnostics-imports-actions.md`, "Planned follow-ups".
+
 ### Concerns for the user
 
 - `cold_first` (Task 5 concern) resolved in fix round 1: pinned at ServiceReady + 1.0 s, 44-59 ms over 16 runs.

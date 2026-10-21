@@ -109,7 +109,15 @@ local ok_o, err_o = pcall(function()
   pcall(require, "config.keymaps")
   local alias = vim.fn.maparg("<leader>cO", "n", false, true)
   lsp.report(P .. "outgoing_calls_key", (alias.desc or ""):find("Outgoing calls") ~= nil,
-    "<leader>cO (outgoing calls, shadowed on <leader>co in Java buffers): desc=" .. tostring(alias.desc))
+    "<leader>cO: desc=" .. tostring(alias.desc))
+  -- each key means one thing: no global <leader>co (outgoing calls) left for non-Java buffers
+  local other = vim.api.nvim_create_buf(true, true)
+  vim.api.nvim_set_current_buf(other)
+  local g = vim.fn.maparg("<leader>co", "n", false, true)
+  vim.api.nvim_set_current_buf(buf)
+  vim.api.nvim_buf_delete(other, { force = true })
+  lsp.report(P .. "co_only_organize", (g.desc or ""):find("Outgoing calls") == nil,
+    "<leader>co outside Java buffers: " .. (g.desc or (next(g) and "unnamed mapping" or "unmapped")))
   if not map.callback then return end
   E.set(buf, E.planted("imports.java.txt"))
   vim.wait(300) -- a user needs at least this long between the edit and the key
@@ -148,6 +156,17 @@ local ok_o, err_o = pcall(function()
     ("%.0f ms; Map %s; used imports %s"):format(ms, txt:find("java.util.Map", 1, true) and "KEPT" or "removed", kept and "kept" or "LOST"))
   lsp.report(P .. "organize_order", changed and sorted and #imports == 8,
     "order: " .. table.concat(names, ", "))
+
+  -- the file has a compile error: organize imports still removes the unused import (the way to clear
+  -- them while jdt.ls itself does not flag them)
+  E.set(buf, E.planted("errors_organize.java.txt"))
+  vim.wait(300)
+  local before2 = E.text(buf)
+  map.callback()
+  local changed2 = vim.wait(10000, function() return E.text(buf) ~= before2 end, 5)
+  local t2 = E.text(buf)
+  lsp.report(P .. "organize_with_compile_error", changed2 and not t2:find("java.util.Map", 1, true) and t2:find("import java.util.List;", 1, true) ~= nil,
+    ("Map %s, List %s"):format(t2:find("java.util.Map", 1, true) and "KEPT" or "removed", t2:find("import java.util.List;", 1, true) and "kept" or "LOST"))
 end)
 E.restore(buf, orig)
 if not ok_o then lsp.report(P .. "organize", false, "error: " .. tostring(err_o)) end

@@ -99,6 +99,8 @@ return {
       })
       -- Visible notification when jdt.ls reports errors on pom.xml / build.gradle (nv4j/buildfile.lua).
       require("nv4j.buildfile").setup()
+      -- Unused-import warnings also while the file has compile errors (JDT drops them; nv4j/unused_imports.lua).
+      require("nv4j.unused_imports").setup()
 
       -- -configuration (jdtls's writable copy of the config) also lives under /tmp/nv4j.
       opts.jdtls_config_dir = function(project_name)

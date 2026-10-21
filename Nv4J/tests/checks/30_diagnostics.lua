@@ -46,7 +46,9 @@ local function unique(case, d)
     ns[x.namespace] = true
   end
   local names = vim.tbl_map(function(n) return vim.diagnostic.get_namespace(n).name end, vim.tbl_keys(ns))
-  lsp.report(P .. case .. "_unique", dup == nil and #names <= 1,
+  local foreign = vim.tbl_filter(function(n) return not n:find("jdtls", 1, true) and n ~= "nv4j.unused_imports" end, names)
+  -- same line, column and message from two namespaces counts as a duplicate too
+  lsp.report(P .. case .. "_unique", dup == nil and #foreign == 0,
     ("duplicate=%s namespaces=%s"):format(tostring(dup), table.concat(names, ",")))
 end
 
@@ -67,6 +69,14 @@ local ok_all, err = pcall(function()
   end
   local _, d = timed("unused_warnings", E.planted("unused.java.txt"), all_unused)
   unique("unused", d)
+  -- no error in the file: jdt.ls reports the unused import itself, the nv4j pass must stay silent
+  local unused_ns = require("nv4j.unused_imports").ns
+  local silent, loud = E.stays(buf, function(x)
+    local n = 0
+    for _, y in ipairs(x) do if y.message:find("import java.util.Map is never used", 1, true) then n = n + 1 end end
+    return n == 1 and #vim.diagnostic.get(buf, { namespace = unused_ns }) == 0
+  end, 1500)
+  lsp.report(P .. "unused_import_no_duplicate", silent, silent and "Map reported once (jdt.ls), nv4j pass silent for 1.5 s" or E.fmt(loud))
 
   -- errors
   local _, d2 = timed("errors", E.planted("errors.java.txt"), function(x)
@@ -74,6 +84,64 @@ local ok_all, err = pcall(function()
       and E.has(x, S.ERROR, "doesNotExist%(%) is undefined for the type Repo") ~= nil
   end)
   unique("errors", d2)
+
+  -- unused imports while the file has a compile error (jdt.ls drops them; nv4j.unused_imports adds them)
+  local function nv4j_has(x, imp)
+    for _, y in ipairs(x) do
+      if y.namespace == unused_ns and y.message == "The import " .. imp .. " is never used" then return y end
+    end
+  end
+  local function gap_ok(x)
+    local m, r = nv4j_has(x, "java.util.Map"), nv4j_has(x, "java.util.Objects.requireNonNull")
+    return E.count(x, S.ERROR) > 0 and m ~= nil and r ~= nil and m.severity == S.WARN and m._tags ~= nil and m._tags.unnecessary == true
+  end
+  local okg, dg = timed("unused_import_with_errors", E.planted("errors_imports.java.txt"), gap_ok)
+  local wrong = {}
+  for _, imp in ipairs({ "java.util.Set", "jakarta.validation.Valid", "java.util.Objects.isNull", "java.util.concurrent" }) do
+    if nv4j_has(dg, imp) then wrong[#wrong + 1] = imp end
+  end
+  lsp.report(P .. "unused_import_used_not_flagged", okg and #wrong == 0,
+    "flagged although used (javadoc {@link}, annotation, static, wildcard): " .. (#wrong == 0 and "none" or table.concat(wrong, ", ")))
+  unique("unused_import_with_errors", dg)
+  -- removing the import clears its warning, the other one stays
+  local mline = E.line_of(buf, "^import java%.util%.Map;")
+  local tr = E.now()
+  vim.api.nvim_buf_set_lines(buf, mline, mline + 1, false, {})
+  local okr, msr, dr = E.wait_diags(buf, function(x)
+    return nv4j_has(x, "java.util.Map") == nil and nv4j_has(x, "java.util.Objects.requireNonNull") ~= nil
+  end, 10000, tr)
+  E.log("diag_unused_import_removed", msr, #dr)
+  lsp.report(P .. "unused_import_cleared_on_remove", okr and msr <= BUDGET_MS, ("%.0f ms (budget %d) %s"):format(msr, BUDGET_MS, E.fmt(dr)))
+
+  -- cost of one pass on a 3000-line file (treesitter parse + scan, no LSP)
+  do
+    local UI = require("nv4j.unused_imports")
+    local big = { "package demo;", "", "import java.util.List;", "import java.util.Map;", "import java.util.Set;", "import static java.util.Objects.isNull;", "", "/** Uses {@link Set}. */", "public class Big {" }
+    local i = 0
+    while #big < 2998 do
+      i = i + 1
+      vim.list_extend(big, { ("    /** Method %d. */"):format(i), ("    public List<String> m%d(String a%d) {"):format(i, i),
+        ("        if (isNull(a%d)) { return List.of(); }"):format(i), ("        return List.of(a%d.trim(), String.valueOf(%d));"):format(i, i), "    }" })
+    end
+    big[#big + 1] = "}"
+    local sb = vim.api.nvim_create_buf(false, true)
+    vim.api.nvim_buf_set_lines(sb, 0, -1, false, big)
+    local samples, found = {}, nil
+    for k = 1, 30 do
+      -- an edit before each pass, so the parser re-parses like after a keystroke
+      vim.api.nvim_buf_set_lines(sb, 9, 10, false, { ("    /** Method %d. */"):format(k) })
+      local t = E.now()
+      found = UI.scan(sb)
+      samples[#samples + 1] = E.now() - t
+      E.log("unused_pass_3000_lines", samples[#samples], #big)
+    end
+    table.sort(samples)
+    local p50, p95, mx = samples[15], samples[29], samples[30]
+    local names = vim.tbl_map(function(f) return f.name end, found or {})
+    lsp.report(P .. "unused_pass_perf", p95 <= 5 and #names == 1 and names[1] == "java.util.Map",
+      ("%d lines: p50=%.2f p95=%.2f max=%.2f ms (budget p95 <= 5) unused=%s"):format(#big, p50, p95, mx, table.concat(names, ",")))
+    vim.api.nvim_buf_delete(sb, { force = true })
+  end
 
   -- one inline renderer: tiny-inline-diagnostic draws, built-in virtual text/lines stay off
   local cfg = vim.diagnostic.config()
@@ -177,6 +245,15 @@ local ok_mvn, err_mvn = pcall(function()
   pom_case("missing_artifact",
     pom("<dependency><groupId>org.nv4j.nope</groupId><artifactId>nope</artifactId><version>9.9.9</version></dependency>"),
     function(d) return E.has(d, S.ERROR, "Missing artifact org.nv4j.nope:nope") ~= nil end, "Missing artifact")
+  -- wiping the pom.xml buffer clears its diagnostics: that is not a fix, no "fixed" notice
+  local n0 = #notes
+  vim.api.nvim_buf_delete(pbuf, { force = true })
+  vim.wait(1000)
+  local spurious
+  for i = n0 + 1, #notes do
+    if notes[i].msg:find("build errors fixed", 1, true) then spurious = notes[i].msg end
+  end
+  lsp.report(P .. "maven_wipe_no_spurious_notice", spurious == nil, spurious and ("notified: " .. spurious) or "no notice after wiping pom.xml")
   vim.fn.writefile(pom(), dir .. "/pom.xml")
 end)
 if not ok_mvn then lsp.report(P .. "maven", false, "error: " .. tostring(err_mvn)) end
