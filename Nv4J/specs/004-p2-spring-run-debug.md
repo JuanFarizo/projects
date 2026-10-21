@@ -1,6 +1,6 @@
 # 004 - P2: run, debug and Spring awareness
 
-Status: Task 0 done (research, fixture, failing baselines); Task 1 done (debug works: `DONE 40_debug 13 0`, 5 of 5 consecutive runs; review fix round: `DONE 40_debug 16 0`, 3 of 3). Plan: `docs/superpowers/plans/2026-10-21-nv4j-p2-spring-run-debug.md`. Does not contradict `001-architecture.md`; decisions D14 and later live in its decisions table.
+Status: Task 0 done (research, fixture, failing baselines); Task 1 done (debug works: `DONE 40_debug 13 0`, 5 of 5 consecutive runs; review fix round: `DONE 40_debug 16 0`, 3 of 3)); Task 2 done (run Spring Boot: `DONE 41_run 18 0`, 3 of 3). Plan: `docs/superpowers/plans/2026-10-21-nv4j-p2-spring-run-debug.md`. Does not contradict `001-architecture.md`; decisions D14 and later live in its decisions table.
 
 ## Goal
 
@@ -60,6 +60,16 @@ Full `tests/run.sh` (log `/tmp/nv4j/logs/test-20261021-112341.log`): P1 unchange
 Review fix round full run (log `/tmp/nv4j/logs/test-20261021-113449.log`): P1 135 PASS 0 FAIL (same per-check counts), `DONE 40_debug 16 0`, `DONE 50_spring_ls 0 5`. 151 PASS, exit 1 only because of `50_spring_ls`.
 
 Ruling: a build before launch that ends with compile errors only warns and launches (VS Code asks). Cost if wrong: a launch on stale classes after a warning the user may miss.
+
+## Task 2 (run Spring Boot)
+
+`nvim/lua/nv4j/run.lua`: `require("nv4j.run").spring_boot({ debug, profile, env })`, keys `<leader>rs` / `<leader>rd` / `<leader>rp` / `<leader>rx` (P1's `<leader>rj` unchanged). Runs the `@SpringBootApplication` main class with `java -cp <jdt.ls classpath>` on the project JDK after jdt.ls's refresh + build (decision D15 in `001`; `mvn spring-boot:run` was slower and hung on plugin resolution, trials m1 to j2), debug through Task 1's nvim-dap path; build-tool fallback (Maven first, then Gradle) without jdt.ls. Terminal split, `<C-c>` stops, `q` stops and closes, stop kills the whole process tree. Boot's start line and failure analysis (port in use) become notifications. Details and trial log: `specs/features/run.md`.
+
+`41_run` (18 cases): baseline `DONE 41_run 1 17` (log `/tmp/nv4j/logs/test-20261021-115258.log`); 3 consecutive runs `DONE 41_run 18 0` (logs `test-20261021-115641.log`, `-115725`, `-115817`).
+
+Full `tests/run.sh` (log `/tmp/nv4j/logs/test-20261021-115929.log`): P1 135 PASS 0 FAIL (00: 11, 01: 2, 10: 17, 11: 26, 12: 7, 20: 10, 30: 24, 31: 10, 32: 28), `DONE 40_debug 16 0`, `DONE 41_run 18 0`, `DONE 50_spring_ls 0 5` (Task 3). 169 PASS, exit 1 only because of `50_spring_ls`.
+
+Rulings: run uses jdt.ls's classes and classpath, not a Maven build (cost if wrong: resource filtering or `process-classes` plugins are skipped for `<leader>rs`); `<leader>rs` runs without a profile and `<leader>rp` asks each time (no saved run configurations); `q` stops the app before closing (cost: no way to hide the output and keep the app running other than switching buffers).
 
 ## Task 0 full run
 

@@ -2,14 +2,14 @@
 
 A fast, lightweight Neovim setup for Java and Spring development. It is built on LazyVim and runs next to your normal Neovim: your own `~/.config/nvim` is never touched. IntelliJ is the feature reference. Every feature has a priority and a pass/fail number, and the numbers are re-measured by a headless test suite you can run yourself.
 
-Status: **P1 is built and passing** (completion, diagnostics, imports, code actions, JDK handling). P2 is in progress: debugging a main class or a JUnit test works and is checked (`40_debug`); Spring Boot run and Spring awareness are not built yet. P3 to P5 are planned, not built. The "Not yet" list below is honest about that.
+Status: **P1 is built and passing** (completion, diagnostics, imports, code actions, JDK handling). P2 is in progress: debugging a main class or a JUnit test works and is checked (`40_debug`), running a Spring Boot app with profile and env works and is checked (`41_run`); Spring awareness is not built yet. P3 to P5 are planned, not built. The "Not yet" list below is honest about that.
 
 ## Priorities
 
 | Priority | Scope | Status |
 |----------|-------|--------|
 | P1 | Completion speed and ranking, diagnostics, imports, code actions, Java 25 and JDK handling | Done (this README, Capabilities) |
-| P2 | Spring awareness (annotations, attributes, `application.properties`/`yml`), run and debug Spring Boot | In progress: debug done (Capabilities, Debug) |
+| P2 | Spring awareness (annotations, attributes, `application.properties`/`yml`), run and debug Spring Boot | In progress: debug and run done (Capabilities, Debug, Run Spring Boot) |
 | P3 | Tests runner polish, scaffolding (package/class creation), refactors beyond what jdt.ls already offers | Not yet |
 | P4 | Gradle, Spring navigation, JPA checks | Not yet |
 | P5 | Everything else | Not yet |
@@ -93,6 +93,20 @@ Breakpoints hit, also in files added while Neovim was closed (a `git pull`), and
 
 Before each launch the project's source folders are refreshed and built (VS Code builds too, you see "Building before debug..."). If the build has compile errors, fails or takes more than 60 s you get a warning and the launch goes ahead. If a JUnit run needs a `junit-platform-launcher` jar that is not in your Maven repository, a warning names it and the `mvn dependency:get` command that fetches it.
 
+### Run Spring Boot (P2)
+
+`<leader>rs` runs the `@SpringBootApplication` main class of the project, `<leader>rd` debugs it (the Debug path above), `<leader>rp` asks for a profile (offers the `application-<profile>` files it finds) and runs. The app runs as `java -cp <classpath from jdt.ls> <main class>` on the project's JDK, after the same refresh and build as a debug launch ("Building before run..."). It was measured faster than `mvn spring-boot:run` (2.5 s against 5 to 7 s to "Started", and Maven first had to resolve its plugin over the network), see `specs/features/run.md`. Without jdt.ls it falls back to `mvnw`/`mvn spring-boot:run`, then `gradlew`/`gradle bootRun`. Output goes to a terminal split at the bottom: `<C-c>` (normal mode) stops the app, `q` stops it and closes the split, `<leader>rx` stops every run. Code: `nvim/lua/nv4j/run.lua`. Numbers from 3 consecutive runs of `41_run` (18 of 18 PASS each):
+
+| What you get | Measured (budget) | Check |
+|--------------|-------------------|-------|
+| `<leader>rs` starts the app and says so (notification with port and Boot's start time) | "Started" 4.6 to 7.7 s after the key, including refresh, build and classpath (info, no budget); Boot's own start 2.2 to 2.3 s | `41_run` `started`, `started_notice` |
+| The app runs on the project's JDK (JDK 21 first on `PATH`, `JAVA_HOME` unset), env and profile reach it | Java 25.0.4, `DEMO_GREETING_TEXT` and `application-dev.yml` seen by the app | `41_run` `java25`, `env`, `profile` |
+| Starting a second copy on a used port reports it, nothing hangs | ERROR notification with Boot's failure analysis ("Port N was already in use" plus its Action), the second process exits, the first keeps running | `41_run` `port_in_use`, `no_hung` |
+| Stop leaves nothing behind: the app, and a whole process tree (stand-in for `mvn` and its forked JVM) even when its children ignore SIGTERM | JVM gone within 10 s; tree gone in 1.7 to 1.9 s (SIGTERM, then SIGKILL after the grace time) | `41_run` `stop_no_orphan`, `tree_kill`, `close` |
+| `<leader>rd` debugs with profile and env, breakpoints hit | stop 2.7 to 4.9 s (20 s), no JVM after terminate | `41_run` `debug_stop`, `debug_profile`, `debug_no_orphan` |
+
+Boot detection: `org.springframework.boot` as a groupId in `pom.xml` (outside comments) or the `org.springframework.boot` Gradle plugin (`41_run` `detect`). Quitting Neovim stops running apps too.
+
 ### Also available (from LazyVim, not covered by the checks)
 
 Telescope, neo-tree, git signs, `lemminx` for XML (`pom.xml` formatting and validation), and a basic Java file template when you create a new `.java` file (class, package, and a Spring annotation for controller/service/repository/entity). They are here because the base config had them, they are not part of P1's measured work.
@@ -102,7 +116,7 @@ Telescope, neo-tree, git signs, `lemminx` for XML (`pom.xml` formatting and vali
 Be aware before you rely on Nv4J for a full workday:
 
 - **P2: Spring awareness.** No Spring language server. No completion or checking for annotation attributes beyond what jdt.ls does (`@Table(`/`@Column(` lists come from jdt.ls only), no `application.properties`/`yml` key completion, no bean or request mapping support.
-- **P2: run Spring Boot.** Debugging works (Capabilities, Debug). There is no Spring Boot run workflow with profiles or env yet. `<leader>rj` runs a plain `java -cp ... Main` in a terminal and works (checked by hand against the fixture), but it is not a Spring Boot launch.
+- **P2: run, leftovers.** Spring Boot run and debug are checked (Capabilities). The build-tool fallback (`spring-boot:run`, `bootRun`, used only without jdt.ls) is checked as a command, not run (Maven could not reach its plugin offline here). No saved run configurations: the profile is asked each time with `<leader>rp`, `<leader>rs` runs without one. `<leader>rj` (plain main class) is checked by hand only.
 - **P3: tests runner polish.** `<leader>tr` (debug the nearest test) is covered by `40_debug`. `<leader>tt`, `<leader>tT` (nvim-jdtls) and `<leader>tp` (whole project via `mvn test`) exist, they are not covered by checks.
 - **P3: scaffolding** (create package, class, with a wizard). Only the basic new-file template above exists.
 - **P3: refactors beyond what jdt.ls already offers.** Extract and rename work through jdt.ls. Move, inline, change signature, safe delete are not set up or tested.
@@ -202,10 +216,12 @@ Generate getters, constructors, `toString`, `equals`/`hashCode`: put the cursor 
 | `<C-b>` / `<leader>e` / `<leader>ef` | file explorer / explorer at root / reveal current file |
 | `<leader>cc` / `<leader>cC` | run / refresh code lens ("n references" above methods) |
 
-**Run, debug, test** (debugging a main class and `<leader>tr` are covered by `40_debug`; the rest is not checked, see Not yet):
+**Run, debug, test** (debugging a main class and `<leader>tr` are covered by `40_debug`, the Spring Boot keys by `41_run`; the rest is not checked, see Not yet):
 
 | Key | Does |
 |-----|------|
+| `<leader>rs` / `<leader>rd` / `<leader>rp` | run the Spring Boot app / debug it / pick a profile and run (terminal split: `<C-c>` stops, `q` stops and closes) |
+| `<leader>rx` | stop every Spring Boot run |
 | `<leader>rj` | run a main class with plain `java` in a terminal (picks the class if several; uses the project's JDK from jdt.ls) |
 | `<leader>tt` / `<leader>tr` / `<leader>tT` | run all tests in this class / nearest test / pick a test, in the debugger (breakpoints stop) |
 | `<leader>tp` | run all project tests (`mvnw test` or `mvn test`) in a terminal |
@@ -261,6 +277,8 @@ nvim/
     unused_imports.lua     unused-import warnings while the file has errors
     buildfile.lua          notifications for broken pom.xml / build.gradle
     codegen.lua            field pickers preselect all fields
+    debug.lua              debug fixes: serialized first launching calls, build before launch, no orphan
+    run.lua                run/debug Spring Boot (<leader>rs/rd/rp), terminal split, process tree stop
     paths.lua              log dirs (/tmp/nv4j) and jdt.ls workspace dirs (~/.cache/nv4j)
   lua/util/                profile.lua (:CompletionProfile), java_scaffold.lua (new file template)
 specs/                     001 architecture, 002 P1 numbers and trial log, features/*.md
@@ -290,6 +308,8 @@ The checks (each file lists its cases at the top):
 | `30_diagnostics` | diagnostics, build file errors, unused imports with errors |
 | `31_imports` | auto-import, grouping, organize imports |
 | `32_code_actions` | quick fixes, generate, extract, Lombok |
+| `40_debug` | debug a main class and a JUnit test: breakpoints, project JDK, no orphan, classpath race |
+| `41_run` | run Spring Boot: start, env, profile, port in use, stop (process tree), debug with profile, detection, keys |
 
 Budgets: warm completion p95 at most 150 ms per case; first completion after ready at most 400 ms; expected item in the top 5 plus a relative rule per case; diagnostics at most 3 s from edit to screen; import accept at most 1.5 s; one code action round trip at most 1 s. The fixture is `tests/fixtures/demo`, planted broken sources are in `tests/fixtures/planted/*.java.txt` and are loaded into a buffer in memory only, never written to disk.
 

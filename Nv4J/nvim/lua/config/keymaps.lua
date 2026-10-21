@@ -270,6 +270,25 @@ map("n", "<leader>rj", function()
   try_fetch(1)
 end, { desc = "Run Java main (terminal, no debugger)" })
 
+-- ── Run Spring Boot (nv4j/run.lua, check 41_run) ──────────────────────────
+-- Main class from jdt.ls, project JDK, build before launch. Output in a terminal split:
+-- <C-c> (normal mode) stops the app, q stops it and closes the split.
+map("n", "<leader>rs", function()
+  require("nv4j.run").spring_boot()
+end, { desc = "Run Spring Boot app" })
+map("n", "<leader>rd", function()
+  require("nv4j.run").spring_boot({ debug = true })
+end, { desc = "Debug Spring Boot app" })
+map("n", "<leader>rp", function()
+  require("nv4j.run").prompt_profile()
+end, { desc = "Run Spring Boot app with profile" })
+map("n", "<leader>rx", function()
+  require("nv4j.run").stop_all()
+end, { desc = "Stop Spring Boot app(s)" })
+pcall(function()
+  require("which-key").add({ { "<leader>r", group = "run" } })
+end)
+
 -- ── Run the whole test suite via the project's actual build tool ───────────
 -- nvim-jdtls's test runner (jdtls.dap: test_class/test_nearest_method/
 -- pick_test, bound above under <leader>t) is file-scoped only — no

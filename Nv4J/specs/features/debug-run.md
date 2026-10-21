@@ -1,6 +1,6 @@
 # Feature: Run and debug (Spring Boot)
 
-Priority: P2 (blocker for the rest of P2). Status: debug works (Task 1: `DONE 40_debug 13 0` in 5 of 5 consecutive runs; after the review fix round 16 cases, `DONE 40_debug 16 0` in 3 of 3, see "Task 1: fixes"); run is Task 2. Research and failing baseline: Task 0. Tests: `tests/checks/40_debug.lua`. Spec: `specs/004-p2-spring-run-debug.md`.
+Priority: P2 (blocker for the rest of P2). Status: debug works (Task 1: `DONE 40_debug 13 0` in 5 of 5 consecutive runs; after the review fix round 16 cases, `DONE 40_debug 16 0` in 3 of 3, see "Task 1: fixes"); run is Task 2, done: `specs/features/run.md` (it reuses this launch path for `<leader>rd` and `refresh_and_build` for `<leader>rs`). Research and failing baseline: Task 0. Tests: `tests/checks/40_debug.lua`. Spec: `specs/004-p2-spring-run-debug.md`.
 
 ## How debug works today (installed versions)
 

@@ -77,16 +77,18 @@ local BUILD_STATUS = { [0] = "failed (jdt.ls build status FAILED, see :JdtShowLo
 --- that build misses the new files (or fails on a file deleted while jdt.ls was down: "The project
 --- was not built since the source file ... could not be read"), and the second one, requested after
 --- the refresh got in line, builds them. The second build is a no-op when nothing changed.
-function M.build(client, done, timeout_ms)
+--- `what` names the launch in the messages ("debug" by default, "run" from nv4j.run).
+function M.build(client, done, timeout_ms, what)
   timeout_ms = timeout_ms or BUILD_TIMEOUT_MS
+  what = what or "debug"
   local finished = false
   local function finish(problem)
     if finished then return end
     finished = true
-    if problem then vim.notify("Build before debug " .. problem .. "; launching anyway", vim.log.levels.WARN) end
+    if problem then vim.notify("Build before " .. what .. " " .. problem .. "; launching anyway", vim.log.levels.WARN) end
     done()
   end
-  vim.notify("Building before debug...", vim.log.levels.INFO)
+  vim.notify("Building before " .. what .. "...", vim.log.levels.INFO)
   vim.defer_fn(function() finish(("timed out after %g s"):format(timeout_ms / 1000)) end, timeout_ms)
   local function once(try)
     local sent = client:request("java/buildWorkspace", false, function(err, status)
@@ -99,12 +101,12 @@ function M.build(client, done, timeout_ms)
   once(1)
 end
 
---- Refresh the source folders of the project at `root`, then M.build.
-local function build(root, done)
+--- Refresh the source folders of the project at `root`, then M.build. Also used by nv4j.run.
+function M.refresh_and_build(root, done, what)
   local client = jdtls_client(root)
   if not client then return done() end
   refresh(client.config.root_dir)
-  M.build(client, done)
+  M.build(client, done, nil, what)
 end
 
 local function terminal_job(session)
@@ -245,7 +247,7 @@ function M.on_attach(client)
   local adapter = dap.adapters.java
   M._adapter = function(callback, config, parent)
     if config.request ~= "launch" then return adapter(callback, config, parent) end
-    build(config.cwd, function() adapter(callback, config, parent) end)
+    M.refresh_and_build(config.cwd, function() adapter(callback, config, parent) end)
   end
   dap.adapters.java = M._adapter
   dap.listeners.on_config["nv4j_junit_launcher"] = M.junit_launcher
