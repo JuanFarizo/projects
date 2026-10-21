@@ -8,7 +8,7 @@ A fast, lightweight Neovim setup for Java and Spring development. IntelliJ is th
 
 ## Decisions
 
-D1 to D6 are confirmed by P1 (nothing was reversed). D7 to D13 are decisions taken during P1.
+D1 to D6 are confirmed by P1 (nothing was reversed). D7 to D13 are decisions taken during P1. D14 and later are P2 decisions (`specs/004-p2-spring-run-debug.md`).
 
 | # | Decision | Owner | Status |
 |---|----------|-------|--------|
@@ -25,6 +25,7 @@ D1 to D6 are confirmed by P1 (nothing was reversed). D7 to D13 are decisions tak
 | D11 | Completion ranking uses project usage counts, counted with ripgrep (IntelliJ `PreferMostUsedWeigher` idea), as a tie breaker after jdt.ls relevance. | Claude, accepted by user (Task 5) | Built: `nvim/lua/nv4j/usage.lua`; without `rg` ranking falls back to jdt.ls order. |
 | D12 | `java.awt.List` is hidden from completion by default so `List` completes to `java.util.List`. Override with `vim.g.nv4j_filtered_types = { add = {...}, remove = {...} }`. | User (Task 5 review) | Built: `nvim/lua/nv4j/completion.lua`. |
 | D13 | Budgets stay as set below, not weakened. `cold_first` is measured 1.0 s after jdt.ls ServiceReady. | Task 5 ruling | Confirmed with the numbers below. |
+| D14 | Spring Boot language server wiring: the `JavaHello/spring-boot.nvim` plugin (pinned, commit `9880be4`) with the Mason `vscode-spring-boot-tools` server, configured by nv4j (root = the jdt.ls project root, `java_cmd` from `nv4j.jdk`, start only for Spring Boot projects), not our own thin Lua client. Reason: the plugin already implements the client half of the `sts/*` protocol (12 forwarders to jdt.ls, classpath-listener callbacks, language ids, settings push after classpath events), which our own client would have to re-implement in at least about 150 lines; it is Neovim 0.12 native and met every P2 Spring LS budget in the Task 0 trial (first completion 195 to 205 ms, warm p95 5 to 6 ms, hover 7 ms, RSS about 300 to 430 MB). Ponytail rule: a plugin only because it removes real code. Revisit if the pinned plugin breaks or costs a budget. Details: `specs/features/spring-language-server.md`. | Claude (P2 Task 0), user can overturn | Decided, built in P2 Task 3. |
 
 ## Budgets and final P1 results
 
@@ -129,5 +130,5 @@ Logs and test output under `/tmp/nv4j/`; the jdt.ls workspace and config copy un
 
 ## Open items
 
-- Spring language server choice and install method (Mason or manual). To be decided in the P2 spec.
-- Run and debug (P2): the debug bundles are installed by the LazyVim java extra, but no check covers them; a headless start prints "Could not resolve classpath ... m2e.launchconfig.classpathProvider" for the main-class debug configs. Investigate in P2.
+- Spring language server: decided (D14, Mason `vscode-spring-boot-tools` through `spring-boot.nvim`); wiring is P2 Task 3, check `50_spring_ls`.
+- Run and debug (P2): the "m2e.launchconfig.classpathProvider" warning is a race in JDT launching hit by nvim-jdtls's parallel classpath requests (root cause and three more debug blockers in `specs/features/debug-run.md`); fixed in P2 Task 1, check `40_debug`.

@@ -1,0 +1,8 @@
+server:
+  port: 8081
+demo:
+  greeting:
+    text: Hello dev
+logging:
+  level:
+    demo: DEBUG
