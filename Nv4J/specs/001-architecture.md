@@ -49,6 +49,8 @@ Feature specs: [`specs/002-p1-completion.md`](002-p1-completion.md) (budget, bas
 
 Open follow-ups from P1 (carried to the P3 plan): async import apply (removes the up to 0.8 s accept wait), frecency vs project ranking, cosmetic gaps versus IntelliJ (see README, Known limitations).
 
+See `003-lessons-and-method.md` for how the reference repos are used, what P1 taught us, and the improved working method.
+
 ## Reference: IntelliJ Community source
 
 Repo: https://github.com/jetbrains/intellij-community (Apache 2.0). It is the reference for how IntelliJ implements Java and Spring-relevant features. Use: check, adapt, enhance. Not a port and not a full reverse engineering.
