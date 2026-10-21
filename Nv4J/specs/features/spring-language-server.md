@@ -1,6 +1,6 @@
 # Feature: Spring Boot language server
 
-Priority: P2 (properties/yml completion and hover), P2/P4 (`@Value`/`@Profile`, beans, request mappings). Status: research, decision D14 and failing baseline done (Task 0); wiring built (Task 3, `DONE 50_spring_ls 13 0` after review fix round 1); completion, hover and navigation checked in Task 4 (`DONE 51_spring_completion 19 0`, `DONE 52_spring_nav 10 0`). Tests: `tests/checks/50_spring_ls.lua`, `51_spring_completion.lua`, `52_spring_nav.lua`. Spec: `specs/004-p2-spring-run-debug.md`.
+Priority: P2 (properties/yml completion and hover), P2/P4 (`@Value`/`@Profile`, beans, request mappings). Status: research, decision D14 and failing baseline done (Task 0); wiring built (Task 3, `DONE 50_spring_ls 13 0` after review fix round 1); completion, hover and navigation checked in Task 4 (`DONE 51_spring_completion 20 0`, `DONE 52_spring_nav 12 0` after review round 1). Tests: `tests/checks/50_spring_ls.lua`, `51_spring_completion.lua`, `52_spring_nav.lua`. Spec: `specs/004-p2-spring-run-debug.md`.
 
 ## Sources read (pinned)
 
@@ -96,7 +96,14 @@ Built:
 
 - `nvim/lua/nv4j/completion.lua` `java_sort`: items without jdt.ls relevance tie on sortText, then keep the server's order
   (`nv4j_idx`). The Spring LS sends the ~1850 `@Value` keys with no sortText; `table.sort` shuffled them and blink's
-  `max_items` (200) dropped `demo.greeting.*` and `server.port` (trial c2). jdt.ls's sortText formula is only read for items
+  `max_items` (200) dropped `demo.greeting.*` and `server.port` (trial c2). That alone does not bypass `max_items`: the list
+  is then stable and alphabetical, and `demo.*` happens to be in its first 200; a key sorting later (`zz.*`, `myapp.*`)
+  was still cut (review round 1). Fix (trial c9): inside `${...` of a Java string, items whose label is a key set in the
+  project's own `application*`/`bootstrap*` `.properties`/`.yml` (`nv4j.spring.project_keys`: `src/main/resources` of the
+  root and modules 2 levels down, file list refreshed every 10 s, keys re-read when a file's mtime or size changes) get
+  `score_offset` +4 (Boot namespaces `spring`/`server`/`management`/`logging`/`debug`/`trace`/`info`) or +8 (any other
+  namespace: the project's own settings, the usual `@Value` target), so they sort first and are never cut. Keys that are
+  only in Boot's metadata still follow the server's order and the 200 limit. jdt.ls's sortText formula is only read for items
   from the `jdtls` client (another server's numeric sortText would outrank every jdt.ls item).
 - `snippets_should_show`: no snippets in `yaml`/`jproperties` buffers that have the `spring-boot` client
   (friendly-snippets' YAML set is docker-compose/k8s: `po` -> `ports:` ranked above `port`), and none inside a Java `"..."`
@@ -105,16 +112,18 @@ Built:
 - `nvim/lua/nv4j/spring_nav.lua` + `<leader>sp` (`config/keymaps.lua`): `workspace/symbol` `@+` and `@/` on the Spring client
   only (`:SpringBoot`/`vim.lsp.buf.workspace_symbol` ask every client, jdt.ls too), `vim.lsp.util.symbols_to_items`,
   Telescope picker (quickfix entries, generic sorter, file preview). Not `<leader>ss`: that is LazyVim's Goto Symbol
-  (telescope extra) and the config refers to it; `<leader>sp` is free in every enabled extra. No client for the buffer: a
-  WARN, no picker.
+  (telescope extra) and the config refers to it; `<leader>sp` is free in every enabled extra. If the picker extra is ever
+  switched to snacks, `<leader>sp` collides with its "Search for Plugin Spec" (`extras/editor/snacks_picker.lua`). No client
+  for the buffer: a WARN, no picker. A request that cannot be sent, an error answer, or no answer within 5 s
+  (`M.TIMEOUT_MS`): a WARN instead of silence (review round 1, case `no_answer`).
 
 Not changed: blink source weighting (the Spring items never reach Java identifier/annotation lists: `@` showed 0 Spring
 items), the fixture (the brief's `/people` example: the fixture's mappings are `/customers`, `/customers/{id}` and `/hello`;
 the check asserts those, including the class-level prefix).
 
-Test design: `51_spring_completion` (19 cases) measures the blink menu (tests/lib `completion.menu`: every source of the buffer,
+Test design: `51_spring_completion` (20 cases) measures the blink menu (tests/lib `completion.menu`: every source of the buffer,
 transforms, fuzzy, sorts, max_items), expected item in the top 3; first round trips <= 400 ms, warm p95 over 100 <= 150 ms;
-broken files with a 1.5 s wait so the server reconciles them first; `alive_after` re-asks after both. `52_spring_nav` (10 cases)
+broken files with a 1.5 s wait so the server reconciles them first; `alive_after` re-asks after both. `52_spring_nav` (12 cases)
 uses `vim.lsp.buf.definition` (all clients, what `gd` asks), the Spring client's `workspace/symbol`, and drives `<leader>sp`
 through its mapping, the Telescope picker, `set_prompt("/hello")` and `select_default`.
 
@@ -149,7 +158,12 @@ through its mapping, the Telescope picker, `set_prompt("/hello")` and `select_de
 | n1 | negative control: Spring items dropped in `transform_lsp` (scratch) | `DONE 51 4 15`: every Spring ranking/latency case FAILs; `profile_clean`, `snippets_kept`, `at_regression` pass (they do not need Spring items) (`-145645.log`) | reverted |
 | n2 | negative control: `NV4J_SPRING=0` | `DONE 51 0 1`, `DONE 52 0 1` (`attached` FAIL, check stops) (`-145717.log`) | evidence |
 | n3 | negative control attempts for 52: no Spring jars in jdt.ls's bundles; the client on an empty root | both `DONE 52 10 0`: the server still had the project (jdt.ls keeps installed bundles in its workspace OSGi cache; the classpath listener reports every jdt.ls project, not only the client root). Not usable as controls | evidence |
-| n4 | negative control: the Spring client answers hover/definition/workspace symbols with nothing (scratch copy of 52) | 3 PASS 7 FAIL: `hover_yml`, `hover_props`, `definition`, `mappings`, `beans`, `picker`, `picker_jump` FAIL; `attached`, `key`, `no_client` pass | evidence |
+| n4 | negative control: the Spring client answers hover/definition/workspace symbols with nothing (scratch copy of 52) | first run 3 PASS 7 FAIL (log not kept); re-run after review round 1 on the 12-case check: 4 PASS 8 FAIL, `hover_yml`, `hover_yml_port`, `hover_props`, `definition`, `mappings`, `beans`, `picker`, `picker_jump` FAIL; `attached`, `key`, `no_client`, `no_answer` pass (`/tmp/nv4j/logs/neg-n4-52-20261021-152955.log`) | evidence |
 | f1 | 3 consecutive `51` + `52` runs with the code after c7 | `DONE 51_spring_completion 19 0` and `DONE 52_spring_nav 10 0` 3 of 3: yml first 33-36 ms, `@Value` first 67-76 ms, `@Value` warm p95 49-57 ms, yml warm p95 9.8-10.6 ms, RestController rank 1, yml hover 11-32 ms (INFO `server.port` 202-266 ms), definition 49-80 ms, picker 126-144 ms (`test-20261021-150741.log`, `-150817`, `-150852`) | kept |
 | c8 | full `tests/run.sh` (`test-20261021-150938.log`): `51` `profile` FAIL once: the server answered `@Profile("")` with no items, 11 ms, sent right after `GreetingConfig.java` opened (28 buffer words shown); `32_code_actions` `remove_unused_import` FAIL once (jdt.ls offered no quick fix: no diagnostic in the request context yet) | `profile` pinned 1.0 s after the file opens (as c4): 3 of 3 `DONE 51 19 0`, `dev` rank 1 (`-151625`, `-151649`, `-151712`); `32` alone 3 of 3 `DONE 32_code_actions 28 0` (not touched by this task; recorded as a flake of the full run) | pin kept |
 | f2 | final full `tests/run.sh` (`test-20261021-151747.log`) | exit 0: P1 135 PASS 0 FAIL (worst warm p95 69 ms, cold first 45 ms, RestController rank 1, diagnostics 452 ms), `40_debug 16 0`, `41_run 22 0`, `50_spring_ls 13 0`, `51_spring_completion 19 0`, `52_spring_nav 10 0`; 215 PASS; no Spring LS process left | final |
+| c9 | review round 1: project keys first in `@Value("${` (`nv4j.spring.project_keys`, `score_offset` +4/+8 by namespace tier) and fixture key `zz.sample.flag=true` (application.properties; sorts after every Boot key); case `value_project_late` written first | offset 0 (control): `value_project_late` FAIL rank nil (cut by max_items), `DONE 51 19 1` (`test-20261021-152809.log`); offset 4: `zz.sample.flag` rank 3, `demo.greeting.text` rank 1, first 84 ms, warm p95 45.8 ms, `DONE 51 20 0` (`-152834.log`) | kept |
+| c10 | review round 1: the first yml hover of `server.port` becomes case `hover_yml_port` (FAIL above 1000 ms, a regression limit; `hover_yml` on `logging.level` keeps the 500 ms budget) | 262-286 ms, PASS (`-152931.log`, `-153116`, `-153153`, `-153231`) | kept |
+| c11 | review round 1: `<leader>sp` warns when the request cannot be sent, the server returns an error, or nothing answers within 5 s; case `no_answer` (workspace/symbol swallowed, timeout lowered to 300 ms) | WARN after 301 ms, no picker (`-152931.log`) | kept |
+| c12 | review round 1: `32_code_actions` `remove_unused_import` waits for jdt.ls's own unused-import diagnostic, not nv4j's copy (source `nv4j`, which often arrives first and gave the earlier flake: no quick fix without jdt.ls's diagnostic in the context) | `DONE 32_code_actions 28 0` alone (`-153049.log`) and in both full runs | kept |
+| f3 | review round 1: 3 consecutive `51` + `52`, then 2 full runs | `DONE 51_spring_completion 20 0` and `DONE 52_spring_nav 12 0` 3 of 3 (`-153116`, `-153153`, `-153231`): `zz.sample.flag` rank 3, `@Value` first 81-107 ms, warm p95 49-58 ms, yml first 27-34 ms, yml warm p95 9.6-11.3 ms, yml hover 8-22 ms, `server.port` yml hover 262-276 ms, definition 52-69 ms, picker 120-136 ms. Full runs `test-20261021-153309.log` and `-153754.log`: both all pass, P1 135, `40 16 0`, `41 22 0`, `50 13 0`, `51 20 0`, `52 12 0` (219 PASS); worst warm p95 52 ms and 64 ms, cold first 44/47 ms, RestController rank 1, diagnostics 453/447 ms; no Spring LS process left | final |

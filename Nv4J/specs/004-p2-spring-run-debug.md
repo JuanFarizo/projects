@@ -1,6 +1,6 @@
 # 004 - P2: run, debug and Spring awareness
 
-Status: Task 0 done (research, fixture, failing baselines); Task 1 done (debug works: `DONE 40_debug 13 0`, 5 of 5 consecutive runs; review fix round: `DONE 40_debug 16 0`, 3 of 3)); Task 2 done (run Spring Boot: `DONE 41_run 18 0`, 3 of 3; review fix round 1: `DONE 41_run 22 0`, 3 of 3); Task 3 done (Spring Boot language server: `DONE 50_spring_ls 11 0`, 3 of 3; review fix round 1: `DONE 50_spring_ls 13 0`, 3 of 3); Task 4 done (Spring completion, hover and navigation: `DONE 51_spring_completion 19 0`, `DONE 52_spring_nav 10 0`, 3 of 3). Plan: `docs/superpowers/plans/2026-10-21-nv4j-p2-spring-run-debug.md`. Does not contradict `001-architecture.md`; decisions D14 and later live in its decisions table.
+Status: Task 0 done (research, fixture, failing baselines); Task 1 done (debug works: `DONE 40_debug 13 0`, 5 of 5 consecutive runs; review fix round: `DONE 40_debug 16 0`, 3 of 3)); Task 2 done (run Spring Boot: `DONE 41_run 18 0`, 3 of 3; review fix round 1: `DONE 41_run 22 0`, 3 of 3); Task 3 done (Spring Boot language server: `DONE 50_spring_ls 11 0`, 3 of 3; review fix round 1: `DONE 50_spring_ls 13 0`, 3 of 3); Task 4 done (Spring completion, hover and navigation: `DONE 51_spring_completion 20 0`, `DONE 52_spring_nav 12 0`, 3 of 3 after review round 1). Plan: `docs/superpowers/plans/2026-10-21-nv4j-p2-spring-run-debug.md`. Does not contradict `001-architecture.md`; decisions D14 and later live in its decisions table.
 
 ## Goal
 
@@ -98,9 +98,11 @@ Rulings (cost if wrong):
 - The Spring symbols key is `<leader>sp`, not `<leader>ss` (LazyVim's Goto Symbol, referenced by the config). Cost: one more key to learn; swap in `config/keymaps.lua` if `<leader>ss` is wanted.
 - The fixture was not extended with a `/people` mapping; `52` asserts the fixture's `/customers`, `/customers/{id}` (class prefix + method path) and `/hello`. Cost: none known, the server joins the paths the same way.
 - First `@Value` and `@Profile` requests, and the yml hover, are sent 1.0 s after their file opens (D13 rule). Cost: a request in that first second can take about 0.5 s or come back empty once.
-- `hover_yml` is budgeted on `logging.level`; the first yml hover of `server.port` (202 to 516 ms, server side, per key) is printed as INFO and listed in Known limitations, not hidden by a warm-up (trial c6 reverted). Cost: that key can exceed 500 ms once per session.
+- `hover_yml` is budgeted on `logging.level`; the first yml hover of `server.port` (202 to 516 ms, server side, per key) has its own case `hover_yml_port` with a 1 s regression limit (review round 1) and is listed in Known limitations, not hidden by a warm-up (trial c6 reverted). Cost: that key can exceed 500 ms once per session.
 - Snippets hidden inside Java `"..."` (one-line quote count) and in Spring config files. Cost: a user who wants a snippet there must leave the string; text block bodies are not detected.
-- `@Value("${` keys stay in the server's order (alphabetical); project keys are not boosted. Cost: on a project whose keys sort late, they need a typed prefix.
+- `@Value("${`: keys set in the project's own config files come first, the project's own namespaces before Boot's (`spring`, `server`, `management`, `logging`, `debug`, `trace`, `info`) (review round 1, trial c9); the rest keeps the server's alphabetical order and blink's 200 limit. Cost: a Boot-only key late in the alphabet needs a typed prefix; a fixed namespace list (a library's keys set in the project count as the project's own).
+
+Review fix round 1: project keys first in `@Value("${` (fixture key `zz.sample.flag`, case `value_project_late`), `hover_yml_port` with a 1 s limit, `<leader>sp` warns on no answer within 5 s (case `no_answer`), `32_code_actions` waits for jdt.ls's own unused-import diagnostic (flake fix), n4 control re-run with its log. 3 consecutive runs `DONE 51_spring_completion 20 0`, `DONE 52_spring_nav 12 0`; two full runs (logs `/tmp/nv4j/logs/test-20261021-153309.log`, `-153754.log`), both all pass: P1 135 PASS, `40 16 0`, `41 22 0`, `50 13 0`, `51 20 0`, `52 12 0`, 219 PASS; worst warm p95 52 ms and 64 ms.
 
 ## Task 0 full run
 

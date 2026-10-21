@@ -3,8 +3,8 @@
 --  attached     : prerequisite, the `spring-boot` client initialized on application.properties (+1.0 s pin).
 --  hover_yml    : hover on `level` under `logging:` in application-dev.yml returns docs naming logging.level and its
 --                 description, <= 500 ms, sent 1.0 s after the yml is opened (the 1.0 s pin of D13 / 50_spring_ls).
---                 Then `port` under `server:` is hovered too, info only (not budgeted): the server's first YAML
---                 hover of server.port costs 240-520 ms (trials c5-c7, README Known limitations), later 1 ms.
+--  hover_yml_port: then `port` under `server:`: names server.port, <= 1000 ms (a regression limit, not the 500 ms
+--                 budget: the server's first YAML hover of server.port costs 200-520 ms, trials c5-c7, Known limitations).
 --  hover_props  : hover on spring.jpa.open-in-view in application.properties returns its docs, <= 500 ms.
 --  definition   : `@Value("${server.port}")` in GreetingController: vim.lsp.buf.definition (every client of the
 --                 buffer, what gd asks) lists application.properties at the `server.port=8080` line (and
@@ -20,6 +20,8 @@
 --                 line.
 --  no_client    : <leader>sp in a buffer of a non-Boot project warns ("no Spring Boot language server") and opens
 --                 no picker.
+--  no_answer    : the Spring server never answers workspace/symbol (stubbed, timeout lowered to 300 ms): <leader>sp shows a
+--                 WARN ("no answer from the Spring Boot LS"), no picker.
 -- Timings: /tmp/nv4j/logs/latency.jsonl (spring_hover_yml, spring_definition, spring_picker).
 vim.o.confirm = false
 local lsp = require("lsp")
@@ -27,6 +29,7 @@ local E = require("edit")
 local P = "52_spring_nav."
 local NAME = "spring-boot"
 local HOVER_MS, PICKER_MS = 500, 1000
+local PORT_HOVER_LIMIT_MS = 1000 -- server.port's first yml hover is 200-520 ms server side (trial c5): a regression limit
 
 local fx = vim.env.NV4J_FIXTURE
 local res = fx .. "/src/main/resources/"
@@ -76,9 +79,10 @@ local ok_all, err = pcall(function()
   lsp.report(P .. "hover_yml", text:find("logging.level", 1, true) ~= nil and text:find("Log levels", 1, true) ~= nil and ms <= HOVER_MS,
     ("%.0f ms (budget %d): %s"):format(ms, HOVER_MS, oneline(text)))
   local ptext, pms = hover_text(ybuf, E.line_of(ybuf, "^  port:"), 3)
-  E.log("spring_hover_yml_port_info", pms, 1)
-  io.stdout:write(("\nINFO 52_spring_nav.hover_yml_port first yml hover of server.port %.0f ms (not budgeted, Known limitations), %s\n"):format(
-    pms, ptext:find("server.port", 1, true) and "names server.port" or "NO server.port docs"))
+  E.log("spring_hover_yml_port", pms, 1)
+  lsp.report(P .. "hover_yml_port", ptext:find("server.port", 1, true) ~= nil and pms <= PORT_HOVER_LIMIT_MS,
+    ("first yml hover of server.port %.0f ms (regression limit %d; the 500 ms budget is on logging.level above, Known limitations): %s"):format(
+      pms, PORT_HOVER_LIMIT_MS, oneline(ptext)))
   local pl = E.line_of(pbuf, "^spring%.jpa%.open%-in%-view")
   text, ms = hover_text(pbuf, pl, 12)
   lsp.report(P .. "hover_props", text:find("spring.jpa.open-in-view", 1, true) ~= nil and #text > 40 and ms <= HOVER_MS,
@@ -192,6 +196,28 @@ local ok_all, err = pcall(function()
   for _, nn in ipairs(notes) do if nn.msg:find("no Spring Boot language server", 1, true) then warned = true end end
   lsp.report(P .. "no_client", warned and prompt_buf() == nil,
     ("warning %s, picker %s"):format(warned and "shown" or "MISSING", prompt_buf() and "OPENED" or "none"))
+
+  -- A Spring server that never answers workspace/symbol: a visible warning after the timeout, no picker.
+  local nav = require("nv4j.spring_nav")
+  local real, real_to = client.request, nav.TIMEOUT_MS
+  client.request = function(self, method, params, handler, bufnr)
+    if method == "workspace/symbol" then return true, 999998 end -- swallowed: no answer ever
+    return real(self, method, params, handler, bufnr)
+  end
+  nav.TIMEOUT_MS = 300
+  vim.api.nvim_set_current_buf(gbuf)
+  local notes2 = E.capture_notify()
+  local t_na = E.now()
+  pcall(press)
+  local hung
+  vim.wait(2000, function()
+    for _, nn in ipairs(notes2) do if nn.msg:find("no answer from the Spring Boot LS", 1, true) and nn.level == vim.log.levels.WARN then hung = E.now() - t_na return true end end
+    return false
+  end, 10)
+  client.request, nav.TIMEOUT_MS = real, real_to
+  lsp.report(P .. "no_answer", hung ~= nil and prompt_buf() == nil,
+    ("server swallows workspace/symbol: warning %s, picker %s"):format(hung and ("after %.0f ms (timeout 300)"):format(hung) or "MISSING",
+      prompt_buf() and "OPENED" or "none"))
 end)
 if not ok_all then lsp.report(P .. "cases", false, "error: " .. tostring(err)) end
 lsp.finish()

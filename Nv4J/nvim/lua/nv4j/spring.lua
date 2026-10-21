@@ -80,6 +80,79 @@ function M.bundles_for(root)
   return M.jars()
 end
 
+-- Top-level namespaces Spring Boot itself owns. A project key outside them (`app.*`, `demo.*`) is the
+-- project's own setting, the usual target of @Value; `server.port` set in the project is still a project key.
+local BOOT_NS = { spring = true, server = true, management = true, logging = true, debug = true, trace = true, info = true }
+
+--- Keys of a .properties file (comments, continuation lines and escapes are not interpreted beyond skipping).
+local function props_keys(lines, out)
+  local cont = false
+  for _, l in ipairs(lines) do
+    if not cont then
+      local k = l:match("^%s*([^#!%s=:][^%s=:]*)%s*[=:]")
+      if k then out[k] = true end
+    end
+    cont = l:match("\\$") ~= nil
+  end
+end
+
+--- Leaf keys (with a value on the line) of a YAML file, dotted by indentation. Lists and documents are flattened.
+local function yaml_keys(lines, out)
+  local stack = {} -- { indent, name }
+  for _, l in ipairs(lines) do
+    local ind, k, rest = l:match("^(%s*)([%w_%.%-]+):%s*(.-)%s*$")
+    if k then
+      local n = #ind
+      while #stack > 0 and stack[#stack][1] >= n do table.remove(stack) end
+      local path = {}
+      for _, s in ipairs(stack) do path[#path + 1] = s[2] end
+      path[#path + 1] = k
+      if rest ~= "" and not rest:match("^#") then out[table.concat(path, ".")] = true end
+      stack[#stack + 1] = { n, k }
+    elseif l:match("^%-%-%-") then
+      stack = {}
+    end
+  end
+end
+
+local keys_cache = {} -- root -> { files, files_at, sig, keys }
+--- The keys set in the project's own application*/bootstrap* .properties/.yml (src/main/resources of the root and of
+--- modules up to 2 levels down), as key -> 2 (outside Boot's namespaces) or 1. Read from disk; the file list is
+--- refreshed every 10 s and the keys whenever a file's mtime or size changes. Used by nv4j/completion.lua.
+function M.project_keys(root)
+  if not root then return {} end
+  local e = keys_cache[root] or {}
+  keys_cache[root] = e
+  local now = vim.uv.now()
+  if not e.files or now - e.files_at > 10000 then
+    e.files, e.files_at = {}, now
+    for _, dir in ipairs({ "", "*/", "*/*/" }) do
+      for _, pat in ipairs({ "application*.properties", "application*.yml", "application*.yaml", "bootstrap*.properties", "bootstrap*.yml" }) do
+        vim.list_extend(e.files, vim.fn.glob(root .. "/" .. dir .. "src/main/resources/" .. pat, true, true))
+      end
+    end
+  end
+  local sig = {}
+  for _, f in ipairs(e.files) do
+    local st = vim.uv.fs_stat(f)
+    sig[#sig + 1] = st and (st.mtime.sec .. "." .. st.mtime.nsec .. ":" .. st.size) or "-"
+  end
+  sig = table.concat(sig, ",")
+  if e.sig ~= sig then
+    local set = {}
+    for _, f in ipairs(e.files) do
+      local ok, lines = pcall(vim.fn.readfile, f)
+      if ok then
+        if f:match("%.properties$") then props_keys(lines, set) else yaml_keys(lines, set) end
+      end
+    end
+    e.keys = {}
+    for k in pairs(set) do e.keys[k] = BOOT_NS[k:match("^[^%.]+")] and 1 or 2 end
+    e.sig = sig
+  end
+  return e.keys
+end
+
 local function is_config_file(name, ft)
   local base = vim.fs.basename(name)
   if ft == "yaml" then return base:match("^application.*%.ya?ml$") or base:match("^bootstrap.*%.ya?ml$") end

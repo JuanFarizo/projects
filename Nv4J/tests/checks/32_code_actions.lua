@@ -82,7 +82,14 @@ local ok_all, err = pcall(function()
 
   ---------------------------------------------------------------- quick fixes on warnings
   E.set(buf, E.planted("unused.java.txt"))
-  wait_errors(function(d) return E.has(d, S.WARN, "import java.util.Map is never used") ~= nil end)
+  -- jdt.ls's own diagnostic, not nv4j.unused_imports' copy (source "nv4j", often first): the quick fix is built
+  -- from the diagnostic in the request context, so with only the copy jdt.ls offered none (a full-run flake).
+  wait_errors(function(d)
+    for _, x in ipairs(d) do
+      if x.severity == S.WARN and x.source ~= "nv4j" and x.message:find("import java.util.Map is never used", 1, true) then return true end
+    end
+    return false
+  end)
   offered("remove_unused_import", L("^import java.util.Map"), 10, { "^Remove unused import" })
   offered("remove_unused_local", L("int unused"), 13, { "^Remove 'unused' and all assignments" })
   local oku = E.apply(buf, "^Remove unused import", L("^import java.util.Map"), 10)

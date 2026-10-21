@@ -128,8 +128,30 @@ local function relevance(it)
 end
 
 --- lsp provider transform_items (Java only).
+-- Inside `${...` of a Java string (`@Value("${`), keys set in the project's own application*.properties/yml come
+-- first: +PROJECT_KEY_OFFSET per tier (2 = outside Boot's namespaces, e.g. demo.*, 1 = e.g. server.port), so the
+-- about 1850 Boot keys (server order, alphabetical) never push them past blink's max_items (trial c9).
+local PROJECT_KEY_OFFSET = 4
+local function boost_project_keys(ctx, items)
+  local before = ctx.line:sub(1, ctx.bounds.start_col - 1)
+  if not before:find("%${[%w_%.%-]*$") then return end
+  local keys
+  for _, it in ipairs(items) do
+    if not it.nv4j and it.client_id and not from_jdtls(it) then
+      if keys == nil then
+        local c = vim.lsp.get_client_by_id(it.client_id)
+        keys = c and c.name == "spring-boot" and require("nv4j.spring").project_keys(c.config.root_dir) or false
+      end
+      if not keys then return end
+      local tier = keys[it.label]
+      if tier then it.score_offset = (it.score_offset or 0) + tier * PROJECT_KEY_OFFSET end
+    end
+  end
+end
+
 function M.transform_lsp(ctx, items)
   if not is_java(ctx) then return items end
+  boost_project_keys(ctx, items)
   local before = M.char_before_keyword(ctx)
   local bare = before ~= "." -- not qualified by a receiver or package
   local counts = items[1] and items[1].client_id and project_counts(items[1].client_id)

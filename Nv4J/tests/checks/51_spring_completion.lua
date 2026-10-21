@@ -10,6 +10,8 @@
 --  yml_first    : the first yml completion round trip (blink pipeline) <= 400 ms.
 --  value_keys   : GreetingController `@Value("${}")` (cursor after `${`): the project's keys are listed
 --                 (demo.greeting.text, demo.greeting.times, server.port), demo.greeting.text in the top 3.
+--  value_project_late: the same list: zz.sample.flag (set only in the fixture's application.properties, sorts after
+--                 every Boot key) in the top 3: project keys outside Boot's namespaces come first (trial c9).
 --  value_prefix : `@Value("${server.po}")` -> server.port top 3.
 --  value_first  : the first `@Value` completion round trip <= 400 ms, sent 1.0 s after GreetingController.java is
 --                 opened (like the 1.0 s pins of D13 and 50_spring_ls; trial c4).
@@ -144,6 +146,9 @@ local ok_all, err = pcall(function()
   end
   ranked("value_keys", vfirst, label_is("demo.greeting.text"), "demo.greeting.text", TOP,
     { ok = #missing == 0, detail = "project keys missing: " .. (#missing == 0 and "none" or table.concat(missing, ",")) })
+  -- A project key that sorts after every Boot key (zz.sample.flag in application.properties): without the
+  -- project-key boost it is item 1853 of the server's list and blink's max_items (200) cuts it (trial c9).
+  ranked("value_project_late", vfirst, label_is("zz.sample.flag"), "zz.sample.flag")
   lsp.report(P .. "value_first", not vfirst.err and #vfirst.items > 0 and vfirst.ms <= FIRST_MS,
     ("%.0f ms (budget %d; sources answered in %.0f ms), %d items"):format(vfirst.ms, FIRST_MS, vfirst.lsp_ms or -1, #vfirst.items))
   local plines = lines_with(gbuf, "@Value%(", '    @Value("${server.po}")')

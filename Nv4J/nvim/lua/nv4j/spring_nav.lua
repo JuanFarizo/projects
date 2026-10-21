@@ -1,10 +1,13 @@
 -- Spring symbols picker (<leader>sp, check 52_spring_nav): the beans (`@+`) and request mappings (`@/`) the
 -- Spring Boot LS indexes, asked with workspace/symbol on that client only (vim.lsp.buf.workspace_symbol, used by
 -- spring-boot.nvim's :SpringBoot, asks every client, so jdt.ls answers too), shown in Telescope.
--- Not <leader>ss: that is LazyVim's Goto Symbol (telescope extra). Spec: specs/features/spring-language-server.md.
+-- Not <leader>ss: that is LazyVim's Goto Symbol (telescope extra). <leader>sp is free with the telescope extra; the snacks
+-- picker extra binds it to "Search for Plugin Spec" (switching pickers would collide). Spec:
+-- specs/features/spring-language-server.md.
 local M = {}
 
 local QUERIES = { "@+", "@/" }
+M.TIMEOUT_MS = 5000
 
 --- The Spring Boot client for this buffer: the one attached to it, else one whose root holds the file or cwd.
 local function client_for(buf)
@@ -26,18 +29,37 @@ function M.collect(buf, cb)
     vim.notify("nv4j: no Spring Boot language server for this buffer (Spring Boot projects only)", vim.log.levels.WARN)
     return false
   end
-  local results, left = {}, #QUERIES
+  local results, left, done = {}, #QUERIES, false
+  local function fail(why)
+    if done then return end
+    done = true
+    vim.notify("nv4j: Spring symbols: " .. why, vim.log.levels.WARN)
+  end
+  -- A server that never answers (busy, hung) gets a visible warning instead of silence.
+  local timer = vim.defer_fn(function() fail(("no answer from the Spring Boot LS within %d ms"):format(M.TIMEOUT_MS)) end, M.TIMEOUT_MS)
   for i, q in ipairs(QUERIES) do
-    client:request("workspace/symbol", { query = q }, function(err, res)
-      results[i] = (not err and res) or {}
+    local ok = client:request("workspace/symbol", { query = q }, function(err, res)
+      if done then return end
+      if err then
+        timer:stop()
+        return fail("the Spring Boot LS returned an error: " .. tostring(err.message or err))
+      end
+      results[i] = res or {}
       left = left - 1
       if left > 0 then return end
+      done = true
+      timer:stop()
       local items = {}
       for _, r in ipairs(results) do
         vim.list_extend(items, vim.lsp.util.symbols_to_items(r, buf, client.offset_encoding))
       end
       cb(items)
     end, buf)
+    if not ok then
+      timer:stop()
+      fail("the request could not be sent (Spring Boot LS stopped?)")
+      return false
+    end
   end
   return true
 end
