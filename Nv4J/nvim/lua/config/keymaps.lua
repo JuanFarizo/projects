@@ -295,6 +295,12 @@ pcall(function()
   require("which-key").add({ { "<leader>r", group = "run" } })
 end)
 
+-- ── Spring symbols (nv4j/spring_nav.lua, check 52_spring_nav) ─────────────
+-- Beans and request mappings from the Spring Boot LS in Telescope. <leader>ss stays LazyVim's Goto Symbol.
+map("n", "<leader>sp", function()
+  require("nv4j.spring_nav").pick()
+end, { desc = "Spring symbols (beans, request mappings)" })
+
 -- ── Run the whole test suite via the project's actual build tool ───────────
 -- nvim-jdtls's test runner (jdtls.dap: test_class/test_nearest_method/
 -- pick_test, bound above under <leader>t) is file-scoped only — no

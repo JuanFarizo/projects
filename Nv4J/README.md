@@ -2,16 +2,16 @@
 
 A fast, lightweight Neovim setup for Java and Spring development. It is built on LazyVim and runs next to your normal Neovim: your own `~/.config/nvim` is never touched. IntelliJ is the feature reference. Every feature has a priority and a pass/fail number, and the numbers are re-measured by a headless test suite you can run yourself.
 
-Status: **P1 is built and passing** (completion, diagnostics, imports, code actions, JDK handling). P2 is in progress: debugging a main class or a JUnit test works and is checked (`40_debug`), running a Spring Boot app with profile and env works and is checked (`41_run`), and the Spring Boot language server runs for Spring Boot projects with `application.properties`/`yml` key completion and hover (`50_spring_ls`); `@Value`/`@Profile` completion and bean/request-mapping navigation are not built yet. P3 to P5 are planned, not built. The "Not yet" list below is honest about that.
+Status: **P1 is built and passing** (completion, diagnostics, imports, code actions, JDK handling). P2 is in progress: debugging a main class or a JUnit test works and is checked (`40_debug`), running a Spring Boot app with profile and env works and is checked (`41_run`), and the Spring Boot language server runs for Spring Boot projects with `application.properties`/`yml` key completion and hover (`50_spring_ls`), `@Value`/`@Profile` completion (`51_spring_completion`), go to definition from `@Value` and a beans/request-mappings picker (`52_spring_nav`). P3 to P5 are planned, not built. The "Not yet" list below is honest about that.
 
 ## Priorities
 
 | Priority | Scope | Status |
 |----------|-------|--------|
 | P1 | Completion speed and ranking, diagnostics, imports, code actions, Java 25 and JDK handling | Done (this README, Capabilities) |
-| P2 | Spring awareness (annotations, attributes, `application.properties`/`yml`), run and debug Spring Boot | In progress: debug, run and the Spring Boot language server done (Capabilities: Debug, Run Spring Boot, Spring Boot language server) |
+| P2 | Spring awareness (annotations, attributes, `application.properties`/`yml`), run and debug Spring Boot | In progress: debug, run, the Spring Boot language server and Spring completion/navigation done (Capabilities: Debug, Run Spring Boot, Spring Boot language server, Spring completion and navigation) |
 | P3 | Tests runner polish, scaffolding (package/class creation), refactors beyond what jdt.ls already offers | Not yet |
-| P4 | Gradle, Spring navigation, JPA checks | Not yet |
+| P4 | Gradle, Spring navigation, JPA checks | Spring navigation (beans, request mappings, `@Value` definition) done early with P2 Task 4; Gradle and JPA checks not yet |
 | P5 | Everything else | Not yet |
 
 Maven is first class. Gradle is second and is not tested yet. Source of truth for decisions and numbers: `specs/001-architecture.md`, `specs/002-p1-completion.md`, `specs/features/*.md`.
@@ -121,7 +121,25 @@ In a Spring Boot project (same detection as Run Spring Boot above, also in a mod
 | Only Boot projects, one client for `.java`/`.yml`/`.properties`, jdt.ls gets its five extension bundles (debug bundles kept), JDK from discovery not `PATH`, off switch works | rules checked (plain Maven project, loose file, `vim.g.nv4j_spring = false`, JDK 21 first on `PATH`) | `50_spring_ls` `plain_maven`, `loose_file`, `yml_java_attached`, `bundles`, `server_jvm`, `disabled`, `off_at_start`, `detect` |
 | P1 budgets hold with it running | completion worst warm p95 47 to 55 ms (150; 40 to 47 ms with it off, A/B in the feature spec), cold first 43 to 50 ms (400), `@` RestController rank 1 (top 5), diagnostics 457 to 516 ms (3 s), over three full runs | checks `10`, `11`, `30` |
 
-`:SpringBoot` (from the plugin: annotations, beans, request mappings as workspace symbols) is there but not checked yet (Not yet).
+`:SpringBoot` (from the plugin) also exists; use `<leader>sp` below, which asks only the Spring server.
+
+### Spring completion and navigation (P2/P4)
+
+The Spring items come through the usual blink menu and the usual keys (`gd`, `K`); one new key, `<leader>sp`. Numbers from 3 consecutive runs of `51_spring_completion` (19 of 19 PASS each) and `52_spring_nav` (10 of 10 PASS each), the menu as blink shows it (every source, Nv4J's sorting, `max_items`):
+
+| What you get | Measured (budget) | Check |
+|--------------|-------------------|-------|
+| `application.properties`: `server.po` -> `server.port`, `spring.jpa.hibernate.ddl` -> `ddl-auto` | rank 1 (top 3) | `51` `props_port`, `props_ddl` |
+| `application-dev.yml`: `server:` + `po` -> `port`, top-level `server.po` -> `server.port`; no docker-compose snippets in Spring yml/properties files | rank 1 (top 3); first 33 to 36 ms (400 ms), warm p95 9.8 to 10.6 ms (150 ms) | `51` `yml_port`, `yml_dotted`, `yml_no_snippets`, `yml_first`, `yml_warm` |
+| `@Value("${` lists the keys (about 1850, the project's `demo.greeting.*` and `server.port` among them), `@Value("${server.po` -> `server.port` | `demo.greeting.text` rank 2, `server.port` rank 1 (top 3); first 67 to 76 ms (400 ms, sent 1 s after the file opens), warm p95 49 to 57 ms (150 ms) | `51` `value_keys`, `value_prefix`, `value_first`, `value_warm` |
+| `@Profile("")` lists the profiles of `application-*.yml` (`dev`), no snippets inside string literals (they still show in code) | rank 1 (top 3) | `51` `profile`, `profile_clean`, `snippets_kept` |
+| A properties file with syntax errors and a yml with bad indentation: completion on the next valid line works, the server stays up (same process) | rank 1, client alive | `51` `broken_props`, `broken_yml`, `alive_after` |
+| `@` still lists `RestController` first with the Spring server on the buffer (0 Spring items in the list) | rank 1 (top 5) | `51` `at_regression` |
+| `K` on a key in yml and properties | 11 to 32 ms yml (`logging.level`), 1 ms properties (500 ms) | `52` `hover_yml`, `hover_props` |
+| `gd` on `@Value("${server.port}")` lists `application.properties` and `application-dev.yml` at the key | 49 to 80 ms (500 ms) | `52` `definition` |
+| `<leader>sp`: beans and request mappings with full paths (`/customers -- GET`, `/customers/{id} -- PUT`, `/hello -- GET`) in Telescope; Enter jumps to the mapping; a non-Boot buffer gets a warning | picker with 17 entries in 126 to 144 ms (1 s) | `52` `mappings`, `beans`, `key`, `picker`, `picker_jump`, `no_client` |
+
+Code: `nvim/lua/nv4j/completion.lua` (server order kept for Spring items, snippet rules), `nvim/lua/nv4j/spring_nav.lua`. Trials and negative controls: `specs/features/spring-language-server.md`.
 
 ### Also available (from LazyVim, not covered by the checks)
 
@@ -131,12 +149,12 @@ Telescope, neo-tree, git signs, `lemminx` for XML (`pom.xml` formatting and vali
 
 Be aware before you rely on Nv4J for a full workday:
 
-- **P2: Spring awareness, leftovers.** The Spring Boot language server runs and `application.properties` completion and hover are checked (Capabilities). Not checked yet: `.yml` completion, `@Value`/`@Profile` completion, annotation attribute checks beyond jdt.ls (`@Table(`/`@Column(` lists come from jdt.ls only), beans and request mappings (`:SpringBoot` exists, untested).
+- **P2: Spring awareness, leftovers.** Properties/yml completion and hover, `@Value`/`@Profile` completion, `@Value` go to definition, beans and request mappings are checked (Capabilities). Not checked yet: annotation attribute checks beyond jdt.ls (`@Table(`/`@Column(` lists come from jdt.ls only), the Spring server's own diagnostics (unknown keys, bad values), `:SpringBoot` (the plugin's command; `<leader>sp` is the checked path).
 - **P2: run, leftovers.** Spring Boot run and debug are checked (Capabilities). The build-tool fallback (`spring-boot:run`, `bootRun`, used only without jdt.ls) is checked as a command, not run (Maven could not reach its plugin offline here). No saved run configurations: the profile is asked each time with `<leader>rp`, `<leader>rs` runs without one. `<leader>rj` (plain main class) is checked by hand only.
 - **P3: tests runner polish.** `<leader>tr` (debug the nearest test) is covered by `40_debug`. `<leader>tt`, `<leader>tT` (nvim-jdtls) and `<leader>tp` (whole project via `mvn test`) exist, they are not covered by checks.
 - **P3: scaffolding** (create package, class, with a wizard). Only the basic new-file template above exists.
 - **P3: refactors beyond what jdt.ls already offers.** Extract and rename work through jdt.ls. Move, inline, change signature, safe delete are not set up or tested.
-- **P4: Gradle** (supported by jdt.ls, not tested, only the build-file notification code knows `build.gradle`), Spring navigation, JPA checks.
+- **P4: Gradle** (supported by jdt.ls, not tested, only the build-file notification code knows `build.gradle`), JPA checks (Spring beans/request mappings navigation: `<leader>sp`, Capabilities).
 - **P5:** everything else.
 
 ## Install
@@ -228,6 +246,7 @@ Generate getters, constructors, `toString`, `equals`/`hashCode`: put the cursor 
 | `<leader>ci` / `<leader>cO` | incoming / outgoing calls |
 | `<leader>cgs` / `<leader>cgS` | go to super implementation / go to test subjects |
 | `<C-m>` | methods of the current file (needs a terminal with the kitty keyboard protocol, else it acts as Enter) |
+| `<leader>sp` | Spring symbols: beans and request mappings of the Spring Boot project (Telescope; `<leader>ss` stays LazyVim's symbols of the file) |
 | `<C-p>` / `<C-o>` / `<C-f>` | find files / grep project / search in file |
 | `<C-b>` / `<leader>e` / `<leader>ef` | file explorer / explorer at root / reveal current file |
 | `<leader>cc` / `<leader>cC` | run / refresh code lens ("n references" above methods) |
@@ -330,6 +349,9 @@ The checks (each file lists its cases at the top):
 | `32_code_actions` | quick fixes, generate, extract, Lombok |
 | `40_debug` | debug a main class and a JUnit test: breakpoints, project JDK, no orphan, classpath race |
 | `41_run` | run Spring Boot: start, env, profile, port in use, stop (process tree), debug with profile, detection, keys |
+| `50_spring_ls` | Spring Boot language server: attach, properties completion and hover, memory, gating, server JDK, off switch |
+| `51_spring_completion` | Spring completion in blink: properties, yml, `@Value`, `@Profile`, broken files, latency, `@` regression |
+| `52_spring_nav` | Spring hover, `@Value` go to definition, beans and request mappings, `<leader>sp` picker |
 
 Budgets: warm completion p95 at most 150 ms per case; first completion after ready at most 400 ms; expected item in the top 5 plus a relative rule per case; diagnostics at most 3 s from edit to screen; import accept at most 1.5 s; one code action round trip at most 1 s. The fixture is `tests/fixtures/demo`, planted broken sources are in `tests/fixtures/planted/*.java.txt` and are loaded into a buffer in memory only, never written to disk.
 
@@ -381,7 +403,7 @@ The test run keeps its blink.cmp state in `/tmp/nv4j/state` so your own accepted
 - **Format-on-save is off** (`vim.g.autoformat = false`), and the Prettier extra was dropped, so YAML/JSON/Markdown such as `application.yml` do not format on save. `<leader>cf` formats Java and XML through the language servers.
 - **Plugin update check in the background:** lazy.nvim's update checker (`checker.enabled = true`, `notify = false`) periodically runs a background `git fetch` for every plugin. It only checks, it never installs or updates anything; updates happen only when you run `:Lazy update`. `nvim/lazy-lock.json` pins what the tests ran with.
 - **`<leader>rs` is not `mvn spring-boot:run`** (decision D15: faster, no network). It runs `java -cp` with jdt.ls's classpath and classes, so it skips the `spring-boot-maven-plugin` `<configuration>` (`jvmArguments`, `environmentVariables`, `profiles`, `mainClass`, `arguments`), a `spring.profiles.active` set by a pom profile, plugins bound to `process-classes` or earlier phases that jdt.ls does not run, and the plugin's `-XX:TieredStopAtLevel=1`. Resource filtering does happen: m2e inside jdt.ls replaced `@project.version@` in `application.properties` on the fixture (one probe, `specs/features/run.md`). Annotation processors (Lombok, MapStruct) were not verified for this path. If your project relies on any of that, use `<leader>rS` or set `vim.g.nv4j_run_tool = "maven"`.
-- **Spring Boot language server limits:** the first second after it starts, a properties completion can come back empty (its index is still loading; the check sends its first request 1 s after start). Boot detection reads the build files once per session: adding Spring Boot to a `pom.xml` needs a restart. With two Spring Boot projects open, the server's Java questions go to the first jdt.ls. `vim.g.nv4j_spring = false` in `options.lua` keeps the plugin from loading; set later in a session it only stops new buffers from attaching (a running server stays). The Mason package stays installed unless the flag was false at the first start. Not detected as Spring Boot: modules deeper than 2 levels below the project root, and a project whose corporate parent pom (outside the repo) brings Boot while its own build files name no Boot groupId, starter, plugin or BOM: `<leader>rs` says "Not a Spring Boot project" and no Spring server starts. Adds about 400 MB of memory per Spring Boot project.
+- **Spring Boot language server limits:** the first second after it starts, a properties completion can come back empty (its index is still loading; the check sends its first request 1 s after start). Boot detection reads the build files once per session: adding Spring Boot to a `pom.xml` needs a restart. With two Spring Boot projects open, the server's Java questions go to the first jdt.ls. `vim.g.nv4j_spring = false` in `options.lua` keeps the plugin from loading; set later in a session it only stops new buffers from attaching (a running server stays). The Mason package stays installed unless the flag was false at the first start. Not detected as Spring Boot: modules deeper than 2 levels below the project root, and a project whose corporate parent pom (outside the repo) brings Boot while its own build files name no Boot groupId, starter, plugin or BOM: `<leader>rs` says "Not a Spring Boot project" and no Spring server starts. Adds about 400 MB of memory per Spring Boot project. The first `K` on some yml keys waits for the server once: `server.port` 202 to 266 ms (up to 516 ms seen), other keys 1 to 99 ms, then 1 ms (`52_spring_nav` prints it as INFO). A `@Value("${` completion in the same instant the Java file opens can take about 0.5 s once, and `@Profile("")` can come back empty once (the checks send them 1 s after opening). `@Value("${` keys are in the server's order (alphabetical, not "project keys first"); type a prefix to narrow. No snippets inside a Java `"..."` string, judged on the current line only (inside a text block body they still show).
 - **Terminal needs:** `<C-m>` needs the kitty keyboard protocol, `<D-Left>`/`<D-Right>` and Cmd+bracket terminal keys are for kitty on macOS.
 - **Test harness limits:** the latency checks type each case in one step, not key by key (two cases cover the typed path); `lsp.complete` in the harness sends no completion context, the ranking path uses blink's own.
 

@@ -1,6 +1,6 @@
 -- Java-only completion re-ranking for blink.cmp. Wired in lua/plugins/blink.lua.
 -- Design and measurements: specs/002-p1-completion.md, specs/features/completion-ranking.md.
--- Every function returns items unchanged for non-Java buffers.
+-- Every function returns items unchanged for non-Java buffers, except snippets_should_show (Spring config files).
 local M = {}
 
 local Kind = vim.lsp.protocol.CompletionItemKind
@@ -105,7 +105,20 @@ local TYPE_KINDS = { [Kind.Class] = true, [Kind.Interface] = true, [Kind.Enum] =
 -- java.lang's @Deprecated above the project's own annotations: the opposite of IntelliJ's
 -- proximity weigher (project and explicitly imported before the SDK). Take that bonus back out.
 local JAVA_LIBRARY_BONUS = 2 * 16
+-- Only jdt.ls's sortText is that formula: another server's (the Spring Boot LS on Java buffers) would
+-- read as a huge relevance and outrank every jdt.ls item.
+local jdtls_ids = {}
+local function from_jdtls(it)
+  local id = it.client_id
+  if not id then return false end
+  if jdtls_ids[id] == nil then
+    local c = vim.lsp.get_client_by_id(id)
+    jdtls_ids[id] = c ~= nil and c.name == "jdtls"
+  end
+  return jdtls_ids[id]
+end
 local function relevance(it)
+  if not from_jdtls(it) then return nil end
   local st = tonumber(it.sortText or "")
   if not st then return nil end
   local rel = 999999999 - st
@@ -162,6 +175,11 @@ function M.java_sort(a, b)
   end
   local sa, sb = a.sortText or "", b.sortText or ""
   if sa ~= sb then return sa < sb end
+  -- Then the server's own order: the Spring Boot LS sends `@Value("${` keys (about 1850) without sortText,
+  -- in its intended order; without this tie breaker table.sort shuffled them and blink's max_items (200)
+  -- cut the project's own keys (specs/features/spring-language-server.md, trial c2).
+  local ia, ib = a.nv4j_idx or math.huge, b.nv4j_idx or math.huge
+  if ia ~= ib then return ia < ib end
 end
 
 local JAVA_SORTS = { "score", M.java_sort }
@@ -172,10 +190,24 @@ function M.sorts() return vim.bo.filetype == "java" and JAVA_SORTS or DEFAULT_SO
 
 --- snippets provider should_show_items: no live templates after `.` or `@` in Java (member
 --- and annotation positions), like IntelliJ's template contexts.
+--- Spring config files (application*.yml/.properties with the Spring Boot LS attached): no snippets either.
+--- friendly-snippets' YAML set is docker-compose/k8s (`po` -> `ports:`), which outranked `port` (trial c3).
+--- Java string literals (`@Profile("")`, `@Value("${}")`): no snippets, the Spring LS fills those (trial c3).
 function M.snippets_should_show(ctx, _)
-  if not is_java(ctx) then return true end
+  local ft = vim.bo[ctx.bufnr].filetype
+  if ft == "yaml" or ft == "jproperties" then
+    return #vim.lsp.get_clients({ bufnr = ctx.bufnr, name = "spring-boot" }) == 0
+  end
+  if ft ~= "java" then return true end
   local before = M.char_before_keyword(ctx)
-  return before ~= "." and before ~= "@"
+  return before ~= "." and before ~= "@" and not M.in_string(ctx.line:sub(1, ctx.bounds.start_col - 1))
+end
+
+--- Whether the end of `text` (a line up to the cursor) is inside a "..." literal: an odd number of
+--- unescaped quotes. One line only: inside a text block's body (no quote on the line) it says no.
+function M.in_string(text)
+  local n = select(2, text:gsub('\\.', ""):gsub('"', ""))
+  return n % 2 == 1
 end
 
 return M

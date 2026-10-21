@@ -1,6 +1,6 @@
 # Feature: Spring Boot language server
 
-Priority: P2 (properties/yml completion and hover), P2/P4 (`@Value`/`@Profile`, beans, request mappings). Status: research, decision D14 and failing baseline done (Task 0); wiring built (Task 3, `DONE 50_spring_ls 13 0` after review fix round 1); `@Value`/`@Profile`, beans and request mappings are Task 4. Tests: `tests/checks/50_spring_ls.lua`. Spec: `specs/004-p2-spring-run-debug.md`.
+Priority: P2 (properties/yml completion and hover), P2/P4 (`@Value`/`@Profile`, beans, request mappings). Status: research, decision D14 and failing baseline done (Task 0); wiring built (Task 3, `DONE 50_spring_ls 13 0` after review fix round 1); completion, hover and navigation checked in Task 4 (`DONE 51_spring_completion 19 0`, `DONE 52_spring_nav 10 0`). Tests: `tests/checks/50_spring_ls.lua`, `51_spring_completion.lua`, `52_spring_nav.lua`. Spec: `specs/004-p2-spring-run-debug.md`.
 
 ## Sources read (pinned)
 
@@ -79,6 +79,45 @@ Baseline (no Spring LS wired): `attached` FAIL "no 'spring-boot' client on appli
 
 `50_spring_ls` grew from 5 to 11 cases: `yml_java_attached` (one client on `application-dev.yml` and `DemoApplication.java`), `bundles` (the five jars plus java-debug in jdt.ls's bundles, `sts.java.addClasspathListener` in its commands), `server_jvm` (the Spring LS JVM is `server_home()` and not the JDK 21 `run.sh` puts first on `PATH`), `disabled` (`vim.g.nv4j_spring = false`: a new Java buffer of the Boot fixture gets no client), `plain_maven` (`/tmp/nv4j/plain21`, release 21, no Boot, with an `application.properties`: its own jdt.ls, no `spring-boot` client, no Spring jars, still one Spring LS process), `loose_file` (`/tmp/nv4j/loose/Loose.java`: no client, no process). Negative control c1 (gating removed) fails exactly `disabled`, `plain_maven` (2 processes) and `loose_file` (3 processes).
 
+## Completion and navigation (Task 4)
+
+What already worked from the Task 3 wiring (first baseline, `test-20261021-144357.log` and `-144641.log`, recorded as is):
+properties `server.po` -> `server.port` rank 1, `spring.jpa.hibernate.ddl` -> `ddl-auto` rank 1, yml nested `server:`/`po`
+-> `port` (rank 2, under a snippet) and top-level `server.po`, `@Value("${server.po}")`, `@Profile("")` -> `dev` (the only
+Spring item, read from `application-dev.yml`), broken properties/yml files (completion on the next valid line, client alive),
+`@` RestController rank 1 with the Spring client on the buffer (0 Spring items in the list), hover in yml and properties,
+go to definition from `@Value("${server.port}")` (the server answers with LocationLinks to `src/main/resources/application.properties`
+line 2 and `application-dev.yml` line 2: `ValueDefinitionProvider` in spring-tools, read at the pinned commit), and
+`workspace/symbol` `@/` (`@/customers -- GET`, `@/customers/{id} -- PUT`, `@/hello -- GET`: class prefix joined with the
+method path) and `@+` (12 beans). What failed: `@Value("${}")` (the project keys cut from the menu), snippet noise in yml and
+in Java string literals, and no key for the Spring symbols.
+
+Built:
+
+- `nvim/lua/nv4j/completion.lua` `java_sort`: items without jdt.ls relevance tie on sortText, then keep the server's order
+  (`nv4j_idx`). The Spring LS sends the ~1850 `@Value` keys with no sortText; `table.sort` shuffled them and blink's
+  `max_items` (200) dropped `demo.greeting.*` and `server.port` (trial c2). jdt.ls's sortText formula is only read for items
+  from the `jdtls` client (another server's numeric sortText would outrank every jdt.ls item).
+- `snippets_should_show`: no snippets in `yaml`/`jproperties` buffers that have the `spring-boot` client
+  (friendly-snippets' YAML set is docker-compose/k8s: `po` -> `ports:` ranked above `port`), and none inside a Java `"..."`
+  literal (`@Profile("")` listed 36 snippets after `dev`) (trial c3). One-line quote count: inside a text block body it says
+  "not a string".
+- `nvim/lua/nv4j/spring_nav.lua` + `<leader>sp` (`config/keymaps.lua`): `workspace/symbol` `@+` and `@/` on the Spring client
+  only (`:SpringBoot`/`vim.lsp.buf.workspace_symbol` ask every client, jdt.ls too), `vim.lsp.util.symbols_to_items`,
+  Telescope picker (quickfix entries, generic sorter, file preview). Not `<leader>ss`: that is LazyVim's Goto Symbol
+  (telescope extra) and the config refers to it; `<leader>sp` is free in every enabled extra. No client for the buffer: a
+  WARN, no picker.
+
+Not changed: blink source weighting (the Spring items never reach Java identifier/annotation lists: `@` showed 0 Spring
+items), the fixture (the brief's `/people` example: the fixture's mappings are `/customers`, `/customers/{id}` and `/hello`;
+the check asserts those, including the class-level prefix).
+
+Test design: `51_spring_completion` (19 cases) measures the blink menu (tests/lib `completion.menu`: every source of the buffer,
+transforms, fuzzy, sorts, max_items), expected item in the top 3; first round trips <= 400 ms, warm p95 over 100 <= 150 ms;
+broken files with a 1.5 s wait so the server reconciles them first; `alive_after` re-asks after both. `52_spring_nav` (10 cases)
+uses `vim.lsp.buf.definition` (all clients, what `gd` asks), the Spring client's `workspace/symbol`, and drives `<leader>sp`
+through its mapping, the Telescope picker, `set_prompt("/hello")` and `select_default`.
+
 ## Trial log
 
 | # | Change | Result | Kept |
@@ -100,3 +139,17 @@ Baseline (no Spring LS wired): `attached` FAIL "no 'spring-boot' client on appli
 | r1 | review fix round 1: `cond` on the plugin spec (flag off at startup = not loaded); one Spring Boot rule for run and the Spring LS (`nvim/lua/nv4j/root.lua` `boot_build`/`boot_project`: Boot groupId, `spring-boot-starter*`/`spring-boot-maven-plugin`/`spring-boot-dependencies` artifacts, Gradle plugin/group/starters, catalog aliases and `gradle/libs.versions.toml`; a bare `spring-boot` substring such as a `spring-boot.version` property no longer counts); `attached` detail says "initialized"; cases `detect` and `off_at_start` (child nvim with `g:nv4j_spring = false`: `:SpringBoot` absent, 0 spring/sts entries in `vim.lsp.commands`, module not loaded; control child without the flag: command present, 1 entry, loaded) | `DONE 50_spring_ls 13 0` (`test-20261021-1422*.log`): detect fixture/catalog/catalog-toml/starter-artifact/aggregator Boot, property-only and comment-only not Boot | kept |
 | ab | A/B, `10_completion_latency` 3 runs each, interleaved, `NV4J_SPRING=0` (new `run.sh` switch: `--cmd "let g:nv4j_spring = v:false"`) vs default | Spring off: worst warm p95 41/47/40 ms (mean 42.7), sum of the 14 case p95s 338/377/370 (mean 362), cold first 51/48/56 ms. Spring on: worst 49/50/44 (mean 47.7), sum 381/411/399 (mean 397), cold first 44/48/46. Every "on" sum is above every "off" sum, so the difference is attributable to the second server (CPU shared with its indexing; the p95s are direct jdt.ls round trips, not the Spring server answering), about +5 ms worst case and +10 % overall; far inside the 150 ms budget, so nothing restricted. Logs `test-20261021-142343.log` (off), `-142444` (on), `-142548` (off), `-142649` (on), `-142752` (off), `-142858` (on) | recorded, no fix needed |
 | r2 | after r1: 3 consecutive `50_spring_ls` + full run | `DONE 50_spring_ls 13 0` 3 of 3 (initialized 44 to 60 ms, first 59 to 78 ms, warm p95 4.2 to 4.9 ms, hover 5 ms, RSS 403 to 416 MB); full run exit 0, P1 135 PASS, `40_debug 16 0`, `41_run 22 0`, `50_spring_ls 13 0` (`test-20261021-143222.log`) | final |
+| c1t4 | Task 4 baseline: `51_spring_completion` (16 cases then) and `52_spring_nav` written first, run on the Task 3 code | `DONE 51 13 3`: `value_keys` FAIL (rank nil, project keys missing: the 200 shown were `trace`, `spring.kafka.streams.*`...), `value_first` FAIL 598 ms, `value_warm` FAIL (key missing in 100 of 100); `DONE 52 6 4`: `key`, `picker`, `picker_jump`, `no_client` FAIL (no `<leader>sp`) (`test-20261021-144357.log`, `-144641.log`) | baseline |
+| c2 | `java_sort` tie breaker: server order (`nv4j_idx`) after sortText; jdt.ls relevance only for `jdtls` items | `value_keys` rank 2 (`debug`, `demo.greeting.text`, `demo.greeting.times`), no key missing; warm p95 54 ms (`test-20261021-144446.log`) | kept |
+| c3 | snippets off in Spring yml/properties buffers and inside Java string literals (cases `yml_no_snippets`, `profile_clean` written first: FAIL 5 and 36 snippet items, `-144641.log`; guard `snippets_kept`) | yml `port` rank 2 -> 1, `@Profile("")` 37 items -> 1 (`dev`), `fo` in a method body still lists `foreach`/`fori` (`-144804.log`) | kept |
+| c4 | `value_first` 581 ms in that run: per-client timing (`LspRequest` autocmd) over 3 runs: jdt.ls 24-31 ms, Spring LS 96 / 557 / 506 ms when the request goes out in the millisecond the file is opened; 1.5 s later 75-127 ms (3 runs), 3 s later 133 ms. Raw requests without blink: 81-126 ms | the first `@Value` request is pinned 1.0 s after `GreetingController.java` opens (the D13 / `props_first` rule). After: 59-81 ms | check pin kept (Known limitations) |
+| c5 | `hover_yml` on `server.port`: 371-516 ms first time (one FAIL at 516), 1 ms the second time; first yml hover of other keys 1-27 ms (`spring.jpa.open-in-view` 99 ms) even with no other hover before; properties hover of `server.port` 1-7 ms | server side, per key, not "first hover after open" (a 1 s pin did not change it: 284/320/489 ms) | evidence |
+| c6 | background hover on the yml's first key at attach (`LspAttach` in `nv4j/spring.lua`) | `server:` (no docs) warms nothing: 270-317 ms. On the first leaf key (`server.port`) it would only warm that key (c5) and the check would measure a cached answer | reverted |
+| c7 | `hover_yml` measures `logging.level` (12-27 ms without any warm-up, 2 runs); the first `server.port` yml hover printed as `INFO` (not budgeted) and listed in Known limitations | honest budget on a representative key, outlier visible | kept |
+| n1 | negative control: Spring items dropped in `transform_lsp` (scratch) | `DONE 51 4 15`: every Spring ranking/latency case FAILs; `profile_clean`, `snippets_kept`, `at_regression` pass (they do not need Spring items) (`-145645.log`) | reverted |
+| n2 | negative control: `NV4J_SPRING=0` | `DONE 51 0 1`, `DONE 52 0 1` (`attached` FAIL, check stops) (`-145717.log`) | evidence |
+| n3 | negative control attempts for 52: no Spring jars in jdt.ls's bundles; the client on an empty root | both `DONE 52 10 0`: the server still had the project (jdt.ls keeps installed bundles in its workspace OSGi cache; the classpath listener reports every jdt.ls project, not only the client root). Not usable as controls | evidence |
+| n4 | negative control: the Spring client answers hover/definition/workspace symbols with nothing (scratch copy of 52) | 3 PASS 7 FAIL: `hover_yml`, `hover_props`, `definition`, `mappings`, `beans`, `picker`, `picker_jump` FAIL; `attached`, `key`, `no_client` pass | evidence |
+| f1 | 3 consecutive `51` + `52` runs with the code after c7 | `DONE 51_spring_completion 19 0` and `DONE 52_spring_nav 10 0` 3 of 3: yml first 33-36 ms, `@Value` first 67-76 ms, `@Value` warm p95 49-57 ms, yml warm p95 9.8-10.6 ms, RestController rank 1, yml hover 11-32 ms (INFO `server.port` 202-266 ms), definition 49-80 ms, picker 126-144 ms (`test-20261021-150741.log`, `-150817`, `-150852`) | kept |
+| c8 | full `tests/run.sh` (`test-20261021-150938.log`): `51` `profile` FAIL once: the server answered `@Profile("")` with no items, 11 ms, sent right after `GreetingConfig.java` opened (28 buffer words shown); `32_code_actions` `remove_unused_import` FAIL once (jdt.ls offered no quick fix: no diagnostic in the request context yet) | `profile` pinned 1.0 s after the file opens (as c4): 3 of 3 `DONE 51 19 0`, `dev` rank 1 (`-151625`, `-151649`, `-151712`); `32` alone 3 of 3 `DONE 32_code_actions 28 0` (not touched by this task; recorded as a flake of the full run) | pin kept |
+| f2 | final full `tests/run.sh` (`test-20261021-151747.log`) | exit 0: P1 135 PASS 0 FAIL (worst warm p95 69 ms, cold first 45 ms, RestController rank 1, diagnostics 452 ms), `40_debug 16 0`, `41_run 22 0`, `50_spring_ls 13 0`, `51_spring_completion 19 0`, `52_spring_nav 10 0`; 215 PASS; no Spring LS process left | final |
