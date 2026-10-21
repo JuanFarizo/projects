@@ -1,6 +1,6 @@
 # Feature: Run Spring Boot
 
-Priority: P2. Status: done (Task 2): `DONE 41_run 18 0` in 3 of 3 consecutive runs; review fix round 1: `DONE 41_run 22 0` in 3 of 3. Code: `nvim/lua/nv4j/run.lua`, keys in `nvim/lua/config/keymaps.lua`, one helper exported from `nvim/lua/nv4j/debug.lua` (`refresh_and_build`). Tests: `tests/checks/41_run.lua`. Spec: `specs/004-p2-spring-run-debug.md`. Debug path it builds on: `specs/features/debug-run.md`.
+Priority: P2. Status: done (Task 2): `DONE 41_run 18 0` in 3 of 3 consecutive runs; review fix round 1: `DONE 41_run 22 0` in 3 of 3. Final review fix wave: `DONE 41_run 27 0` in 3 of 3. Code: `nvim/lua/nv4j/run.lua`, keys in `nvim/lua/config/keymaps.lua`, one helper exported from `nvim/lua/nv4j/debug.lua` (`refresh_and_build`). Tests: `tests/checks/41_run.lua`. Spec: `specs/004-p2-spring-run-debug.md`. Debug path it builds on: `specs/features/debug-run.md`.
 
 ## What it does
 
@@ -73,3 +73,18 @@ New cases: `failed_alive` (stand-in: `sh` prints the failure block, then `exec s
 Harness note: while r2 to r5 ran, the check's cleanup used `pkill -9 -f 6042`, which would match any process with "6042" anywhere in its command line. The patterns are now anchored (`^perl .*6042`, `^sleep 604[13]`).
 
 Fix round full `tests/run.sh` (log `/tmp/nv4j/logs/test-20261021-121503.log`, anchored cleanup patterns): P1 135 PASS 0 FAIL, `DONE 40_debug 16 0`, `DONE 41_run 22 0`, `DONE 50_spring_ls 0 5` (Task 3).
+
+## Final review fix wave
+
+1. **One detector (D17).** `M.is_boot` = `root.is_boot` (memoized `boot_project`: root plus modules 2 levels down), the same call the Spring LS makes (`spring.is_boot` now delegates to it). Without jdt.ls the project is the outermost dir with a build file above the buffer (`outer_root`: `root.project`, then up while the parent has a `pom.xml`/`build.gradle*`/`settings.gradle*`), so an aggregator outside git is found from `common/`. For a buffer with no file, the current directory is used the same way before falling back to the only jdt.ls client.
+2. **Build-tool cwd.** `root.boot_module(root, module)`: the buffer's module when its own build file is Boot and it is not an aggregator (`<modules>` or a settings.gradle), else the first non-aggregator Boot dir from the scan, else the first Boot dir. `build_tool_command(module, opts, project)` looks for `mvnw`/`gradlew` in the module and its parents up to the project. Maven needs the sibling modules installed.
+3. **Shared client lookup.** `root.client_for_path(path, clients?)` (deepest jdt.ls root that is `path` or an ancestor). `debug.lua`'s `jdtls_client` uses it (no more exact match / `clients[1]` fallback); `run.client_for_path` delegates to it.
+4. `launch_debug` calls `setup_autocmds()`, so VimLeavePre also stops a `<leader>rd` app.
+5. `dap.run` runs under `pcall`. On error: session `failed`, removed from pending, ERROR notification.
+6. **Debug terminal scan (found by `leave_stops_debug`).** The incremental row scan missed "Started" in a second debug session: nvim-dap pools its terminal buffer (content reset by the new terminal, so the saved row index was past the end), and a hidden or pooled terminal is 80 columns or less whatever the window width, so the wrap heuristic (row as wide as the window) joined nothing. Trials: t1 incremental scan, failed 1 of 3 runs (state "starting", text contained Started); t2 debounced full rescan with the window-width join, failed 3 of 3; t3 instrumented: `scan_rows` without a join and with width 129 both found nothing while the "" join did, so the rows are narrower than the window. Fix: start and port matched on all rows joined with "", the failure block parsed row by row (parts end at blank rows, wrapped rows joined with " ", so a word split by the wrap shows a stray space). Case `dap_scan` covers 37- and 80-column rows. After the fix: 3 of 3.
+
+Control (log `/tmp/nv4j/logs/test-20261021-160849.log`): the old detector (`boot_build` on the root and the buffer's module) and cwd = project root: `multi_module` FAIL "Not a Spring Boot project" from common/, the aggregator and the no-file buffer.
+
+`tests/run.sh`: `ensure_mason` returns 1 instead of exiting. jdtls missing stays FATAL. vscode-spring-boot-tools missing prints a WARN and `SKIP <check>: vscode-spring-boot-tools not installed` for 50, 51 and 52; the other checks run. Proved with a temporary copy of run.sh whose probe pointed at a missing file (NV4J_CHECKS `0*`: 00 and 01 ran; `5*`: three SKIP lines, exit 0). The copy was removed.
+
+Numbers: 3 consecutive `DONE 41_run 27 0` (logs `test-20261021-162740.log`, `-162812`, `-162842`). Full run `test-20261021-163714.log`: exit 0, 223 PASS 0 FAIL (41: 27). A first full run (`-163048`) lost `50_spring_ls` to a jdt.ls RPC stream error (INVALID_SERVER_JSON at about 64 KB, before any Spring step). 50 alone then passed 3 of 3.

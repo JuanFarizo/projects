@@ -46,18 +46,27 @@ end
 
 local function notify(msg, level) vim.notify(msg, level or vim.log.levels.INFO, TITLE) end
 
---- Is the project at `root` a Spring Boot project? Maven first, then Gradle. Shared rule: nv4j/root.lua boot_build.
----@return boolean, "maven"|"gradle"|nil
-function M.is_boot(root) return require("nv4j.root").boot_build(root) end
+--- Is the project at `root` a Spring Boot project (its build file or a module up to 2 levels down)? The
+--- detector shared with the Spring Boot LS: nv4j/root.lua is_boot (memoized).
+function M.is_boot(root) return require("nv4j.root").is_boot(root) end
 
 --- The command that runs the app through the build tool (no jdt.ls needed). Maven first.
 ---@return string[]|nil cmd, table env extra environment
-function M.build_tool_command(root, opts)
+--- `root` is the Boot module to run (the command's cwd); the wrapper (mvnw/gradlew) is looked up in it,
+--- then in its parents up to `project` (a multi-module project keeps it at the top).
+function M.build_tool_command(root, opts, project)
   opts = opts or {}
   local env = {}
   local function exe(wrapper, tool)
-    local w = root .. "/" .. wrapper
-    return vim.fn.executable(w) == 1 and w or tool
+    local dir = root
+    while dir do
+      local w = dir .. "/" .. wrapper
+      if vim.fn.executable(w) == 1 then return w end
+      if not project or dir == project or #dir <= #project then break end
+      local up = vim.fs.dirname(dir)
+      dir = up ~= dir and up or nil
+    end
+    return tool
   end
   local has_pom = vim.uv.fs_stat(root .. "/pom.xml") ~= nil
   local has_gradle = vim.uv.fs_stat(root .. "/build.gradle") ~= nil or vim.uv.fs_stat(root .. "/build.gradle.kts") ~= nil
@@ -282,7 +291,7 @@ end
 ---@return nv4j.RunSession
 function M.start_terminal(o)
   setup_autocmds()
-  local s = { id = #M.sessions + 1, name = o.name, state = "starting", debug = false, profile = o.profile, env = o.env, cmd = o.cmd }
+  local s = { id = #M.sessions + 1, name = o.name, state = "starting", debug = false, profile = o.profile, env = o.env, cmd = o.cmd, cwd = o.cwd }
   local prev = vim.api.nvim_get_current_win()
   vim.cmd("botright " .. M.HEIGHT .. "split")
   local win = vim.api.nvim_get_current_win()
@@ -319,40 +328,74 @@ end
 -- ── debug sessions (nvim-dap's terminal) ──────────────────────────────────────────────────────
 local pending = {} -- run id -> session record, until nvim-dap initialized it
 
+--- Boot's start and failure lines in terminal rows: { port, secs, failure = { desc, action } }. The
+--- terminal's width is unknown (a hidden or pooled nvim-dap terminal is narrower than any window), so
+--- start and port are read from all rows joined with "" (a wrapped line is whole again), and the
+--- failure block row by row: its parts are separated by blank rows, wrapped rows are joined with " ".
+local function scan_rows(rows)
+  local flat = strip(table.concat(rows, ""))
+  local r = { port = tonumber(flat:match("started on port%(?s?%)?:? (%d+)")), secs = flat:match("Started %S+ in ([%d%.]+) seconds") }
+  local fa
+  for _, row in ipairs(rows) do
+    local t = vim.trim(strip(row))
+    if t:find("APPLICATION FAILED TO START", 1, true) then
+      fa = { stage = "head", desc = {}, action = {} }
+    elseif fa and not fa.done then
+      if t == "Description:" then
+        fa.stage = "desc"
+      elseif t == "Action:" then
+        fa.stage = "action"
+      elseif t == "" then
+        fa.done = fa.stage == "action" and #fa.action > 0
+      elseif fa.stage == "desc" or fa.stage == "action" then
+        table.insert(fa[fa.stage], t)
+      end
+    end
+  end
+  if fa and fa.done then r.failure = { desc = table.concat(fa.desc, " "), action = table.concat(fa.action, " ") } end
+  return r
+end
+
+--- nvim-dap's terminal for a debug session: its buffer is pooled (reused, content reset by the new
+--- terminal) and a terminal fills pre-existing empty rows, so the whole buffer is rescanned (debounced)
+--- and each transition (started, failed) is applied once.
 local function watch_dap_terminal(s, session)
   local buf = session.term_buf
   if not (buf and vim.api.nvim_buf_is_valid(buf)) then return end
   s.buf = buf
   s.job = vim.b[buf].terminal_job_id
   s.pid = s.job and vim.fn.jobpid(s.job) or nil
-  -- java-debug starts the JVM before `initialized`: lines already there are scanned once, then
-  -- every new complete line. Rows of a wrapped line are joined (a row as wide as the terminal).
-  local width = 0
-  for _, w in ipairs(vim.fn.win_findbuf(buf)) do width = math.max(width, vim.api.nvim_win_get_width(w)) end
-  local scanned = 0
-  local function scan()
-    if FINAL[s.state] and s.state ~= "failed" then return end
-    local last = vim.api.nvim_buf_line_count(buf) - 1 -- the last row may still be written to
-    local rows = vim.api.nvim_buf_get_lines(buf, scanned, math.max(scanned, last), false)
-    local line = ""
-    for _, r in ipairs(rows) do
-      line = line .. r
-      if width == 0 or #r < width - 1 then
-        feed(s, strip(line))
-        line = ""
-      end
+  local function rescan()
+    if not vim.api.nvim_buf_is_valid(buf) or session.term_buf ~= buf then return end
+    local r = scan_rows(vim.api.nvim_buf_get_lines(buf, 0, -1, false))
+    if r.port then s.port = r.port end
+    if r.secs and s.state == "starting" then
+      s.state = "running"
+      s.boot_seconds = tonumber(r.secs)
+      notify(("%s started%s in %s s"):format(s.name, s.port and (" on port " .. s.port) or "", r.secs))
     end
-    scanned = math.max(scanned, last)
+    if r.failure and not s.failure then
+      s.state = "failed"
+      s.failure = r.failure.desc
+      notify(("%s failed to start: %s\nAction: %s"):format(s.name, s.failure, r.failure.action), vim.log.levels.ERROR)
+    end
   end
-  scan()
+  rescan()
+  local queued = false
   vim.api.nvim_buf_attach(buf, false, {
     on_lines = function()
-      if FINAL[s.state] then return true end
-      vim.schedule(scan)
+      if s.state == "stopped" or s.state == "exited" or session.term_buf ~= buf then return true end
+      if queued then return end
+      queued = true
+      vim.defer_fn(function()
+        queued = false
+        rescan()
+      end, 150)
     end,
   })
 end
 
+M._scan_rows = scan_rows -- read by tests/checks/41_run.lua
 local function setup_dap()
   if M._dap then return end
   M._dap = true
@@ -370,32 +413,47 @@ local function setup_dap()
 end
 
 -- ── main class discovery ──────────────────────────────────────────────────────────────────────
---- The jdt.ls client whose root is `path` or an ancestor of it (the deepest one), or nil.
-function M.client_for_path(path)
-  if not path or path == "" then return nil end
-  path = vim.fs.normalize(path)
-  local best
-  for _, c in ipairs(vim.lsp.get_clients({ name = "jdtls" })) do
-    local r = c.config.root_dir and vim.fs.normalize(c.config.root_dir)
-    if r and (path == r or path:sub(1, #r + 1) == r .. "/") and (not best or #r > #best.config.root_dir) then best = c end
+--- The jdt.ls client whose root is `path` or an ancestor of it (the deepest one), or nil (nv4j/root.lua).
+function M.client_for_path(path) return require("nv4j.root").client_for_path(path) end
+
+local OUTER_MARKERS = { "pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts" }
+--- The project a file without jdt.ls belongs to: nv4j/root.lua project(), then up while the parent dir
+--- has a build file too (an aggregator pom or settings.gradle above a module, also outside git).
+local function outer_root(path)
+  local root, has_marker = require("nv4j.root").project(path)
+  if not has_marker then return nil end
+  local home = vim.uv.os_homedir()
+  while true do
+    local up = vim.fs.dirname(root)
+    if up == root or up == home then break end
+    local found = false
+    for _, m in ipairs(OUTER_MARKERS) do
+      if vim.uv.fs_stat(up .. "/" .. m) then found = true break end
+    end
+    if not found then break end
+    root = up
   end
-  return best
+  return root
 end
 
 --- Project root and its jdt.ls client for the current buffer: the buffer's own client, else the
---- client whose root contains the buffer's file (application.yml, a module's pom.xml), else (a buffer
---- with no file, e.g. a run terminal) the only jdt.ls client. Without a client the root comes from the
---- build markers and the caller uses the build tool.
+--- client whose root contains the buffer's file (application.yml, a module's pom.xml) or, for a buffer
+--- with no file, the current directory; else the project of that file or directory without a client
+--- (the caller uses the build tool); else (a no-file buffer outside any project, e.g. a run terminal)
+--- the only jdt.ls client.
 function M.project_root()
   local c = vim.lsp.get_clients({ bufnr = 0, name = "jdtls" })[1]
   if c then return c.config.root_dir, c end
   local name = vim.api.nvim_buf_get_name(0)
   local is_file = name ~= "" and not name:find("^%a[%w+.-]*://")
-  c = M.client_for_path(is_file and name or vim.fn.getcwd())
+  local path = is_file and name or vim.fn.getcwd()
+  c = M.client_for_path(path)
   if c then return c.config.root_dir, c end
+  local root = outer_root(is_file and path or (path .. "/x"))
+  if root then return root, nil end
   local clients = vim.lsp.get_clients({ name = "jdtls" })
   if not is_file and #clients == 1 then return clients[1].config.root_dir, clients[1] end
-  return is_file and vim.fs.root(0, BUILD_MARKERS) or vim.fs.root(vim.fn.getcwd(), BUILD_MARKERS), nil
+  return nil, nil
 end
 
 local function project_root() return M.project_root() end
@@ -457,7 +515,13 @@ local function launch_debug(cfg, opts, home, env)
   if opts.args and #opts.args > 0 then cfg.args = table.concat(opts.args, " ") end
   pending[s.id] = s
   M.sessions[#M.sessions + 1] = s
-  require("dap").run(cfg)
+  setup_autocmds() -- VimLeavePre stops a debugged app too
+  local ok, err = pcall(require("dap").run, cfg)
+  if not ok then
+    pending[s.id] = nil
+    s.state = "failed"
+    notify(("Could not start the debug session for %s: %s"):format(s.name, tostring(err)), vim.log.levels.ERROR)
+  end
   return s
 end
 
@@ -487,6 +551,7 @@ function M.spring_boot(opts)
   if not root then return notify("No pom.xml or build.gradle above this buffer", vim.log.levels.WARN) end
   local bname = vim.api.nvim_buf_get_name(0)
   local module_root = bname ~= "" and not bname:find("^%a[%w+.-]*://") and vim.fs.root(0, BUILD_MARKERS) or nil
+  if module_root and not (module_root == root or module_root:sub(1, #root + 1) == root .. "/") then module_root = nil end
   if not (M.is_boot(root) or M.is_boot(module_root)) then
     return notify(("Not a Spring Boot project (no org.springframework.boot in the build file of %s). "
       .. "<leader>rj runs a plain main class."):format(vim.fn.fnamemodify(root, ":~")), vim.log.levels.WARN)
@@ -506,11 +571,14 @@ function M.spring_boot(opts)
       return notify("Debug needs jdt.ls: open a Java file of the project first", vim.log.levels.WARN)
     end
     if not client then notify(("jdt.ls is not attached for %s: running with the build tool"):format(vim.fn.fnamemodify(root, ":~"))) end
-    local cmd, extra = M.build_tool_command(root, vim.tbl_extend("force", opts, { prefer = tool }))
-    if not cmd then return notify("No pom.xml or build.gradle in " .. root, vim.log.levels.WARN) end
+    -- run in the Boot module, not at the aggregator: spring-boot:run / bootRun there would run the
+    -- whole reactor (Maven needs the sibling modules installed: mvn install once)
+    local module = require("nv4j.root").boot_module(root, module_root) or root
+    local cmd, extra = M.build_tool_command(module, vim.tbl_extend("force", opts, { prefer = tool }), root)
+    if not cmd then return notify("No pom.xml or build.gradle in " .. module, vim.log.levels.WARN) end
     env = vim.tbl_extend("force", env, extra, { PATH = home .. "/bin:" .. (vim.env.PATH or "") })
-    return M.start_terminal({ cmd = cmd, cwd = root, env = env, profile = opts.profile,
-      name = vim.fs.basename(root) .. " (" .. vim.fs.basename(cmd[1]) .. ")" .. (opts.profile and (" [" .. opts.profile .. "]") or "") })
+    return M.start_terminal({ cmd = cmd, cwd = module, env = env, profile = opts.profile,
+      name = vim.fs.basename(module) .. " (" .. vim.fs.basename(cmd[1]) .. ")" .. (opts.profile and (" [" .. opts.profile .. "]") or "") })
   end
 
   boot_configs(client, function(configs, err)

@@ -87,15 +87,18 @@ end
 
 local SKIP_DIRS = { target = true, build = true, out = true, bin = true, node_modules = true, src = true, gradle = true }
 
---- boot_build on `root` and on its modules up to 2 levels down (at most 60 directories looked at): an
---- aggregator pom often only lists <modules>.
-function M.boot_project(root)
-  if not root then return false end
+--- The directories among `root` and its modules up to 2 levels down (at most 60 directories looked at,
+--- breadth first, root first) whose own build file is Spring Boot (boot_build): an aggregator pom often
+--- only lists <modules>.
+---@return string[]
+function M.boot_dirs(root)
+  local out = {}
+  if not root then return out end
   local queue, i = { { root, 0 } }, 1
   while i <= #queue and i <= 60 do
     local dir, depth = queue[i][1], queue[i][2]
     i = i + 1
-    if M.boot_build(dir) then return true end
+    if M.boot_build(dir) then out[#out + 1] = dir end
     if depth < 2 then
       for name, kind in vim.fs.dir(dir) do
         if kind == "directory" and name:sub(1, 1) ~= "." and not SKIP_DIRS[name] then
@@ -104,7 +107,52 @@ function M.boot_project(root)
       end
     end
   end
-  return false
+  return out
+end
+
+function M.boot_project(root) return M.boot_dirs(root)[1] ~= nil end
+
+local boot_cache = {}
+--- boot_project memoized per root for the session: the one detector of run (nv4j/run.lua) and the
+--- Spring Boot LS (nv4j/spring.lua).
+function M.is_boot(root)
+  if not root then return false end
+  if boot_cache[root] == nil then boot_cache[root] = M.boot_project(root) end
+  return boot_cache[root]
+end
+
+local function aggregator(dir)
+  local pom = read(dir .. "/pom.xml")
+  if pom and pom:gsub("<!%-%-.-%-%->", ""):find("<modules>") then return true end
+  return vim.uv.fs_stat(dir .. "/settings.gradle") ~= nil or vim.uv.fs_stat(dir .. "/settings.gradle.kts") ~= nil
+end
+
+--- The Spring Boot module to run with the build tool for project `root`: `module` (the buffer's own
+--- build dir) when its build file is Boot and it is not an aggregator, else the first Boot dir found that
+--- is not an aggregator (so `spring-boot:run` / `bootRun` does not run the whole reactor), else the
+--- first Boot dir, else nil.
+function M.boot_module(root, module)
+  if module and M.boot_build(module) and not aggregator(module) then return module end
+  local dirs = M.boot_dirs(root)
+  for _, d in ipairs(dirs) do
+    if not aggregator(d) then return d end
+  end
+  return dirs[1]
+end
+
+--- The jdt.ls client whose root is `path` or its deepest ancestor, or nil. `clients` defaults to the
+--- live jdtls clients (tests pass stubs). Shared by nv4j/run.lua and nv4j/debug.lua.
+function M.client_for_path(path, clients)
+  if not path or path == "" then return nil end
+  path = vim.fs.normalize(path)
+  local best, best_len
+  for _, c in ipairs(clients or vim.lsp.get_clients({ name = "jdtls" })) do
+    local r = c.config and c.config.root_dir and vim.fs.normalize(c.config.root_dir)
+    if r and (path == r or path:sub(1, #r + 1) == r .. "/") and (not best_len or #r > best_len) then
+      best, best_len = c, #r
+    end
+  end
+  return best
 end
 
 return M

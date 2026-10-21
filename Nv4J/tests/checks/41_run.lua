@@ -29,6 +29,14 @@
 --                   (Task 1 path): stops at the breakpoint in StartupRunner.run <= 20 s, `started` =
 --                   "nv4j-started Hello dev", System.getenv("SERVER_PORT") = "0" (env), and no JVM is left
 --                   <= 10 s after terminate.
+--  leave_stops_debug : VimLeavePre (quitting Neovim) stops an app started with <leader>rd.
+--  dap_scan       : the debug terminal scan finds start, port and Boot's failure block on rows narrower than
+--                   the log lines (synthetic rows: a hidden/pooled nvim-dap terminal is 80 columns or less).
+--  dap_run_error  : dap.run throwing (stub) gives an ERROR notice and a "failed" session, nothing running.
+--  multi_module   : aggregator + app/ (Boot) + common/ without jdt.ls: from common/pom.xml, the aggregator
+--                   pom and a no-file buffer in the project dir, Boot is detected and the build tool runs
+--                   with cwd app/ and the top-level mvnw.
+--  debug_client_lookup : nv4j.debug's jdt.ls client = the deepest client root containing the path (stubs).
 --  detect         : Boot detection from pom.xml (groupId org.springframework.boot outside comments) and
 --                   Gradle (org.springframework.boot plugin); a plain pom is not Boot.
 --  build_tool_cmd : the fallback command without jdt.ls: Maven first (mvnw spring-boot:run with
@@ -98,6 +106,7 @@ end
 
 local CASES = { "started", "started_notice", "java25", "env", "terminal", "port_in_use", "no_hung", "stop_no_orphan",
   "close", "profile", "tree_kill", "failed_alive", "force_tool", "debug_stop", "debug_profile", "debug_env", "debug_no_orphan",
+  "leave_stops_debug", "dap_scan", "dap_run_error", "multi_module", "debug_client_lookup",
   "detect", "client_lookup", "build_tool_cmd", "keymaps" }
 local ok_mod, R = pcall(require, "nv4j.run")
 if not ok_mod then
@@ -315,6 +324,61 @@ local ok_all, err = pcall(function()
   dap.listeners.after.event_stopped["nv4j_41"] = nil
   require("dap.breakpoints").clear()
 
+  -- 5b. quitting Neovim (VimLeavePre) also stops an app started with <leader>rd
+  local nl = #R.sessions
+  R.spring_boot({ debug = true, env = { SERVER_PORT = "0" }, vm_args = { "-D" .. MARKER } })
+  wait_until(60000, function() return #R.sessions > nl end)
+  local sl = R.sessions[nl + 1]
+  local up_l = sl and wait_until(START_TIMEOUT_MS, function() return sl.state == "running" and #pids_of(MARKER) > 0 end)
+  vim.api.nvim_exec_autocmds("VimLeavePre", { group = "nv4j_run" })
+  local gone_l = wait_until(ORPHAN_WAIT_MS, function() return #pids_of(MARKER) == 0 end)
+  local tl = sl and text(sl.buf) or ""
+  lsp.report(P .. "leave_stops_debug", up_l and gone_l,
+    ("debugged app started (Started seen in nvim-dap's terminal) %s; JVM gone after VimLeavePre %s%s"):format(tostring(up_l), tostring(gone_l),
+      up_l and "" or ("; state %s, buf %s (%d lines, Started in text %s), JVM seen %s, terminal tail: %s"):format(tostring(sl and sl.state),
+        tostring(sl and sl.buf), sl and sl.buf and vim.api.nvim_buf_is_valid(sl.buf) and vim.api.nvim_buf_line_count(sl.buf) or -1,
+        tostring(tl:find("Started DemoApplication", 1, true) ~= nil), tostring(sl and sl.pid), tl:gsub("%s+", " "):sub(-300))))
+  if dap.session() then pcall(dap.terminate) end
+  wait_until(ORPHAN_WAIT_MS, function() return dap.session() == nil end)
+
+  -- 5b'. the debug terminal scan on rows narrower than the log lines (a hidden or pooled nvim-dap
+  --      terminal is 80 columns or less, whatever the window): start, port and failure block still found
+  local function wrap(lines, w)
+    local rows = {}
+    for _, l in ipairs(lines) do
+      if l == "" then rows[#rows + 1] = "" end
+      for k = 1, #l, w do rows[#rows + 1] = l:sub(k, k + w - 1) end
+    end
+    return rows
+  end
+  local log = { "2026-10-21T16:00:00.000-03:00  INFO 1 --- [demo] [main] o.s.b.w.embedded.tomcat.TomcatWebServer : Tomcat started on port 51234 (http) with context path '/'",
+    "2026-10-21T16:00:00.100-03:00  INFO 1 --- [demo] [main] demo.DemoApplication : Started DemoApplication in 2.345 seconds (process running for 2.9)" }
+  local fail = { "***************************", "APPLICATION FAILED TO START", "***************************", "", "Description:", "",
+    "Web server failed to start. Port 8080 was already in use.", "", "Action:", "",
+    "Identify and stop the process that's listening on port 8080 or configure this application to listen on another port.", "" }
+  local r1 = R._scan_rows(wrap(log, 37))
+  local r2 = R._scan_rows(wrap(fail, 80))
+  lsp.report(P .. "dap_scan", r1.port == 51234 and r1.secs == "2.345" and r2.failure ~= nil
+      and r2.failure.desc == "Web server failed to start. Port 8080 was already in use." and r2.failure.action:find("^Identify and stop") ~= nil,
+    ("37-column rows: port %s, Started %s s; 80-column failure block: %s / %s"):format(tostring(r1.port), tostring(r1.secs),
+      tostring(r2.failure and r2.failure.desc), tostring(r2.failure and r2.failure.action)))
+
+  -- 5c. dap.run throwing: visible ERROR, session failed, nothing left pending
+  local orig_run = dap.run
+  dap.run = function() error("stub boom") end
+  local ne, nse = #notes, #R.sessions
+  R.spring_boot({ debug = true })
+  wait_until(30000, function() return #R.sessions > nse and R.sessions[nse + 1].state == "failed" end)
+  dap.run = orig_run
+  local se = R.sessions[nse + 1]
+  local enote
+  for _, n in ipairs(notes_since(ne)) do
+    if n.level == vim.log.levels.ERROR and n.msg:find("stub boom", 1, true) then enote = n.msg end
+  end
+  lsp.report(P .. "dap_run_error", se ~= nil and se.state == "failed" and enote ~= nil and not vim.tbl_contains(R.running(), se),
+    ("session %s, state %s, ERROR notice %s, listed as running %s"):format(tostring(se ~= nil), tostring(se and se.state),
+      tostring(enote), tostring(se and vim.tbl_contains(R.running(), se))))
+
   -- 6. detection and fallback command (pure)
   local tmp = "/tmp/nv4j/41_run"
   vim.fn.delete(tmp, "rf")
@@ -353,6 +417,54 @@ local ok_all, err = pcall(function()
       tostring(pr_root), tostring(pr_client ~= nil), ninfo and ninfo.msg or "none", s7 and table.concat(s7.cmd, " ") or "none"))
   if s7 then wait_until(5000, function() return not R.is_alive(s7) end) end
   if s7 and vim.api.nvim_buf_is_valid(s7.buf) then pcall(vim.api.nvim_buf_delete, s7.buf, { force = true }) end
+
+  -- multi-module without jdt.ls: Boot only in app/ (aggregator and common/ are plain), wrapper at the top.
+  -- From common/pom.xml, the aggregator pom and a no-file buffer in the project dir: Boot is detected and
+  -- the build tool runs in app/ (not the reactor root).
+  local multi = project("multi", { ["pom.xml"] = "<project><groupId>x</groupId><artifactId>multi</artifactId>\n<modules><module>app</module><module>common</module></modules></project>",
+    mvnw = "#!/bin/sh" })
+  vim.fn.setfperm(multi .. "/mvnw", "rwxr-xr-x")
+  project("multi/app", { ["pom.xml"] = "<project><parent>\n<groupId>org.springframework.boot</groupId>\n<artifactId>spring-boot-starter-parent</artifactId></parent></project>" })
+  project("multi/common", { ["pom.xml"] = "<project><groupId>x</groupId><artifactId>common</artifactId></project>" })
+  local real = vim.uv.fs_realpath
+  local results, multi_ok = {}, true
+  for _, where in ipairs({ "common", "aggregator", "nofile" }) do
+    if where == "nofile" then
+      vim.cmd("tabnew")
+      vim.cmd("lcd " .. vim.fn.fnameescape(multi))
+    else
+      vim.cmd("edit " .. vim.fn.fnameescape(where == "common" and (multi .. "/common/pom.xml") or (multi .. "/pom.xml")))
+    end
+    local nm, ns = #notes, #R.sessions
+    R.spring_boot({})
+    local sm = R.sessions[ns + 1]
+    local notboot = false
+    for _, n in ipairs(notes_since(nm)) do
+      if n.msg:find("Not a Spring Boot project", 1, true) then notboot = true end
+    end
+    local ok = not notboot and sm ~= nil and real(sm.cwd) == real(multi .. "/app") and real(sm.cmd[1]) == real(multi .. "/mvnw")
+    multi_ok = multi_ok and ok
+    results[#results + 1] = ("%s: %s"):format(where, notboot and "'Not a Spring Boot project'"
+      or sm and ("cwd %s, %s"):format(vim.fn.fnamemodify(sm.cwd, ":t"), table.concat(sm.cmd, " "):gsub(".*/", "")) or "no session")
+    if sm then wait_until(5000, function() return not R.is_alive(sm) end) end
+    if sm and vim.api.nvim_buf_is_valid(sm.buf) then pcall(vim.api.nvim_buf_delete, sm.buf, { force = true }) end
+    if where == "nofile" then vim.cmd("tabclose") end
+  end
+  lsp.report(P .. "multi_module", multi_ok, table.concat(results, "; "))
+
+  -- debug.lua's client lookup (shared nv4j/root.lua): the deepest jdt.ls root that contains the path
+  local A = { config = { root_dir = "/x/projA" } }
+  local B = { config = { root_dir = "/x/projB" } }
+  local BM = { config = { root_dir = "/x/projB/mod" } }
+  local orig_get = vim.lsp.get_clients
+  vim.lsp.get_clients = function(f) if f and f.name == "jdtls" then return { A, B } end return orig_get(f) end
+  local D = require("nv4j.debug")
+  local l1, l2, l3, l4 = D.jdtls_client("/x/projB/mod"), D.jdtls_client("/x/projA"), D.jdtls_client("/x/projC"), D.jdtls_client("/x/projAB")
+  vim.lsp.get_clients = orig_get
+  local l5 = require("nv4j.root").client_for_path("/x/projB/mod/src", { A, B, BM })
+  lsp.report(P .. "debug_client_lookup", l1 == B and l2 == A and l3 == nil and l4 == nil and l5 == BM,
+    ("projB/mod -> %s, projA -> %s, projC -> %s, projAB -> %s, deepest of B and B/mod -> %s"):format(
+      l1 == B and "B" or tostring(l1), l2 == A and "A" or tostring(l2), tostring(l3), tostring(l4), l5 == BM and "B/mod" or tostring(l5)))
   vim.api.nvim_set_current_buf(buf)
   local mc = R.build_tool_command(mvnboot, { profile = "dev", vm_args = { "-Dx=1", "-Dy=2" } })
   local gc, genv = R.build_tool_command(gboot, { profile = "dev" })

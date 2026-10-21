@@ -57,14 +57,9 @@ function M.jars()
   return out
 end
 
-local boot_cache = {}
---- Whether `root` is a Spring Boot project (nv4j/root.lua boot_project: the shared rule, root and modules
---- 2 levels down). Memoized per root for the session.
-function M.is_boot(root)
-  if not root then return false end
-  if boot_cache[root] == nil then boot_cache[root] = require("nv4j.root").boot_project(root) end
-  return boot_cache[root]
-end
+--- Whether `root` is a Spring Boot project (nv4j/root.lua is_boot: the shared, memoized rule, root and
+--- modules 2 levels down; nv4j/run.lua uses the same).
+function M.is_boot(root) return require("nv4j.root").is_boot(root) end
 
 --- The Spring Boot project root for a file, or nil (no build file above it, not Spring Boot, or off).
 function M.boot_root(path)

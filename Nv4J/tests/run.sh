@@ -60,6 +60,7 @@ mason_install() {
     "+lua vim.wait(300000, function() return vim.uv.fs_stat([[$2]]) ~= nil or (vim.uv.hrtime() > _G.__t0 + 3e9 and not require('mason-registry').get_package('$1'):is_installing()) end, 500)" +qa >>"$LOG" 2>&1
 }
 # ensure_mason <package> <file that exists once installed> <stale paths to clean before the retry...>
+# Returns 1 when the package is still missing after the install (the caller decides: FATAL or SKIP).
 ensure_mason() {
   local pkg="$1" probe="$2"
   shift 2
@@ -71,13 +72,21 @@ ensure_mason() {
     rm -rf "$@"
     mason_install "$pkg" "$probe"
   fi
-  [ -e "$probe" ] || { echo "FATAL: $pkg install failed (see $LOG)" >&2; exit 2; }
+  [ -e "$probe" ]
 }
 ensure_mason jdtls "$MASON_JDTLS" \
-  "$MASON_DIR/packages/jdtls" "$MASON_DIR/share/jdtls" "$MASON_DIR/bin/jdtls" "$MASON_DIR/opt/jdtls"
+  "$MASON_DIR/packages/jdtls" "$MASON_DIR/share/jdtls" "$MASON_DIR/bin/jdtls" "$MASON_DIR/opt/jdtls" \
+  || { echo "FATAL: jdtls install failed (see $LOG)" >&2; exit 2; }
 # Spring Boot language server (P2, 50_spring_ls): the server jar link is the probe.
 ensure_mason vscode-spring-boot-tools "$MASON_DIR/share/vscode-spring-boot-tools/language-server.jar" \
   "$MASON_DIR/packages/vscode-spring-boot-tools" "$MASON_DIR/share/vscode-spring-boot-tools"
+# Offline or behind a proxy the ~90 MB Spring package may not install: the Spring checks (50, 51, 52) are
+# skipped with a SKIP line each, every other check still runs (P1 needs only jdtls).
+SPRING_MISSING=0
+[ -e "$MASON_DIR/share/vscode-spring-boot-tools/language-server.jar" ] || {
+  SPRING_MISSING=1
+  echo "WARN: vscode-spring-boot-tools is not installed (install failed, see $LOG): checks 50, 51 and 52 are skipped" | tee -a "$LOG"
+}
 
 rc=0
 shopt -s nullglob
@@ -93,6 +102,13 @@ fi
 for check in "${CHECKS[@]}"; do
   name="$(basename "$check")"
   echo "== $name" | tee -a "$LOG"
+  case "$name" in
+    50_*|51_*|52_*)
+      if [ "$SPRING_MISSING" = 1 ]; then
+        echo "SKIP $name: vscode-spring-boot-tools not installed (Mason install failed, see $LOG)" | tee -a "$LOG"
+        continue
+      fi ;;
+  esac
   # qa! and no stdin: a check that dies with a buffer still modified in memory must never reach
   # a "Save changes?" prompt (an aborted manual run answered it at EOF and saved in-memory test
   # edits into the fixture).

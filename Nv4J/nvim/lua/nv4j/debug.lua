@@ -34,13 +34,12 @@ function M.setup()
   end
 end
 
+--- The jdt.ls client of the project at `root` (deepest client root that is `root` or an ancestor of
+--- it, nv4j/root.lua), or nil.
 local function jdtls_client(root)
-  local clients = vim.lsp.get_clients({ name = "jdtls" })
-  for _, c in ipairs(clients) do
-    if c.config.root_dir == root then return c end
-  end
-  return clients[1]
+  return require("nv4j.root").client_for_path(root)
 end
+M.jdtls_client = jdtls_client -- read by tests/checks/41_run.lua
 
 --- Source folders (`src`) of the project at `root` and of its modules (4 levels down), skipping
 --- hidden, build output and node_modules folders.
