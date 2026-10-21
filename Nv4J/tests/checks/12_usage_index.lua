@@ -9,6 +9,7 @@ local base = "/tmp/nv4j/usage-check"
 vim.fn.delete(base, "rf")
 local root = base .. "/proj"
 vim.fn.mkdir(root .. "/src", "p")
+vim.fn.writefile({ "<project/>" }, root .. "/pom.xml") -- a build marker: usage counts only projects
 vim.fn.writefile({
   "package demo;",
   "import org.example.save;",
@@ -85,6 +86,7 @@ vim.env.PATH = "/usr/bin:/bin"
 local absent = vim.fn.executable("rg") == 0
 local root2 = base .. "/proj2"
 vim.fn.mkdir(root2, "p")
+vim.fn.writefile({ "<project/>" }, root2 .. "/pom.xml")
 local okw = pcall(usage.watch, root2)
 usage.build(root2)
 vim.cmd("enew")
@@ -100,5 +102,18 @@ lsp.report("12_usage_index.no_rg_fallback", absent and okw and usage.get(root2) 
   ("rg absent=%s watch ok=%s counts=%s transform ok=%s items=%s"):format(tostring(absent), tostring(okw),
     tostring(usage.get(root2)), tostring(okt), okt and tostring(#out) or tostring(out)))
 vim.env.PATH = real_path
+
+-- 6. loose file: its folder as root has no build marker (could be $HOME): no rg run, no counts
+local loose = base .. "/loose"
+vim.fn.mkdir(loose, "p")
+vim.fn.writefile({ "class L { void f() { x.save(1); } }" }, loose .. "/L.java")
+n = usage.runs
+usage.build(loose)
+local okl = pcall(usage.watch, loose)
+vim.wait(1000, function() return usage.runs > n end, 20)
+lsp.report("12_usage_index.loose_root_skipped", okl and usage.runs == n and usage.get(loose) == nil
+  and usage.is_project(root) and not usage.is_project(loose),
+  ("runs started=%d counts=%s (root without pom.xml/build.gradle*/settings.gradle*/.git: skipped)"):format(
+    usage.runs - n, tostring(usage.get(loose))))
 
 lsp.finish()

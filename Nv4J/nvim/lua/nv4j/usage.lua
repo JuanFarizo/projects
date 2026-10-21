@@ -3,8 +3,8 @@
 -- excluded). Adapted from IntelliJ's PreferMostUsedWeigher (java-impl, compile-time occurrence
 -- count of a member in the project); this is a name-level text count, not resolved references.
 -- Built with ripgrep in the background, rebuilt (debounced) after a .java file is written.
--- No ripgrep, or a failed/timed-out run: the previous counts stay (none at first) and ranking
--- falls back to jdt.ls order. See specs/002-p1-completion.md.
+-- No ripgrep, a root without a build marker (loose file), or a failed/timed-out run: the previous
+-- counts stay (none at first) and ranking falls back to jdt.ls order. See specs/002-p1-completion.md.
 local M = {}
 
 M.TIMEOUT_MS = 10000 -- a run longer than this is killed and its result ignored
@@ -26,8 +26,22 @@ local function entry_for(root)
   return by_root[root]
 end
 
+-- A project root has one of these. A loose .java file gets its own folder as root (plugins/java.lua),
+-- which can be $HOME or Downloads: counting there would make rg read everything below it.
+M.MARKERS = { "pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts",
+  "mvnw", "gradlew", "build.xml", ".git" }
+
+--- true when `root` holds a build marker (or .git), i.e. it is a project worth counting.
+function M.is_project(root)
+  for _, m in ipairs(M.MARKERS) do
+    if vim.uv.fs_stat(root .. "/" .. m) then return true end
+  end
+  return false
+end
+
+--- Count now. No-op (previous counts, none at first, stay) without rg or when `root` is not a project.
 function M.build(root)
-  if not root or root == "" or vim.fn.executable("rg") == 0 then return end
+  if not root or root == "" or vim.fn.executable("rg") == 0 or not M.is_project(root) then return end
   local entry = entry_for(root)
   if entry.busy then
     entry.dirty = true
@@ -87,7 +101,8 @@ end
 local group = vim.api.nvim_create_augroup("nv4j_usage", { clear = true })
 --- Start counting for `root` now and keep it current on every .java write under it.
 function M.watch(root)
-  if not root or vim.fn.executable("rg") == 0 or (by_root[root] and by_root[root].watched) then return end
+  if not root or vim.fn.executable("rg") == 0 or not M.is_project(root)
+    or (by_root[root] and by_root[root].watched) then return end
   M.build(root)
   entry_for(root).watched = true
   vim.api.nvim_create_autocmd("BufWritePost", {
