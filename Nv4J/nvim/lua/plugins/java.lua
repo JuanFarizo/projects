@@ -6,34 +6,13 @@ return {
       -- Default root_dir falls back to the nearest `.git`, which for a loose
       -- .java file can mean a whole unrelated repo — breaks jdtls's
       -- invisible-project support. Fall back to the file's own dir instead.
-      local build_markers = {
-        "pom.xml",
-        "build.gradle",
-        "build.gradle.kts",
-        "settings.gradle",
-        "settings.gradle.kts",
-        "mvnw",
-        "gradlew",
-        "build.xml",
-      }
       -- Multi-module Maven: prefer the repo's .git root over a submodule's
       -- own pom.xml, but only when that repo actually has a build marker —
       -- otherwise a loose file in an unrelated git repo (e.g. a notes repo)
-      -- would wrongly get that whole repo as its root again.
+      -- would wrongly get that whole repo as its root again. Shared with the
+      -- Spring Boot LS (nv4j/root.lua).
       opts.root_dir = function(path)
-        local marker_root = vim.fs.root(path, build_markers)
-        if not marker_root then
-          return vim.fs.dirname(path)
-        end
-        local git_root = vim.fs.root(path, { ".git" })
-        if git_root then
-          for _, marker in ipairs(build_markers) do
-            if vim.uv.fs_stat(git_root .. "/" .. marker) then
-              return git_root
-            end
-          end
-        end
-        return marker_root
+        return (require("nv4j.root").project(path))
       end
 
       -- JVM that runs jdtls itself (>= 21): $JAVA_HOME if >= 21, else the newest JDK found by
@@ -149,6 +128,13 @@ return {
         config.handlers = config.handlers or {}
         config.handlers["language/status"] = function(err, result)
           require("nv4j.warmup").status_handler(err, result, root_dir)
+        end
+        -- Spring Boot projects: the Spring Boot LS's five jdt.ls extension bundles (sts.java.* commands),
+        -- added to LazyVim's java-debug/java-test bundles, not replacing them (nv4j/spring.lua).
+        local spring_jars = require("nv4j.spring").bundles_for(config.root_dir)
+        if #spring_jars > 0 then
+          config.init_options = config.init_options or {}
+          config.init_options.bundles = vim.list_extend(vim.list_extend({}, config.init_options.bundles or {}), spring_jars)
         end
         local runtimes = require("nv4j.jdk").runtimes(config.root_dir)
         config.settings = vim.tbl_deep_extend("force", config.settings or {}, {

@@ -1,6 +1,6 @@
 # Feature: Spring Boot language server
 
-Priority: P2 (properties/yml completion and hover), P2/P4 (`@Value`/`@Profile`, beans, request mappings). Status: research, decision D14 and failing baseline done (Task 0); wiring is Task 3, completion/hover/navigation Task 4. Tests: `tests/checks/50_spring_ls.lua`. Spec: `specs/004-p2-spring-run-debug.md`.
+Priority: P2 (properties/yml completion and hover), P2/P4 (`@Value`/`@Profile`, beans, request mappings). Status: research, decision D14 and failing baseline done (Task 0); wiring built (Task 3, `DONE 50_spring_ls 11 0`); `@Value`/`@Profile`, beans and request mappings are Task 4. Tests: `tests/checks/50_spring_ls.lua`. Spec: `specs/004-p2-spring-run-debug.md`.
 
 ## Sources read (pinned)
 
@@ -68,6 +68,17 @@ Opens `DemoApplication.java` (starts jdt.ls), then `src/main/resources/applicati
 
 Baseline (no Spring LS wired): `attached` FAIL "no 'spring-boot' client on application.properties after 30741 ms (filetype jproperties, clients: none)", the four other cases FAIL "no 'spring-boot' client (see attached)", `DONE 50_spring_ls 0 5` (`/tmp/nv4j/logs/test-20261021-100352.log`).
 
+## Wiring (Task 3)
+
+- `nvim/lua/plugins/spring.lua`: `JavaHello/spring-boot.nvim` at commit `9880be48170a21d97444b1eba75853fd3bad33c3`, lazy-loaded on `java`/`yaml`/`jproperties`; `vscode-spring-boot-tools` added to Mason's `ensure_installed` (unless `vim.g.nv4j_spring = false` at startup). `tests/run.sh` installs it like jdtls when missing (same stale-link cleanup, path-guarded `rm`).
+- `nvim/lua/nv4j/spring.lua`: calls `require("spring_boot").setup()` with `ls_path` = `mason/share/vscode-spring-boot-tools/language-server.jar` (Mason link, no version), `jars` = the package's own `package.json` `contributes.javaExtensions` resolved inside the package (fallback: the five names under `share/.../jdtls/`), `java_cmd` = `nv4j.jdk.server_home()/bin/java` (never PATH, never a JAVA_HOME below 21), log file `/tmp/nv4j/logs/spring-boot-ls.log` (level warn), extra JVM args `-Dspring.main.web-application-type=NONE -Djdk.util.zip.disableZip64ExtraFieldValidation=true` (as VS Code), and `server.root_dir` replaced by nv4j's own: `on_dir` only for Java buffers and `application*`/`bootstrap*` `.properties`/`.yml` of a Spring Boot project. Root = the jdt.ls root (`nvim/lua/nv4j/root.lua`, moved out of `plugins/java.lua` unchanged); a loose file (no build marker) never qualifies. Spring Boot = a `pom.xml`/`build.gradle(.kts)` naming `spring-boot` or `org.springframework.boot` (XML comments stripped) at the root or in a module up to 2 levels down (at most 40 build files read), memoized per root. `vim.g.nv4j_spring = false` is read at every attach decision and when jdt.ls starts. Without the Mason package: one WARN (`:MasonInstall vscode-spring-boot-tools`) the first time a Spring Boot file is opened, nothing else.
+- `plugins/java.lua` `opts.jdtls`: for a Spring Boot root, `require("nv4j.spring").bundles_for(root)` is appended to LazyVim's `init_options.bundles` (java-debug and java-test stay). Plain projects start jdt.ls exactly as before.
+- Client capabilities were not restricted: the `spring-boot` client stays on Java buffers (needed by Task 4 for `@Value`/`@Profile`) and P1 latency did not move (trial t4).
+
+## Gating and JDK cases (Review Focus 1 and 2)
+
+`50_spring_ls` grew from 5 to 11 cases: `yml_java_attached` (one client on `application-dev.yml` and `DemoApplication.java`), `bundles` (the five jars plus java-debug in jdt.ls's bundles, `sts.java.addClasspathListener` in its commands), `server_jvm` (the Spring LS JVM is `server_home()` and not the JDK 21 `run.sh` puts first on `PATH`), `disabled` (`vim.g.nv4j_spring = false`: a new Java buffer of the Boot fixture gets no client), `plain_maven` (`/tmp/nv4j/plain21`, release 21, no Boot, with an `application.properties`: its own jdt.ls, no `spring-boot` client, no Spring jars, still one Spring LS process), `loose_file` (`/tmp/nv4j/loose/Loose.java`: no client, no process). Negative control c1 (gating removed) fails exactly `disabled`, `plain_maven` (2 processes) and `loose_file` (3 processes).
+
 ## Trial log
 
 | # | Change | Result | Kept |
@@ -78,3 +89,11 @@ Baseline (no Spring LS wired): `attached` FAIL "no 'spring-boot' client on appli
 | sp3 | same, RSS by process | RSS 298 MB | evidence |
 | pc1 | `50_spring_ls` run with the sp1 wiring preloaded (positive control, scratch only), first request sent right at client init | 4/5 PASS; `props_first` FAIL: 0 items in 87 ms (the property index is still empty in that millisecond) | check changed: first request pinned at client init + 1.0 s (like D13) |
 | pc2 | same after the pin (2 runs) | 5/5 PASS both: ready 72/103 ms after jdt.ls, first 87/76 ms rank 1, warm p95 4.0/4.1 ms, hover 7/6 ms, RSS 426/419 MB | the check can pass; the wiring itself is Task 3 |
+| t1 | Task 3 wiring (`nv4j/spring.lua`, `plugins/spring.lua`, bundles in `plugins/java.lua`), original 5 cases | `DONE 50_spring_ls 5 0`: ready 46 ms after jdt.ls, first 19 ms rank 1 of 75, warm p95 4.0 ms, hover 4 ms, RSS 412 MB (`test-20261021-122355.log`) | kept |
+| t2 | check extended to 11 cases (gating, bundles, server JVM) | `DONE 50_spring_ls 11 0`: ready 38 ms, first 36 ms, warm p95 3.6 ms, hover 4 ms, RSS 413 MB, server JVM 25.0.4 with Corretto 21 on PATH (`test-20261021-122458.log`) | kept |
+| c1 | negative control: `boot_root` returns every root (no Boot test, no `vim.g.nv4j_spring` test), scratch only | `DONE 50_spring_ls 8 3`: `disabled` attached, `plain_maven` attached (2 Spring LS processes), `loose_file` attached (3 processes) | reverted; proves the gating cases |
+| t3 | `tests/run.sh` installs `vscode-spring-boot-tools` like jdtls (`ensure_mason`) | already installed here: no-op; syntax checked | kept |
+| t4 | full `tests/run.sh` with the Spring client on every fixture Java buffer, capabilities unrestricted | P1 135 PASS 0 FAIL; worst warm p95 50 ms (before, `test-20261021-121503.log`: 42 ms; budget 150), cold first 43 ms (47), `@` RestController rank 1 (1), diagnostics 457 ms (463); `41_run 22 0`, `50_spring_ls 11 0`; `40_debug 15 1`: `build_guard` timeout case fired at 671 ms for a 1 s timer (`test-20261021-122633.log`) | no restriction needed |
+| t5 | `40_debug` alone, twice (same code) | `DONE 40_debug 16 0` both, timeout case 945/944 ms: a flake, not a Spring LS failure. Cause: `vim.defer_fn` arms from libuv's cached loop time, stale by ~330 ms after a busy tick (more work per tick with the second client) | fix: `vim.uv.update_time()` before arming the timer in `nv4j/debug.lua` `M.build` (one line) |
+| t6 | 3 consecutive `50_spring_ls` runs with the final code | `DONE 50_spring_ls 11 0` 3 of 3: ready 330/37/88 ms after jdt.ls, first 51/90/19 ms, warm p95 3.8/4.9/4.9 ms, hover 5/7/5 ms, RSS 423/415/439 MB (`test-20261021-141127.log`, `-141202`, `-141235`) | final |
+| t7 | final full `tests/run.sh` | exit 0: P1 135 PASS 0 FAIL (worst warm p95 55 ms, cold first 49 ms, RestController rank 1, diagnostics 474 ms), `40_debug 16 0` (timeout case 1000 ms), `41_run 22 0`, `50_spring_ls 11 0` (ready 39 ms, first 66 ms, warm p95 4.6 ms, hover 8 ms, RSS 439 MB); no Spring LS process left after the run (`test-20261021-141316.log`) | final |

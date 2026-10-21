@@ -1,6 +1,6 @@
 # 004 - P2: run, debug and Spring awareness
 
-Status: Task 0 done (research, fixture, failing baselines); Task 1 done (debug works: `DONE 40_debug 13 0`, 5 of 5 consecutive runs; review fix round: `DONE 40_debug 16 0`, 3 of 3)); Task 2 done (run Spring Boot: `DONE 41_run 18 0`, 3 of 3; review fix round 1: `DONE 41_run 22 0`, 3 of 3). Plan: `docs/superpowers/plans/2026-10-21-nv4j-p2-spring-run-debug.md`. Does not contradict `001-architecture.md`; decisions D14 and later live in its decisions table.
+Status: Task 0 done (research, fixture, failing baselines); Task 1 done (debug works: `DONE 40_debug 13 0`, 5 of 5 consecutive runs; review fix round: `DONE 40_debug 16 0`, 3 of 3)); Task 2 done (run Spring Boot: `DONE 41_run 18 0`, 3 of 3; review fix round 1: `DONE 41_run 22 0`, 3 of 3); Task 3 done (Spring Boot language server: `DONE 50_spring_ls 11 0`, 3 of 3). Plan: `docs/superpowers/plans/2026-10-21-nv4j-p2-spring-run-debug.md`. Does not contradict `001-architecture.md`; decisions D14 and later live in its decisions table.
 
 ## Goal
 
@@ -21,7 +21,7 @@ Run and debug a Spring Boot app from Neovim (profiles, env, breakpoints that hit
 
 ## Decisions
 
-- D14 (Spring LS wiring): `JavaHello/spring-boot.nvim` pinned at `9880be4` + Mason `vscode-spring-boot-tools` 2.2.0, configured by nv4j. Reason and trials: `001` D14, `specs/features/spring-language-server.md`.
+- D14 (Spring LS wiring): `JavaHello/spring-boot.nvim` pinned at `9880be4` + Mason `vscode-spring-boot-tools` 2.2.0, configured by nv4j. Reason and trials: `001` D14, `specs/features/spring-language-server.md`. Built in Task 3.
 
 ## Rulings in Task 0 (cost if wrong)
 
@@ -72,6 +72,18 @@ Full `tests/run.sh` (log `/tmp/nv4j/logs/test-20261021-115929.log`): P1 135 PASS
 Review fix round 1: build-tool opt-in (`<leader>rS`, `vim.g.nv4j_run_tool`), the jdt.ls client looked up by ancestor root (INFO notice when there is none), stop through the process group plus the descendant snapshot (SIGKILL only to the same process, by start time), stop gated on the job being alive instead of the state, `rd` env asserted. 3 consecutive runs `DONE 41_run 22 0`; full run (log `/tmp/nv4j/logs/test-20261021-121503.log`): P1 135 PASS, `DONE 40_debug 16 0`, `DONE 41_run 22 0`, `DONE 50_spring_ls 0 5`. Details: `specs/features/run.md`, "Review fix round 1".
 
 Rulings: run uses jdt.ls's classes and classpath, not a Maven build (cost if wrong: the plugin `<configuration>`, pom profiles and `process-classes` plugins are skipped for `<leader>rs`; `<leader>rS` / `vim.g.nv4j_run_tool` switch to the build tool. Resource filtering does run, through m2e in jdt.ls); `<leader>rs` runs without a profile and `<leader>rp` asks each time (no saved run configurations); `q` stops the app before closing (cost: no way to hide the output and keep the app running other than switching buffers).
+
+## Task 3 (Spring Boot language server)
+
+`nvim/lua/plugins/spring.lua` (plugin pinned by commit, lazy on `java`/`yaml`/`jproperties`; Mason `ensure_installed`), `nvim/lua/nv4j/spring.lua` (`require("nv4j.spring").setup()`: server jar and jdt.ls bundles from the Mason package without versions, `java_cmd` from `nv4j.jdk.server_home()`, own `root_dir` = the jdt.ls root and only for Spring Boot projects, `vim.g.nv4j_spring = false` off switch), `nvim/lua/nv4j/root.lua` (jdt.ls root logic moved out of `plugins/java.lua`, shared), `plugins/java.lua` appends the five extension jars to LazyVim's bundles for Spring Boot roots only. `tests/run.sh` installs `vscode-spring-boot-tools` like jdtls. Details, gating cases and trials (t1 to t7, control c1): `specs/features/spring-language-server.md`.
+
+`50_spring_ls` grew from 5 to 11 cases (Review Focus 1: `plain_maven` with a release-21 Maven project and an `application.properties`, `loose_file`, `disabled`; Review Focus 2: `server_jvm` with JDK 21 first on `PATH`; plus `yml_java_attached`, `bundles`). Negative control without the gating: `disabled`, `plain_maven`, `loose_file` FAIL (2 and 3 Spring LS processes). 3 consecutive runs `DONE 50_spring_ls 11 0`: ready 37 to 330 ms after jdt.ls (10 s), first completion 19 to 90 ms (400), warm p95 3.8 to 4.9 ms (150), hover 5 to 7 ms (500), RSS 415 to 439 MB (1 GB).
+
+P1 with the Spring client on every fixture Java buffer (capabilities not restricted, nothing to fix): worst warm p95 50 to 55 ms (Task 2: 42 ms), cold first 43 to 49 ms, `@` RestController rank 1, diagnostics 457 to 474 ms. The first full run had `40_debug` `build_guard` FAIL once (a 1 s `vim.defer_fn` fired after 671 ms: libuv's cached loop time was stale when the timer was armed); `40_debug` alone passed twice; fixed with `vim.uv.update_time()` before arming in `nv4j/debug.lua` `M.build`, after which the case measured 1000 ms.
+
+Final full `tests/run.sh` (log `/tmp/nv4j/logs/test-20261021-141316.log`), exit 0: P1 135 PASS 0 FAIL (00: 11, 01: 2, 10: 17, 11: 26, 12: 7, 20: 10, 30: 24, 31: 10, 32: 28), `DONE 40_debug 16 0`, `DONE 41_run 22 0`, `DONE 50_spring_ls 11 0`. 184 PASS.
+
+Rulings: the `spring-boot` client stays on Java buffers with full capabilities (Task 4 needs `@Value`/`@Profile`; cost if wrong: Java completion merges a second source, measured no regression); Boot detection is a text match for `spring-boot`/`org.springframework.boot` in build files, memoized per session (cost: a pom that only mentions it, e.g. in a non-Boot property, starts the server; adding Boot needs a restart); bundles only for Boot roots (cost: none for plain projects; a project that becomes Boot needs a jdt.ls restart).
 
 ## Task 0 full run
 

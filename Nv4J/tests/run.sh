@@ -44,8 +44,8 @@ export NVIM_APPNAME=nv4j
 # write into it. Plugins and Mason (stdpath data) are shared.
 export XDG_STATE_HOME=/tmp/nv4j/state
 
-# Setup (idempotent): headless runs never reach Mason's ensure_installed, so install jdtls into
-# nv4j's own mason dir if missing. Stops as soon as the install finishes or fails (5 min cap).
+# Setup (idempotent): headless runs never reach Mason's ensure_installed, so install jdtls and
+# vscode-spring-boot-tools into nv4j's own mason dir if missing. Stops as soon as the install finishes or fails (5 min cap).
 # A previous aborted install can leave stale "already linked" links: clean them and retry once.
 MASON_DIR="$(nvim --headless -c 'lua io.stdout:write(vim.fn.stdpath("data").."/mason")' -c qa 2>&1)"
 MASON_JDTLS="$MASON_DIR/bin/jdtls"
@@ -54,20 +54,30 @@ case "$MASON_DIR" in
   "$HOME/.local/share/nv4j/"?*) ;;
   *) echo "FATAL: refusing to use mason dir '$MASON_DIR' (expected under $HOME/.local/share/nv4j/)" >&2; exit 2 ;;
 esac
+# mason_install <package> <file that exists once installed>
 mason_install() {
-  nvim --headless "+Lazy! load mason.nvim" "+lua _G.__t0 = vim.uv.hrtime()" "+MasonInstall jdtls" \
-    "+lua vim.wait(300000, function() return vim.fn.executable([[$MASON_JDTLS]]) == 1 or (vim.uv.hrtime() > _G.__t0 + 3e9 and not require('mason-registry').get_package('jdtls'):is_installing()) end, 500)" +qa >>"$LOG" 2>&1
+  nvim --headless "+Lazy! load mason.nvim" "+lua _G.__t0 = vim.uv.hrtime()" "+MasonInstall $1" \
+    "+lua vim.wait(300000, function() return vim.uv.fs_stat([[$2]]) ~= nil or (vim.uv.hrtime() > _G.__t0 + 3e9 and not require('mason-registry').get_package('$1'):is_installing()) end, 500)" +qa >>"$LOG" 2>&1
 }
-if [ ! -x "$MASON_JDTLS" ]; then
-  echo "setup: installing jdtls via Mason (first run)..." | tee -a "$LOG"
-  mason_install
-  if [ ! -x "$MASON_JDTLS" ] && grep -q "already linked" "$LOG"; then
+# ensure_mason <package> <file that exists once installed> <stale paths to clean before the retry...>
+ensure_mason() {
+  local pkg="$1" probe="$2"
+  shift 2
+  [ -e "$probe" ] && return 0
+  echo "setup: installing $pkg via Mason (first run)..." | tee -a "$LOG"
+  mason_install "$pkg" "$probe"
+  if [ ! -e "$probe" ] && grep -q "already linked" "$LOG"; then
     echo "setup: stale Mason links, cleaning and retrying once" | tee -a "$LOG"
-    rm -rf "$MASON_DIR/packages/jdtls" "$MASON_DIR/share/jdtls" "$MASON_DIR/bin/jdtls" "$MASON_DIR/opt/jdtls"
-    mason_install
+    rm -rf "$@"
+    mason_install "$pkg" "$probe"
   fi
-  [ -x "$MASON_JDTLS" ] || { echo "FATAL: jdtls install failed (see $LOG)" >&2; exit 2; }
-fi
+  [ -e "$probe" ] || { echo "FATAL: $pkg install failed (see $LOG)" >&2; exit 2; }
+}
+ensure_mason jdtls "$MASON_JDTLS" \
+  "$MASON_DIR/packages/jdtls" "$MASON_DIR/share/jdtls" "$MASON_DIR/bin/jdtls" "$MASON_DIR/opt/jdtls"
+# Spring Boot language server (P2, 50_spring_ls): the server jar link is the probe.
+ensure_mason vscode-spring-boot-tools "$MASON_DIR/share/vscode-spring-boot-tools/language-server.jar" \
+  "$MASON_DIR/packages/vscode-spring-boot-tools" "$MASON_DIR/share/vscode-spring-boot-tools"
 
 rc=0
 shopt -s nullglob

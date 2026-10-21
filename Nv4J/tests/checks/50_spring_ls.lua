@@ -8,6 +8,14 @@
 --  props_hover : hover on `server.port` returns text naming the key, <= 500 ms.
 --  rss         : resident memory of the Spring LS process (a child of this nvim) <= 1.5 GB hard
 --                limit; above the 1 GB budget it is printed in the detail.
+--  yml_java_attached : the same client is on application-dev.yml (own filetype detection) and the Java buffer.
+--  bundles     : jdt.ls was started with the five Spring LS extension jars plus the java-debug bundle,
+--                and lists the command sts.java.addClasspathListener.
+--  server_jvm  : the Spring LS JVM is nv4j.jdk's server JDK (>= 21), not the JDK 21 run.sh puts on PATH.
+--  disabled    : with vim.g.nv4j_spring = false a newly opened Java buffer gets no client.
+--  plain_maven : a plain Maven project (release 21, no Spring Boot, /tmp/nv4j/plain21) gets jdt.ls but no
+--                spring-boot client (Java or application.properties), no Spring jars, no second process.
+--  loose_file  : a loose .java file gets no spring-boot client and no process.
 -- Timings: /tmp/nv4j/logs/latency.jsonl (spring_ready, spring_props_first, spring_props_warm_p95,
 -- spring_hover). The fixture file is only edited in memory and restored.
 vim.o.confirm = false
@@ -115,4 +123,103 @@ local ok_all, err = pcall(function()
 end)
 E.restore(pbuf, orig)
 if not ok_all then lsp.report(P .. "props", false, "error: " .. tostring(err)) end
+
+-- Where the client attaches, what jdt.ls loads, which JVM runs it, and where it must NOT run
+-- (Review Focus 1 and 2, specs/features/spring-language-server.md "Gating and JDK cases").
+local function spring_on(buf)
+  return vim.lsp.get_clients({ bufnr = buf, name = NAME })[1]
+end
+local function spring_pids()
+  local out = vim.fn.systemlist({ "pgrep", "-P", tostring(vim.fn.getpid()), "-f", "spring-boot-language-server|vscode-spring-boot-tools" })
+  return vim.tbl_filter(function(l) return l:match("^%d+$") ~= nil end, out)
+end
+local function wait_attach(buf, ms)
+  vim.wait(ms, function() return spring_on(buf) ~= nil end, 20)
+  return spring_on(buf)
+end
+local ok2, err2 = pcall(function()
+  -- yml with Neovim's own filetype detection, and the Java buffer opened first.
+  vim.cmd("edit " .. vim.fn.fnameescape(fixture .. "/src/main/resources/application-dev.yml"))
+  local ybuf = vim.api.nvim_get_current_buf()
+  local yc = wait_attach(ybuf, 5000)
+  local jc = spring_on(jbuf)
+  lsp.report(P .. "yml_java_attached", yc ~= nil and yc.id == client.id and jc ~= nil and jc.id == client.id,
+    ("application-dev.yml (filetype %s): %s; DemoApplication.java: %s (one client: %s)"):format(vim.bo[ybuf].filetype,
+      yc and "attached" or "none", jc and "attached" or "none", tostring(yc and jc and yc.id == jc.id)))
+
+  -- jdt.ls got the Spring LS bundles next to LazyVim's java-debug bundle, and exposes their commands.
+  local bundles = (jdtls.config.init_options or {}).bundles or {}
+  local want = { "io.projectreactor.reactor-core.jar", "org.reactivestreams.reactive-streams.jar", "jdt-ls-commons.jar",
+    "jdt-ls-extension.jar", "sts-gradle-tooling.jar" }
+  local missing, has_debug = {}, false
+  for _, w in ipairs(want) do
+    local found = false
+    for _, b in ipairs(bundles) do if vim.endswith(b, "/" .. w) then found = true end end
+    if not found then missing[#missing + 1] = w end
+  end
+  for _, b in ipairs(bundles) do if b:find("com.microsoft.java.debug.plugin", 1, true) then has_debug = true end end
+  local cmds = vim.tbl_get(jdtls.server_capabilities or {}, "executeCommandProvider", "commands") or {}
+  local sts = vim.tbl_contains(cmds, "sts.java.addClasspathListener")
+  lsp.report(P .. "bundles", #missing == 0 and has_debug and sts,
+    ("%d bundles, Spring jars missing: %s, java-debug kept: %s, jdt.ls command sts.java.addClasspathListener: %s"):format(
+      #bundles, #missing == 0 and "none" or table.concat(missing, ","), tostring(has_debug), tostring(sts)))
+
+  -- The server JVM is nv4j.jdk's server JDK (>= 21), not PATH's java (run.sh puts a JDK 21 first on PATH).
+  local pids = spring_pids()
+  local cmdline = pids[1] and vim.trim(vim.fn.system({ "ps", "-o", "command=", "-p", pids[1] })) or ""
+  local exe = cmdline:match("^(%S+/bin/java)%s")
+  local expect = require("nv4j.jdk").server_home() .. "/bin/java"
+  local path_java = vim.fn.exepath("java")
+  local path_real = path_java ~= "" and vim.uv.fs_realpath(path_java) or nil
+  local exe_real = exe and vim.uv.fs_realpath(exe) or nil
+  local major
+  local rel = io.open(vim.fs.dirname(vim.fs.dirname(expect)) .. "/release", "r")
+  if rel then major = tonumber(rel:read("*a"):match('JAVA_VERSION="(%d+)')); rel:close() end
+  local same = path_real ~= nil and path_real == exe_real
+  lsp.report(P .. "server_jvm", exe == expect and (major or 0) >= 21 and not same,
+    ("Spring LS runs on %s (expected %s, major %s), PATH java %s%s"):format(tostring(exe), expect, tostring(major),
+      tostring(path_real), same and " SAME JDK: cannot tell PATH apart" or ""))
+
+  -- Turned off: a new Java buffer of the same Boot project gets no client.
+  vim.g.nv4j_spring = false
+  local obuf = lsp.open(fixture .. "/src/main/java/demo/GreetingController.java")
+  local oc = wait_attach(obuf, 3000)
+  vim.g.nv4j_spring = nil
+  lsp.report(P .. "disabled", oc == nil and #spring_pids() == 1,
+    ("vim.g.nv4j_spring = false: GreetingController.java %s, Spring LS processes %d"):format(oc and "ATTACHED" or "no client", #spring_pids()))
+
+  -- A plain Maven project (no Spring Boot, release 21) and a loose .java file: jdt.ls yes, Spring LS no.
+  local dir = "/tmp/nv4j/plain21"
+  vim.fn.delete(dir, "rf")
+  vim.fn.mkdir(dir .. "/src/main/java/p21", "p")
+  vim.fn.mkdir(dir .. "/src/main/resources", "p")
+  vim.fn.writefile({
+    '<project xmlns="http://maven.apache.org/POM/4.0.0"><modelVersion>4.0.0</modelVersion>',
+    "<groupId>p21</groupId><artifactId>plain21</artifactId><version>1</version>",
+    "<properties><maven.compiler.release>21</maven.compiler.release>",
+    "<project.build.sourceEncoding>UTF-8</project.build.sourceEncoding></properties></project>",
+  }, dir .. "/pom.xml")
+  vim.fn.writefile({ "package p21;", "class Plain { int x; }" }, dir .. "/src/main/java/p21/Plain.java")
+  vim.fn.writefile({ "server.port=9090" }, dir .. "/src/main/resources/application.properties")
+  local mbuf = lsp.open(dir .. "/src/main/java/p21/Plain.java")
+  local mj = lsp.wait_ready(mbuf, 120000)
+  vim.cmd("edit " .. vim.fn.fnameescape(dir .. "/src/main/resources/application.properties"))
+  local mpbuf = vim.api.nvim_get_current_buf()
+  local mc = wait_attach(mbuf, 3000) or spring_on(mpbuf)
+  local mbundles = mj and ((mj.config.init_options or {}).bundles or {}) or {}
+  local mspring = #vim.tbl_filter(function(b) return b:find("jdt-ls-extension.jar", 1, true) ~= nil end, mbundles)
+  lsp.report(P .. "plain_maven", mj ~= nil and mj.id ~= jdtls.id and mc == nil and mspring == 0 and #spring_pids() == 1,
+    ("plain Maven project: jdt.ls %s, spring-boot client on .java/.properties %s, Spring jars in its jdt.ls %d, Spring LS processes %d"):format(
+      mj and "ready (own client)" or "NOT READY", mc and "ATTACHED" or "none", mspring, #spring_pids()))
+
+  local ldir = "/tmp/nv4j/loose"
+  vim.fn.delete(ldir, "rf")
+  vim.fn.mkdir(ldir, "p")
+  vim.fn.writefile({ "class Loose { }" }, ldir .. "/Loose.java")
+  local lbuf = lsp.open(ldir .. "/Loose.java")
+  local lc = wait_attach(lbuf, 3000)
+  lsp.report(P .. "loose_file", lc == nil and #spring_pids() == 1,
+    ("loose Loose.java: spring-boot client %s, Spring LS processes %d"):format(lc and "ATTACHED" or "none", #spring_pids()))
+end)
+if not ok2 then lsp.report(P .. "gating", false, "error: " .. tostring(err2)) end
 lsp.finish()

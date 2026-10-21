@@ -89,6 +89,7 @@ function M.build(client, done, timeout_ms, what)
     done()
   end
   vim.notify("Building before " .. what .. "...", vim.log.levels.INFO)
+  vim.uv.update_time() -- timers start from libuv's cached loop time; stale after a busy tick, the timeout fired ~330 ms early
   vim.defer_fn(function() finish(("timed out after %g s"):format(timeout_ms / 1000)) end, timeout_ms)
   local function once(try)
     local sent = client:request("java/buildWorkspace", false, function(err, status)
