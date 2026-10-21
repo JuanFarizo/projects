@@ -276,6 +276,12 @@ end, { desc = "Run Java main (terminal, no debugger)" })
 map("n", "<leader>rs", function()
   require("nv4j.run").spring_boot()
 end, { desc = "Run Spring Boot app" })
+-- Through Maven (spring-boot:run; Gradle bootRun if there is no pom): applies the plugin's
+-- <configuration>, pom profiles and process-classes plugins that <leader>rs skips. To make it the
+-- default for <leader>rs/<leader>rp: vim.g.nv4j_run_tool = "maven" (or "gradle").
+map("n", "<leader>rS", function()
+  require("nv4j.run").spring_boot({ tool = "maven" })
+end, { desc = "Run Spring Boot (build tool)" })
 map("n", "<leader>rd", function()
   require("nv4j.run").spring_boot({ debug = true })
 end, { desc = "Debug Spring Boot app" })

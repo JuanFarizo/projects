@@ -6,7 +6,10 @@
 --    than `mvn spring-boot:run` (2.5 s vs 5 to 7 s to "Started", and Maven had to resolve its plugin
 --    over the network first: run.md, trials m1 to j2) and works the same for Maven and Gradle.
 --    Without jdt.ls it falls back to the build tool: Maven first (mvnw/mvn spring-boot:run), then
---    Gradle (gradlew/gradle bootRun).
+--    Gradle (gradlew/gradle bootRun). The build tool can be forced (it applies the
+--    spring-boot-maven-plugin <configuration>, pom profiles and process-classes plugins, which the
+--    `java -cp` path skips): vim.g.nv4j_run_tool = "maven" (Maven first) or "gradle" (Gradle first),
+--    or <leader>rS for one run.
 --  - JAVA_HOME (and the java binary) for the app come from nv4j.jdk's project runtime, never PATH.
 --  - Debug (opts.debug) is Task 1's nvim-dap launch of the same main class config (build before
 --    launch, no orphan), with the profile, env and VM args added.
@@ -68,7 +71,9 @@ function M.build_tool_command(root, opts)
     local w = root .. "/" .. wrapper
     return vim.fn.executable(w) == 1 and w or tool
   end
-  if vim.uv.fs_stat(root .. "/pom.xml") then
+  local has_pom = vim.uv.fs_stat(root .. "/pom.xml") ~= nil
+  local has_gradle = vim.uv.fs_stat(root .. "/build.gradle") ~= nil or vim.uv.fs_stat(root .. "/build.gradle.kts") ~= nil
+  if has_pom and not (opts.prefer == "gradle" and has_gradle) then
     local cmd = { exe("mvnw", "mvn"), "spring-boot:run" }
     if opts.profile then cmd[#cmd + 1] = "-Dspring-boot.run.profiles=" .. opts.profile end
     if opts.vm_args and #opts.vm_args > 0 then
@@ -77,7 +82,7 @@ function M.build_tool_command(root, opts)
     if opts.args and #opts.args > 0 then cmd[#cmd + 1] = "-Dspring-boot.run.arguments=" .. table.concat(opts.args, " ") end
     return cmd, env
   end
-  if vim.uv.fs_stat(root .. "/build.gradle") or vim.uv.fs_stat(root .. "/build.gradle.kts") then
+  if has_gradle then
     local cmd = { exe("gradlew", "gradle"), "bootRun" }
     if opts.profile then env.SPRING_PROFILES_ACTIVE = opts.profile end
     if opts.args and #opts.args > 0 then cmd[#cmd + 1] = "--args=" .. table.concat(opts.args, " ") end
@@ -85,9 +90,17 @@ function M.build_tool_command(root, opts)
   end
 end
 
+--- Is the session's process still running? Decided by its job, not by its state: a JVM that printed
+--- Boot's failure analysis ("failed") but did not exit is still running and still stoppable. A debug
+--- session before nvim-dap started its terminal has no job yet and counts while not final.
+function M.is_alive(s)
+  if s.job and s.job > 0 then return vim.fn.jobwait({ s.job }, 0)[1] == -1 end
+  return s.debug == true and not FINAL[s.state]
+end
+
 --- Sessions whose process is still running (or starting).
 function M.running()
-  return vim.tbl_filter(function(s) return not FINAL[s.state] end, M.sessions)
+  return vim.tbl_filter(M.is_alive, M.sessions)
 end
 
 -- ── output scanning ───────────────────────────────────────────────────────────────────────────
@@ -167,25 +180,74 @@ local function descendants(pid, out)
   return out
 end
 
-local function alive(pid) return vim.uv.kill(pid, 0) == 0 end
+--- pid -> { pgid, start } for the live ones among `pids` (`start` = ps lstart: tells a pid apart from
+--- a later process that reused it).
+local function proc_info(pids)
+  local out = {}
+  if #pids == 0 then return out end
+  local r = vim.system({ "ps", "-o", "pid=,pgid=,lstart=", "-p", table.concat(pids, ",") }, { text = true }):wait()
+  for line in (r.stdout or ""):gmatch("[^\n]+") do
+    local pid, pgid, start = line:match("^%s*(%d+)%s+(%d+)%s+(.-)%s*$")
+    if pid then out[tonumber(pid)] = { pgid = tonumber(pgid), start = start } end
+  end
+  return out
+end
 
---- SIGTERM to `pid` and all its descendants (collected first: once a parent dies its children are
---- re-parented and cannot be found any more), SIGKILL to the ones still alive after `grace_ms`.
----@return integer[] pids signalled
+local own_pgid
+local function group_of(pid)
+  own_pgid = own_pgid or (proc_info({ vim.fn.getpid() })[vim.fn.getpid()] or {}).pgid
+  local info = proc_info({ pid })[pid]
+  local g = info and info.pgid
+  -- only a group the job leads (jobstart(term) does setsid), never Neovim's own group
+  if g and g == pid and g ~= own_pgid then return g end
+end
+
+M.kill_mode = nil -- tests only: "root" (control: only the root pid), "nogroup", "nosnapshot"
+
+--- Stop the process tree of `pid` (a terminal job: jobstart(term) runs it as the leader of its own
+--- session and process group). SIGTERM to the group and to every descendant found now (`pgrep -P`,
+--- recursive, collected before anything dies: an orphan is re-parented and cannot be found later;
+--- this also reaches a child that left the group with setsid/setpgrp). After `grace_ms`, SIGKILL to
+--- the group if it still has members, and to the snapshot pids still alive with the same start time
+--- (so a pid reused by an unrelated process is never signalled).
+---@return { pids: integer[], force: fun(), done: fun(): boolean }
 function M.kill_tree(pid, grace_ms)
-  local pids = descendants(pid, { pid })
-  for _, p in ipairs(pids) do pcall(vim.uv.kill, p, "sigterm") end
-  vim.defer_fn(function()
-    for _, p in ipairs(pids) do
-      if alive(p) then pcall(vim.uv.kill, p, "sigkill") end
+  local mode = M.kill_mode
+  local snap = mode == "root" and { pid } or descendants(pid, { pid })
+  local info = proc_info(snap)
+  local pgid = (mode == nil or mode == "nosnapshot") and group_of(pid) or nil
+  local use_snap = mode ~= "nosnapshot"
+  local function same(now)
+    local out = {}
+    for p, i in pairs(now) do
+      if info[p] and info[p].start == i.start then out[#out + 1] = p end
     end
-  end, grace_ms or M.KILL_GRACE_MS or 5000)
-  return pids
+    return out
+  end
+  local function signal(sig)
+    if pgid and vim.uv.kill(-pgid, 0) == 0 then pcall(vim.uv.kill, -pgid, sig) end
+    if use_snap then
+      for _, p in ipairs(same(sig == "sigterm" and info or proc_info(vim.tbl_keys(info)))) do pcall(vim.uv.kill, p, sig) end
+    end
+  end
+  signal("sigterm")
+  local forced = false
+  local function force()
+    if forced then return end
+    forced = true
+    signal("sigkill")
+  end
+  vim.defer_fn(force, grace_ms or M.KILL_GRACE_MS or 5000)
+  local function done()
+    if pgid and vim.uv.kill(-pgid, 0) == 0 then return false end
+    return not use_snap or #same(proc_info(vim.tbl_keys(info))) == 0
+  end
+  return { pids = vim.tbl_keys(info), force = force, done = done }
 end
 
 --- Stop a session: its whole process tree (run mode) or its nvim-dap session (debug mode).
 function M.stop(s)
-  if not s or FINAL[s.state] then return end
+  if not s or not M.is_alive(s) then return end
   s.stopping = true
   if s.dap then pcall(function() s.dap:disconnect({ terminateDebuggee = true }) end) end
   if s.pid then M.kill_tree(s.pid) end
@@ -212,16 +274,16 @@ local function setup_autocmds()
   vim.api.nvim_create_autocmd("VimLeavePre", {
     group = augroup,
     callback = function()
-      local pids = {}
+      local trees = {}
       for _, s in ipairs(M.running()) do
-        if s.pid then vim.list_extend(pids, M.kill_tree(s.pid, 60000)) end
+        if s.pid then trees[#trees + 1] = M.kill_tree(s.pid, 60000) end
       end
-      if #pids == 0 then return end
+      if #trees == 0 then return end
       vim.wait(3000, function()
-        for _, p in ipairs(pids) do if alive(p) then return false end end
+        for _, t in ipairs(trees) do if not t.done() then return false end end
         return true
       end, 50)
-      for _, p in ipairs(pids) do if alive(p) then pcall(vim.uv.kill, p, "sigkill") end end
+      for _, t in ipairs(trees) do t.force() end
     end,
   })
 end
@@ -232,7 +294,7 @@ end
 ---@return nv4j.RunSession
 function M.start_terminal(o)
   setup_autocmds()
-  local s = { id = #M.sessions + 1, name = o.name, state = "starting", debug = false, profile = o.profile, env = o.env }
+  local s = { id = #M.sessions + 1, name = o.name, state = "starting", debug = false, profile = o.profile, env = o.env, cmd = o.cmd }
   local prev = vim.api.nvim_get_current_win()
   vim.cmd("botright " .. M.HEIGHT .. "split")
   local win = vim.api.nvim_get_current_win()
@@ -258,7 +320,7 @@ function M.start_terminal(o)
   vim.api.nvim_create_autocmd("BufWipeout", {
     group = vim.api.nvim_create_augroup("nv4j_run_buf" .. s.buf, { clear = true }),
     buffer = s.buf,
-    callback = function() if not FINAL[s.state] then M.stop(s) end end,
+    callback = function() M.stop(s) end,
   })
   vim.cmd("normal! G") -- the terminal follows its output
   if vim.api.nvim_win_is_valid(prev) then vim.api.nvim_set_current_win(prev) end
@@ -320,22 +382,35 @@ local function setup_dap()
 end
 
 -- ── main class discovery ──────────────────────────────────────────────────────────────────────
-local function jdtls_for(root)
-  local cur = vim.lsp.get_clients({ bufnr = 0, name = "jdtls" })[1]
-  if cur and (not root or cur.config.root_dir == root) then return cur end
+--- The jdt.ls client whose root is `path` or an ancestor of it (the deepest one), or nil.
+function M.client_for_path(path)
+  if not path or path == "" then return nil end
+  path = vim.fs.normalize(path)
+  local best
   for _, c in ipairs(vim.lsp.get_clients({ name = "jdtls" })) do
-    if not root or c.config.root_dir == root then return c end
+    local r = c.config.root_dir and vim.fs.normalize(c.config.root_dir)
+    if r and (path == r or path:sub(1, #r + 1) == r .. "/") and (not best or #r > #best.config.root_dir) then best = c end
   end
+  return best
 end
 
-local function project_root()
+--- Project root and its jdt.ls client for the current buffer: the buffer's own client, else the
+--- client whose root contains the buffer's file (application.yml, a module's pom.xml), else (a buffer
+--- with no file, e.g. a run terminal) the only jdt.ls client. Without a client the root comes from the
+--- build markers and the caller uses the build tool.
+function M.project_root()
   local c = vim.lsp.get_clients({ bufnr = 0, name = "jdtls" })[1]
   if c then return c.config.root_dir, c end
-  local root = vim.fs.root(0, BUILD_MARKERS)
-  if root then return root, jdtls_for(root) end
+  local name = vim.api.nvim_buf_get_name(0)
+  local is_file = name ~= "" and not name:find("^%a[%w+.-]*://")
+  c = M.client_for_path(is_file and name or vim.fn.getcwd())
+  if c then return c.config.root_dir, c end
   local clients = vim.lsp.get_clients({ name = "jdtls" })
-  if #clients == 1 then return clients[1].config.root_dir, clients[1] end
+  if not is_file and #clients == 1 then return clients[1].config.root_dir, clients[1] end
+  return is_file and vim.fs.root(0, BUILD_MARKERS) or vim.fs.root(vim.fn.getcwd(), BUILD_MARKERS), nil
 end
+
+local function project_root() return M.project_root() end
 
 local function is_boot_main(file)
   local text = file and read(file)
@@ -414,13 +489,16 @@ local function launch_run(cfg, opts, home, env, root)
 end
 
 --- Run (or debug) the Spring Boot app of the current project.
----@param opts { debug: boolean|nil, profile: string|nil, env: table|nil, vm_args: string[]|nil, args: string[]|nil }|nil
+--- opts.tool ("maven" | "gradle" | "build", default vim.g.nv4j_run_tool) runs through the build tool
+--- even with jdt.ls attached ("maven"/"build": Maven first, "gradle": Gradle first); debug ignores it.
+---@param opts { debug: boolean|nil, profile: string|nil, env: table|nil, vm_args: string[]|nil, args: string[]|nil, tool: string|nil }|nil
 function M.spring_boot(opts)
   opts = opts or {}
   if opts.profile == "" then opts.profile = nil end
   local root, client = project_root()
   if not root then return notify("No pom.xml or build.gradle above this buffer", vim.log.levels.WARN) end
-  local module_root = vim.fs.root(0, BUILD_MARKERS)
+  local bname = vim.api.nvim_buf_get_name(0)
+  local module_root = bname ~= "" and not bname:find("^%a[%w+.-]*://") and vim.fs.root(0, BUILD_MARKERS) or nil
   if not (M.is_boot(root) or M.is_boot(module_root)) then
     return notify(("Not a Spring Boot project (no org.springframework.boot in the build file of %s). "
       .. "<leader>rj runs a plain main class."):format(vim.fn.fnamemodify(root, ":~")), vim.log.levels.WARN)
@@ -429,14 +507,22 @@ function M.spring_boot(opts)
   if not home then return notify("No JDK found for this project (nv4j.jdk)", vim.log.levels.ERROR) end
   local env = vim.tbl_extend("force", opts.env or {}, { JAVA_HOME = home })
 
-  if not client then
+  local tool = opts.tool or vim.g.nv4j_run_tool
+  if tool == "build" then tool = "maven" end
+  if client and tool and opts.debug then
+    notify("Debug runs through jdt.ls (vim.g.nv4j_run_tool applies to run only)")
+    tool = nil
+  end
+  if not client or tool then
     if opts.debug then
       return notify("Debug needs jdt.ls: open a Java file of the project first", vim.log.levels.WARN)
     end
-    local cmd, extra = M.build_tool_command(root, opts)
+    if not client then notify(("jdt.ls is not attached for %s: running with the build tool"):format(vim.fn.fnamemodify(root, ":~"))) end
+    local cmd, extra = M.build_tool_command(root, vim.tbl_extend("force", opts, { prefer = tool }))
     if not cmd then return notify("No pom.xml or build.gradle in " .. root, vim.log.levels.WARN) end
     env = vim.tbl_extend("force", env, extra, { PATH = home .. "/bin:" .. (vim.env.PATH or "") })
-    return M.start_terminal({ cmd = cmd, cwd = root, env = env, name = vim.fs.basename(root) .. (opts.profile and (" [" .. opts.profile .. "]") or ""), profile = opts.profile })
+    return M.start_terminal({ cmd = cmd, cwd = root, env = env, profile = opts.profile,
+      name = vim.fs.basename(root) .. " (" .. vim.fs.basename(cmd[1]) .. ")" .. (opts.profile and (" [" .. opts.profile .. "]") or "") })
   end
 
   boot_configs(client, function(configs, err)

@@ -1,6 +1,6 @@
 # 004 - P2: run, debug and Spring awareness
 
-Status: Task 0 done (research, fixture, failing baselines); Task 1 done (debug works: `DONE 40_debug 13 0`, 5 of 5 consecutive runs; review fix round: `DONE 40_debug 16 0`, 3 of 3)); Task 2 done (run Spring Boot: `DONE 41_run 18 0`, 3 of 3). Plan: `docs/superpowers/plans/2026-10-21-nv4j-p2-spring-run-debug.md`. Does not contradict `001-architecture.md`; decisions D14 and later live in its decisions table.
+Status: Task 0 done (research, fixture, failing baselines); Task 1 done (debug works: `DONE 40_debug 13 0`, 5 of 5 consecutive runs; review fix round: `DONE 40_debug 16 0`, 3 of 3)); Task 2 done (run Spring Boot: `DONE 41_run 18 0`, 3 of 3; review fix round 1: `DONE 41_run 22 0`, 3 of 3). Plan: `docs/superpowers/plans/2026-10-21-nv4j-p2-spring-run-debug.md`. Does not contradict `001-architecture.md`; decisions D14 and later live in its decisions table.
 
 ## Goal
 
@@ -69,7 +69,9 @@ Ruling: a build before launch that ends with compile errors only warns and launc
 
 Full `tests/run.sh` (log `/tmp/nv4j/logs/test-20261021-115929.log`): P1 135 PASS 0 FAIL (00: 11, 01: 2, 10: 17, 11: 26, 12: 7, 20: 10, 30: 24, 31: 10, 32: 28), `DONE 40_debug 16 0`, `DONE 41_run 18 0`, `DONE 50_spring_ls 0 5` (Task 3). 169 PASS, exit 1 only because of `50_spring_ls`.
 
-Rulings: run uses jdt.ls's classes and classpath, not a Maven build (cost if wrong: resource filtering or `process-classes` plugins are skipped for `<leader>rs`); `<leader>rs` runs without a profile and `<leader>rp` asks each time (no saved run configurations); `q` stops the app before closing (cost: no way to hide the output and keep the app running other than switching buffers).
+Review fix round 1: build-tool opt-in (`<leader>rS`, `vim.g.nv4j_run_tool`), the jdt.ls client looked up by ancestor root (INFO notice when there is none), stop through the process group plus the descendant snapshot (SIGKILL only to the same process, by start time), stop gated on the job being alive instead of the state, `rd` env asserted. 3 consecutive runs `DONE 41_run 22 0`; full run (log `/tmp/nv4j/logs/test-20261021-121503.log`): P1 135 PASS, `DONE 40_debug 16 0`, `DONE 41_run 22 0`, `DONE 50_spring_ls 0 5`. Details: `specs/features/run.md`, "Review fix round 1".
+
+Rulings: run uses jdt.ls's classes and classpath, not a Maven build (cost if wrong: the plugin `<configuration>`, pom profiles and `process-classes` plugins are skipped for `<leader>rs`; `<leader>rS` / `vim.g.nv4j_run_tool` switch to the build tool. Resource filtering does run, through m2e in jdt.ls); `<leader>rs` runs without a profile and `<leader>rp` asks each time (no saved run configurations); `q` stops the app before closing (cost: no way to hide the output and keep the app running other than switching buffers).
 
 ## Task 0 full run
 
