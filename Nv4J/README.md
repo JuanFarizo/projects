@@ -18,7 +18,7 @@ Maven is first class. Gradle is second and is not tested yet. Source of truth fo
 
 ## Capabilities (P1, shipped)
 
-Each row says what you get, the measured result (ranges are the three consecutive full runs recorded in the specs; a later full run had 129 PASS and 0 FAIL, with single timings varying by about 10 to 20 percent), and the check that proves it. All numbers come from `tests/run.sh` on a Spring Boot 3.5 fixture project (`tests/fixtures/demo`: web, data-jpa, security, validation; Java 25), Neovim 0.12, jdt.ls 1.62, on the author's Mac. Your machine and a bigger project will differ. The logs of the runs behind the numbers are in `specs/002-p1-completion.md` and `specs/features/diagnostics-imports-actions.md`.
+Each row says what you get, the measured result (ranges come from the three consecutive full runs recorded in the specs. Later full runs, the Task 7 run (129 PASS) and the two final-review runs (135 PASS each, 0 FAIL), stayed inside these ranges give or take about 10 to 20 percent per single timing), and the check that proves it. All numbers come from `tests/run.sh` on a Spring Boot 3.5 fixture project (`tests/fixtures/demo`: web, data-jpa, security, validation; Java 25), Neovim 0.12, jdt.ls 1.62, on the author's Mac. Your machine and a bigger project will differ. The logs of the runs behind the numbers are in `specs/002-p1-completion.md` and `specs/features/diagnostics-imports-actions.md`.
 
 ### Completion speed and ranking
 
@@ -29,7 +29,7 @@ Each row says what you get, the measured result (ranges are the three consecutiv
 | First completion after jdt.ls is ready is not slow (warm-up on start) | 51 to 55 ms (400 ms). Before the warm-up it was 740 to 827 ms | `10_completion_latency` (`cold_first`, sent 1.0 s after ServiceReady) |
 | Expected item near the top | `@` gives `RestController` at 4 (was 6), `http.` gives `authorizeHttpRequests` at 2 (was 19), `repository.` gives `save` at 1 (was 42). `@Auto`, `@Rest`, `@Table(`, `@Column(` first or in the short list. Local variables and fields beat JDK types | `11_completion_ranking` |
 | Postfix templates (`http.cast`, `sysout`...) come after real members, `http.va` still finds `var` | rule checked | `11_completion_ranking` |
-| Members you use most in the project rank higher (IntelliJ style "most used"), counted with ripgrep | rule checked, rg failing or timing out keeps old counts | `11_completion_ranking`, `12_usage_index` |
+| Members you use most in the project rank higher (IntelliJ style "most used"), counted with ripgrep | rule checked, rg failing or timing out keeps old counts; a loose `.java` file with no build marker (`pom.xml`, `build.gradle*`, `settings.gradle*`, `.git`) is not counted, so `rg` never scans e.g. your home folder | `11_completion_ranking`, `12_usage_index` |
 | Less JDK noise: internal packages, `com.apple.*`, AspectJ internals, `java.awt.List` hidden, so `List` completes to `java.util.List` | `no_noise` cases a, s, m, List | `11_completion_ranking` |
 
 Why it is fast: measured, not guessed. What helped: postfix templates matched on their key and put last, project usage as a tie breaker after jdt.ls relevance, no `java.*` relevance bonus, fewer flooding items, a warm-up completion when jdt.ls is ready. What did not help is recorded too (ParallelGC, AppCDS, `maxResults` 50/1000, `lazyResolveTextEdit`), see the trial log in `specs/002-p1-completion.md`.
@@ -45,8 +45,8 @@ Time from opening a file until jdt.ls is ready: about 6.1 to 6.4 s on a warm wor
 | Fixing the code clears them | 471 to 511 ms | `30_diagnostics` |
 | A typing burst settles with no stale error | 633 to 683 ms | `30_diagnostics` |
 | Java 25 code (module imports, flexible constructors, `_`, record patterns, Markdown doc comments) has zero diagnostics | 490 to 521 ms | `30_diagnostics`, `20_java25` |
-| Unused-import warnings still show while the file has compile errors (jdt.ls drops them, IntelliJ does not) | shown 473 to 506 ms, pass cost on a 3000-line file p50 about 1.2 ms, p95 about 3 ms | `30_diagnostics` (`unused_pass_perf` and the unused-with-errors cases) |
-| A broken `pom.xml` (malformed, missing artifact) shows a visible notification, a fixed one clears it automatically | error plus notice in 196 to 318 ms (malformed), 638 to 997 ms (missing artifact), fixed clean in 364 to 600 ms | `30_diagnostics` |
+| Unused-import warnings still show while the file has compile errors (jdt.ls drops them, IntelliJ does not) | shown 473 to 506 ms, pass cost on a 3000-line file p50 about 0.9 ms, p95 1.6 to 1.9 ms (100 passes, 5 runs; a `import module` line is never flagged) | `30_diagnostics` (`unused_pass_perf` and the unused-with-errors cases) |
+| A broken `pom.xml` (malformed, missing artifact) shows its error and a visible notification; after the fix its diagnostics clear on their own (the check asserts the diagnostics, not a "fixed" notice) | error plus notice in 196 to 211 ms (malformed), 638 to 688 ms (missing artifact), diagnostics cleared after the fix in 364 to 586 ms | `30_diagnostics` |
 
 Inline diagnostics are drawn by tiny-inline-diagnostic. They refresh when you leave insert mode (`update_in_insert = false`), so a half typed line does not flicker red.
 
@@ -228,7 +228,7 @@ Checked: the resulting list has `javax.swing.*` added and `java.awt.List` remove
 
 ```
 nvim/
-  init.lua                 sets up /tmp/nv4j paths and the LSP log, then lazy.nvim
+  init.lua                 sets up the nv4j paths (/tmp/nv4j, ~/.cache/nv4j) and the LSP log, then lazy.nvim
   lazyvim.json             LazyVim extras: telescope, neo-tree, blink, mini-surround, dap.core, lang.java
   lazy-lock.json           pinned plugin versions
   lua/config/              options.lua, keymaps.lua, autocmds.lua, lazy.lua
@@ -246,7 +246,7 @@ nvim/
     unused_imports.lua     unused-import warnings while the file has errors
     buildfile.lua          notifications for broken pom.xml / build.gradle
     codegen.lua            field pickers preselect all fields
-    paths.lua              /tmp/nv4j directories
+    paths.lua              log dirs (/tmp/nv4j) and jdt.ls workspace dirs (~/.cache/nv4j)
   lua/util/                profile.lua (:CompletionProfile), java_scaffold.lua (new file template)
 specs/                     001 architecture, 002 P1 numbers and trial log, features/*.md
 tests/                     run.sh, checks/, fixtures/, lib/
@@ -261,16 +261,16 @@ NV4J_CHECKS='3*' tests/run.sh         # a glob works too
 NV4J_PATH_JDK=25 tests/run.sh         # friendly case: JDK 25 first on PATH (default is the hostile 21)
 ```
 
-It needs `~/.config/nv4j` linked (above), a JDK 25 (to compile the fixture) and Maven. It installs jdt.ls into Nv4J's own Mason directory if it is missing, prints only PASS/FAIL lines, and writes the full output to `/tmp/nv4j/logs/test-<timestamp>.log`. Exit code is 0 only if everything passed.
+It needs `~/.config/nv4j` linked (above), a JDK 25 (to compile the fixture) and Maven. It installs jdt.ls into Nv4J's own Mason directory if it is missing, prints only PASS/FAIL/SKIP lines plus one `DONE <check> <passed> <failed>` line per check, and writes the full output to `/tmp/nv4j/logs/test-<timestamp>.log`. Exit code is 0 only if everything passed. A check that stops before its `DONE` line (an error outside its guarded cases) counts as FAIL, with its last output lines shown, so missing cases never pass silently. Each run moves the previous `latency.jsonl` to `latency.prev.jsonl`, so the samples file holds one run.
 
 The checks (each file lists its cases at the top):
 
 | Check | Covers |
 |-------|--------|
-| `00_boot`, `01_jdtls_ready` | config loads as `nv4j`, paths, jdt.ls attaches and imports with zero errors |
+| `00_boot`, `01_jdtls_ready` | config loads as `nv4j`, paths (logs in `/tmp/nv4j`, jdt.ls workspace in `~/.cache/nv4j`), jdt.ls attaches and imports with zero errors |
 | `10_completion_latency` | warm and cold latency against budgets |
 | `11_completion_ranking` | where the expected item sits, noise and snippet rules |
-| `12_usage_index` | the ripgrep counts and their failure handling |
+| `12_usage_index` | the ripgrep counts, their failure handling, no count for a loose file outside a project |
 | `20_java25` | JDK selection, Java 25 and Java 21 projects |
 | `30_diagnostics` | diagnostics, build file errors, unused imports with errors |
 | `31_imports` | auto-import, grouping, organize imports |
@@ -286,15 +286,17 @@ Not measurable headless, so you decide by feel in a real session: menu drawing a
 
 ## Logs
 
-Everything temporary is under `/tmp/nv4j/` (macOS clears `/tmp` from time to time, nothing there is needed after a run):
+Logs and test output are under `/tmp/nv4j/` (macOS clears `/tmp` on reboot and after a few days; none of it is needed after a run). The jdt.ls workspace and config copy are not temporary (losing them means a full re-import), so they live in Neovim's cache dir, `~/.cache/nv4j/` (`stdpath("cache")` for `NVIM_APPNAME=nv4j`):
 
 | Path | Content |
 |------|---------|
 | `/tmp/nv4j/logs/test-<timestamp>.log` | full output of `tests/run.sh` |
 | `/tmp/nv4j/logs/lsp.log` | Neovim LSP client log |
-| `/tmp/nv4j/logs/latency.jsonl` | timing samples written by the checks |
-| `/tmp/nv4j/jdtls-data/<project>-<hash>/` | jdt.ls workspace; its own log is `.metadata/.log` inside |
-| `/tmp/nv4j/jdtls-config/<project>-<hash>/` | jdt.ls writable config copy |
+| `/tmp/nv4j/logs/latency.jsonl` | timing samples of the last `tests/run.sh` (the run before: `latency.prev.jsonl`) |
+| `~/.cache/nv4j/jdtls-data/<project>-<hash>/` | jdt.ls workspace (project index), kept across reboots; its own log is `.metadata/.log` inside |
+| `~/.cache/nv4j/jdtls-config/<project>-<hash>/` | jdt.ls writable config copy, kept across reboots |
+
+The checks' temporary Maven projects (`/tmp/nv4j/pomcase`, `lombokcase`, `proj21`) also get their own workspace there (`<name>-<hash>`); deleting one only costs its next import.
 
 The test run keeps its blink.cmp state in `/tmp/nv4j/state` so your own accepted completions never change test results, and never receives yours.
 
@@ -302,10 +304,10 @@ The test run keeps its blink.cmp state in `/tmp/nv4j/state` so your own accepted
 
 | Symptom | What to do |
 |---------|-----------|
-| jdt.ls does not start | `<leader>cl` (LSP info), then read `/tmp/nv4j/logs/lsp.log` and `/tmp/nv4j/jdtls-data/<project>-<hash>/.metadata/.log`. Check `:Mason` that `jdtls` is installed. |
+| jdt.ls does not start | `<leader>cl` (LSP info), then read `/tmp/nv4j/logs/lsp.log` and `~/.cache/nv4j/jdtls-data/<project>-<hash>/.metadata/.log`. Check `:Mason` that `jdtls` is installed. |
 | Error "no JDK >= 21 found for jdtls. Searched: ..." | Install one: `sdk install java 25-amzn` (or any 21+), or set `JAVA_HOME` to a JDK 21+ before starting. The message lists the folders searched. |
 | No ranking boost from project usage | `rg` is not on `PATH`. `brew install ripgrep`. Everything else still works. |
-| Java files show strange old errors, or the project looks stuck | Quit Neovim, `rm -rf /tmp/nv4j/jdtls-data`, start again (the next start re-imports, about 15 s). |
+| Java files show strange old errors, or the project looks stuck | Quit Neovim, delete that project's workspace `~/.cache/nv4j/jdtls-data/<project>-<hash>` (or all of `~/.cache/nv4j/jdtls-data`), start again (the next start re-imports, about 15 s). |
 | Red `pom.xml` notification | Read it, it is jdt.ls's reason (malformed XML, missing artifact). Fix the pom; it reloads on save with no prompt. |
 | First start errors about tree-sitter parsers | Install the CLI: `brew install tree-sitter-cli`, then `:TSUpdate`. |
 | `tests/run.sh`: "symlink missing" | Run the `ln -s` step from Install. |
@@ -315,14 +317,14 @@ The test run keeps its blink.cmp state in `/tmp/nv4j/state` so your own accepted
 
 - **Accept can wait up to about 0.8 s** the first time you accept a well documented type (`List`, `HashMap`, `ObjectMapper`) that the doc popup has not loaded yet. jdt.ls sends the auto-import only together with the javadoc, and blink waits up to 1.5 s for it so the import is never lost. Planned fix: apply the import asynchronously when the late resolve returns (`specs/features/diagnostics-imports-actions.md`, "Planned follow-ups"), with the P3 plan.
 - **Frecency can blur ranking.** blink.cmp remembers what you accepted and boosts those labels, even with an empty prefix. After accepting `List` several times, `@` can show annotation noise first and push `RestController` far down. The checks are isolated from this, your own session is not. Planned: weight jdt.ls relevance and project usage above frecency for Java (`specs/002-p1-completion.md`, Follow-ups).
-- **Usage counts are by name**, not resolved references: `save` on any receiver counts. They need `rg`.
+- **Usage counts are by name**, not resolved references: `save` on any receiver counts. They need `rg`. A loose file outside any project (no `pom.xml`, `build.gradle*`, `settings.gradle*`, `.git` in its folder) gets no counts.
 - **Prefix-less `@`** gives `RestController` at 4 because the project uses annotations. In a project that has never used an annotation the list is jdt.ls's order. Typing one letter fixes it.
 - **Unused local in a method that has an error** is not reported (jdt.ls skips that method). Unused imports are handled (Nv4J's own pass). That pass also treats a fully qualified use or the same name used as a local as a use, so it can miss an unused import (a false negative, not a false alarm).
 - **Cosmetic gaps vs IntelliJ:** a blank line between every import group, `Objects.hash(name, Integer.valueOf(age))`, `toString` without quotes around strings, a numbered prompt for field selection.
 - **Cold request edge:** the 400 ms first-completion budget is measured 1 s after jdt.ls is ready. A completion in that first second, or right after a `pom.xml` change reloads the project in the same session, can still cost 0.7 to 0.9 s once. A first-ever import of a project takes longer (about 15 s).
 - **Only the project's own `pom.xml` and `.sdkmanrc` decide the project JDK.** A `release` inherited from a parent pom (not the Spring Boot starter parent) is not seen and falls back to `$JAVA_HOME` or the newest JDK.
 - **Format-on-save is off** (`vim.g.autoformat = false`), and the Prettier extra was dropped, so YAML/JSON/Markdown such as `application.yml` do not format on save. `<leader>cf` formats Java and XML through the language servers.
-- **Plugins update on their own:** lazy.nvim checks for updates in the background (it does not install them). `nvim/lazy-lock.json` pins what the tests ran with.
+- **Plugin update check in the background:** lazy.nvim's update checker (`checker.enabled = true`, `notify = false`) periodically runs a background `git fetch` for every plugin. It only checks, it never installs or updates anything; updates happen only when you run `:Lazy update`. `nvim/lazy-lock.json` pins what the tests ran with.
 - **Terminal needs:** `<C-m>` needs the kitty keyboard protocol, `<D-Left>`/`<D-Right>` and Cmd+bracket terminal keys are for kitty on macOS.
 - **Test harness limits:** the latency checks type each case in one step, not key by key (two cases cover the typed path); `lsp.complete` in the harness sends no completion context, the ranking path uses blink's own.
 

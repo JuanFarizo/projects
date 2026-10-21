@@ -1,8 +1,8 @@
 # 002 - P1 completion: budget, baseline, trials
 
-Status: Task 5 done. Every latency and ranking budget passes on 3 consecutive full runs (see "Final (Task 5)"); `cold_first` passes with a thin, load-dependent margin and is flagged for the user. Research and approach: `specs/features/completion-ranking.md`.
+Status: done (P1). Every latency and ranking budget passes on 3 consecutive full runs (see "Final (Task 5)" and "Fix round 1"). `cold_first`, pinned at ServiceReady + 1.0 s since fix round 1, is 44-59 ms over 16 runs (budget 400 ms). Budgets are confirmed in `specs/001-architecture.md` (D13, "Budgets and final P1 results"). Research and approach: `specs/features/completion-ranking.md`.
 
-## Budget (provisional)
+## Budget (confirmed)
 
 | Metric | Budget | Check |
 |--------|--------|-------|
@@ -10,7 +10,7 @@ Status: Task 5 done. Every latency and ranking budget passes on 3 consecutive fu
 | First completion request after jdtls is ready | <= 400 ms | same, `cold_first` |
 | Expected item rank in the order the user sees | top 5, plus the case's relative rule | `tests/checks/11_completion_ranking.lua` |
 
-These numbers are still "confirm with the user after baseline" (plan, Global Constraints). They were not changed in fix round 1. With Spring on the classpath, `cold_first` and three ranking cases break them, see "What the numbers show".
+These budgets were provisional until the Task 5 re-baseline and are now confirmed, unchanged (`specs/001-architecture.md`, D13). At the baseline below (before any tuning), `cold_first` and three ranking cases broke them, see "What the numbers show"; the final runs pass all of them.
 
 ## Fixture
 
@@ -21,7 +21,7 @@ These numbers are still "confirm with the user after baseline" (plan, Global Con
 
 ## Method
 
-- `tests/run.sh` runs each check in a fresh headless `nvim` (`NVIM_APPNAME=nv4j`) with a fresh jdtls process. The jdtls workspace in `/tmp/nv4j/jdtls-data` persists between runs, so the index is warm; the JVM is not.
+- `tests/run.sh` runs each check in a fresh headless `nvim` (`NVIM_APPNAME=nv4j`) with a fresh jdtls process. The jdtls workspace (then `/tmp/nv4j/jdtls-data`, now `~/.cache/nv4j/jdtls-data`) persists between runs, so the index is warm; the JVM is not.
 - Config under test: the unmodified copied config from Task 1 (blink.cmp v1.10.2 with the Rust matcher, jdt.ls 1.62.0, `maxResults = 200`, `filteredTypes = com.sun.*, sun.*, jdk.internal.*`, `debounce_text_changes = 500`). JDK: Corretto 25 pinned by `run.sh`.
 - Each case types its trigger into the buffer in memory only (never saved; the buffer is restored and marked unmodified after each case), so the fixture on disk is unchanged. Helpers: `tests/lib/completion.lua`.
 - Latency: per case, 1 first request (reported as "first", cold for that case), 3 warm-up requests (discarded), then 90 timed samples. Before every request the case line is set again, so jdtls receives a `didChange` and has to reconcile, like after a keystroke. The time is the full `textDocument/completion` round trip seen by Neovim (`lsp.complete`). Every request must return without error (`not r.err`, first request included). p50/p95/max use nearest rank. Samples go to `/tmp/nv4j/logs/latency.jsonl` as `{"case","ms","count"}`, plus `<case>.first`, `<case>.blink_sort`, `cold_first` and `jdtls_import`.
@@ -134,9 +134,9 @@ Checks 00 and 01 PASS in all runs. Check 10 FAILs only on `cold_first`; check 11
 
 JDK-only classpath, 30 samples per run x 3 (logs `test-20261020-181643/-181714/-181745.log`): pooled warm p95 `system_members` 20.9, `java_util_pkg` 39.4, `new_person_ctor` 12.8, `annotation_list` 35.3, `identifier_prefix` 26.6 ms; `cold_first` (`System.`) 109-127 ms; all four ranking cases rank 1. Every budget passed by 3x+, which is why the fixture was replaced: it could not tell good config from bad.
 
-## Budget decision needed
+## Budget decision needed (at baseline; since decided)
 
-Keep the provisional budgets (not weakened). Open for the user before Task 5: whether `cold_first` <= 400 ms is the right target (it is now the only latency budget that fails), and whether the ranking expectation for prefix-less lists (`@`) should stay at top 5.
+Decided: budgets kept unchanged and confirmed (`specs/001-architecture.md`, D13); `cold_first` passes since fix round 1. What was open at baseline: keep the provisional budgets (not weakened). Open for the user before Task 5: whether `cold_first` <= 400 ms is the right target (it was then the only latency budget that failed), and whether the ranking expectation for prefix-less lists (`@`) should stay at top 5.
 
 ## Final (Task 5)
 

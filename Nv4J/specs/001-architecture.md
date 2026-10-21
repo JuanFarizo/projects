@@ -1,6 +1,6 @@
 # 001 - Architecture and workflow
 
-Status: P1 confirmed and built (all 9 checks pass, 129 PASS on the last full run). P2 to P5 not started. Source of truth for Nv4J. Later specs must not contradict this file. User-facing summary: `README.md` (keep both consistent; each later plan updates the README Capabilities section in its last task).
+Status: P1 confirmed and built (all 9 checks pass, 135 PASS on the last full runs). P2 to P5 not started. Source of truth for Nv4J. Later specs must not contradict this file. User-facing summary: `README.md` (keep both consistent; each later plan updates the README Capabilities section in its last task).
 
 ## Goal
 
@@ -16,7 +16,7 @@ D1 to D6 are confirmed by P1 (nothing was reversed). D7 to D13 are decisions tak
 | D2 | Maven is first-class. Gradle is supported but second. | User | Confirmed. Gradle is untested (P4). |
 | D3 | The existing `~/.config/nvim` is never modified. | User | Confirmed. |
 | D4 | Config lives in this repo under `nvim/` and runs as a separate Neovim app named `nv4j`. | User | Confirmed. `~/.config/nv4j` is a symlink to `nvim/`. |
-| D5 | Logs and temporary test output live under `/tmp/nv4j/`. | User | Confirmed (`nvim/lua/nv4j/paths.lua`). |
+| D5 | Logs and temporary test output live under `/tmp/nv4j/`. The jdt.ls workspace (`-data`) and its writable `-configuration` copy are not temporary and live under `stdpath("cache")` (`~/.cache/nv4j/jdtls-data`, `~/.cache/nv4j/jdtls-config`): macOS empties `/tmp` on reboot and after 3 days, which forces a full re-import and can corrupt a running index. | User (`/tmp/nv4j`); final review (jdt.ls dirs) | Confirmed (`nvim/lua/nv4j/paths.lua`, check `00_boot`). |
 | D6 | Priorities: P1 completion/diagnostics/imports/code actions/Java 25; P2 Spring awareness, run, debug; P3 tests, scaffolding, refactors; P4 Gradle, Spring navigation, JPA checks; P5 everything else. | User | Confirmed. P1 done. |
 | D7 | Nothing is pinned to one JDK. JDKs come from SDKMAN (`~/.sdkman/candidates/java`), `~/Library/Java/JavaVirtualMachines`, `/Library/Java/JavaVirtualMachines`. jdt.ls runs on `$JAVA_HOME` if >= 21, else the newest >= 21; the project JDK follows `.sdkmanrc` and the pom. | User (Task 4) | Built: `nvim/lua/nv4j/jdk.lua`, `specs/features/jdk-java25.md`. |
 | D8 | Unused-import warnings must show even when the file has compile errors (jdt.ls/ECJ drops them then, IntelliJ keeps them). | User (Task 6) | Built: `nvim/lua/nv4j/unused_imports.lua`. |
@@ -37,13 +37,13 @@ Budgets are confirmed (they were provisional until the Task 5 re-baseline). Meas
 | First completion, 1.0 s after jdt.ls ServiceReady | <= 400 ms | 51 to 55 ms (baseline 740 to 827 ms) | `10_completion_latency` |
 | Expected item rank in the order the user sees | top 5 plus a relative rule | `@` `RestController` 4 (jdt.ls order 6), `http.` `authorizeHttpRequests` 2 (baseline 19), `repository.` `save` 1 (baseline 42) | `11_completion_ranking` |
 | Edit to diagnostics in `vim.diagnostic` | <= 3 s | errors 462 to 476 ms, unused 674 to 684 ms, fix clears 471 to 511 ms, burst settles 633 to 683 ms, Java 25 file clean 490 to 521 ms | `30_diagnostics` |
-| Unused imports shown while the file has errors | <= 3 s | 473 to 506 ms; pass cost on 3000 lines p95 about 3 ms (budget 5 ms) | `30_diagnostics` |
+| Unused imports shown while the file has errors | <= 3 s | 473 to 506 ms; pass cost on 3000 lines p95 1.6 to 1.9 ms over 100 passes, 5 runs (budget 5 ms) | `30_diagnostics` |
 | Accept a completion with its import | <= 1.5 s | first `List` 685 to 746 ms, second type 379 to 439 ms | `31_imports` |
 | One code action round trip | <= 1 s | 9 to 120 ms | `32_code_actions` |
 | jdt.ls open to ready | none (info) | about 6.1 to 6.4 s warm workspace, about 15 s first import | `01_jdtls_ready`, `10_completion_latency` |
 | Java 25 / Java 21 project correctness, JDK discovery | zero errors, right runtime | pass with `JAVA_HOME` unset and JDK 21 first on `PATH` | `20_java25` |
 
-Last full `tests/run.sh` (Task 7): 129 PASS, 0 FAIL, 0 SKIP (00: 8, 01: 2, 10: 17, 11: 26, 12: 6, 20: 10, 30: 22, 31: 10, 32: 28). Log `/tmp/nv4j/logs/test-20261020-223125.log`.
+Last full `tests/run.sh` runs (final review, two consecutive): 135 PASS, 0 FAIL, 0 SKIP each, a `DONE` line for every check (00: 11, 01: 2, 10: 17, 11: 26, 12: 7, 20: 10, 30: 24, 31: 10, 32: 28). Logs `/tmp/nv4j/logs/test-20261020-225853.log`, `-230137.log`. Earlier (Task 7): 129 PASS, log `test-20261020-223125.log`.
 
 Feature specs: [`specs/002-p1-completion.md`](002-p1-completion.md) (budget, baseline, trials), [`specs/features/completion-ranking.md`](features/completion-ranking.md), [`specs/features/diagnostics-imports-actions.md`](features/diagnostics-imports-actions.md), [`specs/features/jdk-java25.md`](features/jdk-java25.md).
 
@@ -88,7 +88,7 @@ Nv4J/
 `~/.config/nv4j` is a symlink to `Nv4J/nvim`. With `NVIM_APPNAME=nv4j`, Neovim reads that directory instead of `~/.config/nvim`.
 
 ```sh
-ln -s /Users/juan.farizo/Documents/projects/Nv4J/nvim ~/.config/nv4j   # once
+ln -s "$PWD/nvim" ~/.config/nv4j   # once, from <repo> (the Nv4J folder)
 NVIM_APPNAME=nv4j nvim                                                  # use it
 nvim                                                                    # old config, unchanged
 ```
@@ -113,17 +113,17 @@ Principle: build, measure, compare against the spec number, iterate.
 
 ## Logs and temp files
 
-All under `/tmp/nv4j/`:
+Logs and test output under `/tmp/nv4j/`; the jdt.ls workspace and config copy under `~/.cache/nv4j/` (`stdpath("cache")`, follows `NVIM_APPNAME`):
 
 | Path | Content |
 |------|---------|
 | `/tmp/nv4j/logs/test-<timestamp>.log` | output of `tests/run.sh` |
 | `/tmp/nv4j/logs/lsp.log` | Neovim LSP client log |
-| `/tmp/nv4j/jdtls-data/<project>-<hash>/.metadata/.log` | JDTLS server log (inside the workspace) |
-| `/tmp/nv4j/logs/latency.jsonl` | completion timing samples |
-| `/tmp/nv4j/jdtls-data/`, `/tmp/nv4j/jdtls-config/` | JDTLS workspace data and writable config copy |
+| `~/.cache/nv4j/jdtls-data/<project>-<hash>/.metadata/.log` | JDTLS server log (inside the workspace) |
+| `/tmp/nv4j/logs/latency.jsonl` | timing samples of the last `tests/run.sh` (previous run: `latency.prev.jsonl`, rotated by `run.sh`) |
+| `~/.cache/nv4j/jdtls-data/`, `~/.cache/nv4j/jdtls-config/` | JDTLS workspace data and writable config copy (persistent: losing them forces a full re-import) |
 
-`/tmp` is cleared by macOS from time to time. Nothing there is needed after a run finishes.
+`/tmp` is cleared by macOS on reboot and after a few days. Nothing under `/tmp/nv4j` is needed after a run finishes; the jdt.ls dirs are therefore not there.
 
 ## Open items
 

@@ -150,6 +150,6 @@ What was tried and dropped is in the 002 trial log.
 
 ## Pass/fail criteria
 
-- Latency: p95 <= 150 ms warm per case, <= 400 ms for the first request after jdtls is ready (provisional, see 002).
+- Latency: p95 <= 150 ms warm per case, <= 400 ms for the first request after jdtls is ready (confirmed, `specs/001-architecture.md` D13).
 - Ranking: expected item in the top 5 of the blink-visible order, plus the relative rule of each case (local above keywords, field above non-project types).
 - Task 5 added: ranks measured through blink's own pipeline (`M.menu` in `tests/lib/completion.lua`), `menu_p95` under the same 150 ms budget, typed-prefix and postfix-key cases, and rule cases (snippets after every member after `.`; no filtered type or qualified package for a bare identifier).
