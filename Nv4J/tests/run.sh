@@ -96,7 +96,10 @@ for check in "${CHECKS[@]}"; do
   # qa! and no stdin: a check that dies with a buffer still modified in memory must never reach
   # a "Save changes?" prompt (an aborted manual run answered it at EOF and saved in-memory test
   # edits into the fixture).
-  out="$(NV4J_CHECK="${name%.lua}" nvim --headless --cmd "set rtp+=$HERE/lib" -c "lua package.path='$HERE/lib/?.lua;'..package.path" -c "luafile $check" -c "qa!" </dev/null 2>&1)"
+  # NV4J_SPRING=0: the Spring Boot LS off from startup (g:nv4j_spring = false), for A/B timing runs.
+  spring_off=()
+  [ "${NV4J_SPRING:-1}" = "0" ] && spring_off=(--cmd "let g:nv4j_spring = v:false")
+  out="$(NV4J_CHECK="${name%.lua}" nvim --headless ${spring_off[@]+"${spring_off[@]}"} --cmd "set rtp+=$HERE/lib" -c "lua package.path='$HERE/lib/?.lua;'..package.path" -c "luafile $check" -c "qa!" </dev/null 2>&1)"
   crc=$?
   # Full output goes to the log (NV4J_RUNNER makes lsp.report skip its own append);
   # console shows just PASS/FAIL/DONE, everything else (jdtls progress noise, errors) goes to the log.

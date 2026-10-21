@@ -1,13 +1,14 @@
 -- Spring Boot language server (decision D14, specs/features/spring-language-server.md):
 -- JavaHello/spring-boot.nvim (pinned in plugins/spring.lua) does the LSP protocol glue (sts/* forwarders
 -- to jdt.ls, classpath listener, language ids); nv4j decides where and how it runs:
---  * only for Spring Boot projects (a pom.xml / build.gradle(.kts) that names Spring Boot, at the project
---    root or in a module below it); plain Maven/Gradle projects and loose files get no client and no process;
+--  * only for Spring Boot projects (nv4j/root.lua boot_project, the same rule as run: at the project root or
+--    in a module below it); plain Maven/Gradle projects and loose files get no client and no process;
 --  * the same project root as jdt.ls (nv4j/root.lua), not the plugin's .git/mvnw markers;
 --  * on a JDK >= 21 from nv4j.jdk (never PATH or a stale $JAVA_HOME);
 --  * the server jar and the jdt.ls extension bundles from the Mason package `vscode-spring-boot-tools`
 --    (no version in any path: share/ links and the package's own package.json).
--- vim.g.nv4j_spring = false turns it off (checked whenever a buffer would attach and when jdt.ls starts).
+-- vim.g.nv4j_spring = false turns it off: set at startup (options.lua) the plugin never loads (plugins/spring.lua
+-- cond); set later, it is checked whenever a buffer would attach and when jdt.ls starts.
 local M = {}
 
 local PKG = "vscode-spring-boot-tools"
@@ -56,44 +57,13 @@ function M.jars()
   return out
 end
 
-local BUILD_FILES = { "pom.xml", "build.gradle", "build.gradle.kts" }
-local SKIP_DIRS = { target = true, build = true, out = true, bin = true, node_modules = true, src = true }
-
-local function names_boot(path)
-  local f = io.open(path, "r")
-  if not f then return false end
-  local s = f:read("*a"):gsub("<!%-%-.-%-%->", "")
-  f:close()
-  return s:find("spring-boot", 1, true) ~= nil or s:find("org.springframework.boot", 1, true) ~= nil
-end
-
 local boot_cache = {}
---- Whether `root` is a Spring Boot project: one of its build files, or a module's (2 levels down, at
---- most 40 build files read), names Spring Boot. Memoized per root for the session.
+--- Whether `root` is a Spring Boot project (nv4j/root.lua boot_project: the shared rule, root and modules
+--- 2 levels down). Memoized per root for the session.
 function M.is_boot(root)
   if not root then return false end
-  if boot_cache[root] ~= nil then return boot_cache[root] end
-  local found, read, queue, i = false, 0, { { root, 0 } }, 1
-  while not found and i <= #queue and read < 40 do
-    local dir, depth = queue[i][1], queue[i][2]
-    i = i + 1
-    for _, name in ipairs(BUILD_FILES) do
-      local p = dir .. "/" .. name
-      if vim.uv.fs_stat(p) then
-        read = read + 1
-        if names_boot(p) then found = true; break end
-      end
-    end
-    if not found and depth < 2 then
-      for name, kind in vim.fs.dir(dir) do
-        if kind == "directory" and name:sub(1, 1) ~= "." and not SKIP_DIRS[name] then
-          queue[#queue + 1] = { dir .. "/" .. name, depth + 1 }
-        end
-      end
-    end
-  end
-  boot_cache[root] = found
-  return found
+  if boot_cache[root] == nil then boot_cache[root] = require("nv4j.root").boot_project(root) end
+  return boot_cache[root]
 end
 
 --- The Spring Boot project root for a file, or nil (no build file above it, not Spring Boot, or off).

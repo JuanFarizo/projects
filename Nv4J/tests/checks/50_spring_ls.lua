@@ -1,6 +1,7 @@
 -- P2 Spring Boot language server. Run via tests/run.sh. Spec: specs/features/spring-language-server.md.
 --  attached    : an LSP client named `spring-boot` is attached to the fixture's application.properties
---                and initialized <= 10 s after jdt.ls is ready (budget in specs/001-architecture.md).
+--                and initialized <= 10 s after jdt.ls is ready (budget in specs/001-architecture.md). The server
+--                starts with the first Java buffer, so this overlaps jdt.ls's import: "initialized", not indexed.
 --  props_first : the first completion on `server.po`, sent 1.0 s after the client is initialized (same
 --                pin as P1's cold_first, D13: a request in the same millisecond finds the server's
 --                property index still empty), lists `server.port`, round trip <= 400 ms.
@@ -16,6 +17,11 @@
 --  plain_maven : a plain Maven project (release 21, no Spring Boot, /tmp/nv4j/plain21) gets jdt.ls but no
 --                spring-boot client (Java or application.properties), no Spring jars, no second process.
 --  loose_file  : a loose .java file gets no spring-boot client and no process.
+--  detect      : the shared Spring Boot rule (nv4j/root.lua): Gradle version catalog = Boot, a pom with only a
+--                spring-boot.version property or Boot in a comment = not Boot, an aggregator whose module is Boot
+--                = Boot project; nv4j.run and nv4j.spring agree.
+--  off_at_start: a child nvim started with g:nv4j_spring = false loads no plugin: no :SpringBoot command, no
+--                vscode-spring-boot / sts commands in vim.lsp.commands (positive control: same child without the flag).
 -- Timings: /tmp/nv4j/logs/latency.jsonl (spring_ready, spring_props_first, spring_props_warm_p95,
 -- spring_hover). The fixture file is only edited in memory and restored.
 vim.o.confirm = false
@@ -49,7 +55,7 @@ local ready_ms = E.now() - t_ready
 E.log("spring_ready", client and ready_ms or -1, 1)
 local names = table.concat(vim.tbl_map(function(c) return c.name end, vim.lsp.get_clients({ bufnr = pbuf })), ",")
 lsp.report(P .. "attached", client ~= nil and ready_ms <= READY_BUDGET_MS,
-  client and ("ready %.0f ms after jdt.ls (budget %d), filetype %s"):format(ready_ms, READY_BUDGET_MS, vim.bo[pbuf].filetype)
+  client and ("initialized %.0f ms after jdt.ls ready (budget %d), filetype %s"):format(ready_ms, READY_BUDGET_MS, vim.bo[pbuf].filetype)
     or ("no '%s' client on application.properties after %.0f ms (filetype %s, clients: %s)"):format(
       NAME, ready_ms, vim.bo[pbuf].filetype, names ~= "" and names or "none"))
 if not client then
@@ -222,4 +228,69 @@ local ok2, err2 = pcall(function()
     ("loose Loose.java: spring-boot client %s, Spring LS processes %d"):format(lc and "ATTACHED" or "none", #spring_pids()))
 end)
 if not ok2 then lsp.report(P .. "gating", false, "error: " .. tostring(err2)) end
+
+local ok3, err3 = pcall(function()
+  local root = require("nv4j.root")
+  local tmp = "/tmp/nv4j/50_detect"
+  vim.fn.delete(tmp, "rf")
+  local function project(name, files)
+    local d = tmp .. "/" .. name
+    for f, body in pairs(files) do
+      vim.fn.mkdir(vim.fs.dirname(d .. "/" .. f), "p")
+      vim.fn.writefile(vim.split(body, "\n"), d .. "/" .. f)
+    end
+    return d
+  end
+  local cases = {
+    { "fixture", fixture, true },
+    { "catalog", project("catalog", {
+      ["settings.gradle.kts"] = 'rootProject.name = "c"',
+      ["build.gradle.kts"] = "plugins {\n  java\n  alias(libs.plugins.spring.boot)\n}\ndependencies { implementation(libs.spring.boot.starter.web) }",
+      ["gradle/libs.versions.toml"] = '[plugins]\nspring-boot = { id = "org.springframework.boot", version = "3.5.13" }',
+    }), true },
+    { "catalog_toml_only", project("catalog2", {
+      ["build.gradle"] = "plugins { id 'java' }\ndependencies { implementation libs.web }",
+      ["gradle/libs.versions.toml"] = '[libraries]\nweb = { module = "org.springframework.boot:spring-boot-starter-web" }',
+    }), true },
+    { "property_only", project("prop", { ["pom.xml"] = "<project><properties><spring-boot.version>3.5.13</spring-boot.version></properties><groupId>x</groupId></project>" }), false },
+    { "comment_only", project("comment", { ["pom.xml"] = "<project><!-- <groupId>org.springframework.boot</groupId> --><groupId>x</groupId></project>" }), false },
+    { "starter_artifact", project("starter", { ["pom.xml"] = "<project><dependencies><dependency><groupId>${boot.group}</groupId><artifactId>spring-boot-starter-web</artifactId></dependency></dependencies></project>" }), true },
+  }
+  local agg = project("agg", { ["pom.xml"] = "<project><groupId>x</groupId><modules><module>app</module></modules></project>",
+    ["app/pom.xml"] = "<project><parent><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-parent</artifactId></parent></project>" })
+  local bad, got = {}, {}
+  for _, c in ipairs(cases) do
+    local r = root.boot_build(c[2]) == true
+    local s_ = require("nv4j.spring").is_boot(c[2]) == true
+    local run_ = require("nv4j.run").is_boot(c[2]) == true
+    got[#got + 1] = ("%s=%s"):format(c[1], tostring(r))
+    if r ~= c[3] or s_ ~= c[3] or run_ ~= c[3] then bad[#bad + 1] = ("%s (want %s: rule %s spring %s run %s)"):format(c[1], tostring(c[3]), tostring(r), tostring(s_), tostring(run_)) end
+  end
+  local agg_ok = root.boot_build(agg) == false and require("nv4j.spring").is_boot(agg) == true
+  got[#got + 1] = "aggregator(module Boot)=" .. tostring(agg_ok)
+  lsp.report(P .. "detect", #bad == 0 and agg_ok, table.concat(got, ", ") .. (#bad > 0 and ("; WRONG: " .. table.concat(bad, "; ")) or ""))
+
+  -- The flag set before startup: the plugin is not loaded (lazy.nvim cond). Unnamed buffer with filetype java
+  -- (lazy ft trigger; nv4j.debug starts no jdt.ls for it) and, flag off only, the fixture's application.properties.
+  local probe = table.concat({
+    "enew", "setfiletype java",
+    -- the properties file only with the flag off (with it on it would start a Spring LS in the child)
+    "if get(g:, 'nv4j_spring', 1) is v:false | edit " .. fixture .. "/src/main/resources/application.properties | endif",
+    "lua vim.wait(1500)",
+    [[lua local n=0 for k in pairs(vim.lsp.commands) do if tostring(k):find('spring%-boot') or tostring(k):find('^sts') then n=n+1 end end ]]
+      .. [[io.stdout:write(('PROBE cmd=%d lsp_cmds=%d loaded=%s\n'):format(vim.fn.exists(':SpringBoot'), n, tostring(package.loaded['spring_boot'] ~= nil)))]],
+  }, "\n")
+  vim.fn.writefile(vim.split(probe, "\n"), "/tmp/nv4j/50_probe.vim")
+  local function child(flag)
+    local args = { "nvim", "--headless" }
+    if flag then vim.list_extend(args, { "--cmd", "let g:nv4j_spring = v:false" }) end
+    vim.list_extend(args, { "-S", "/tmp/nv4j/50_probe.vim", "+qa!" })
+    local out = vim.fn.system(args)
+    return out:match("PROBE[^\n]*") or ("no probe line: " .. out:sub(-200):gsub("%s+", " "))
+  end
+  local off, on = child(true), child(false)
+  lsp.report(P .. "off_at_start", off:find("cmd=0 lsp_cmds=0 loaded=false", 1, true) ~= nil and on:find("cmd=2 lsp_cmds=[1-9]%d* loaded=true") ~= nil,
+    ("g:nv4j_spring=false: %s | default (control): %s"):format(off, on))
+end)
+if not ok3 then lsp.report(P .. "detect", false, "error: " .. tostring(err3)) end
 lsp.finish()

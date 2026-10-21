@@ -1,6 +1,6 @@
 -- Run Spring Boot (specs/features/run.md, check 41_run).
---  - Boot is detected from the build file: groupId org.springframework.boot in pom.xml (parent, plugin,
---    starter or BOM, outside comments), or the org.springframework.boot plugin in build.gradle(.kts).
+--  - Boot is detected from the build file with the rule shared with the Spring Boot LS (nv4j/root.lua
+--    boot_build: Boot groupId/starter/plugin/BOM in pom.xml, Boot plugin, starters or catalog aliases in Gradle).
 --  - With jdt.ls attached (the normal case) the app runs as `java -cp <jdt.ls classpath> <main class>`
 --    after the same source refresh + incremental build as a debug launch (nv4j.debug). Measured faster
 --    than `mvn spring-boot:run` (2.5 s vs 5 to 7 s to "Started", and Maven had to resolve its plugin
@@ -46,21 +46,9 @@ end
 
 local function notify(msg, level) vim.notify(msg, level or vim.log.levels.INFO, TITLE) end
 
---- Is the project at `root` a Spring Boot project? Maven first, then Gradle.
+--- Is the project at `root` a Spring Boot project? Maven first, then Gradle. Shared rule: nv4j/root.lua boot_build.
 ---@return boolean, "maven"|"gradle"|nil
-function M.is_boot(root)
-  if not root then return false end
-  local pom = read(root .. "/pom.xml")
-  if pom then
-    pom = pom:gsub("<!%-%-.-%-%->", "")
-    if pom:find("<groupId>%s*org%.springframework%.boot%s*</groupId>") then return true, "maven" end
-  end
-  for _, f in ipairs({ "build.gradle", "build.gradle.kts" }) do
-    local g = read(root .. "/" .. f)
-    if g and g:find("org%.springframework%.boot") then return true, "gradle" end
-  end
-  return false
-end
+function M.is_boot(root) return require("nv4j.root").boot_build(root) end
 
 --- The command that runs the app through the build tool (no jdt.ls needed). Maven first.
 ---@return string[]|nil cmd, table env extra environment
