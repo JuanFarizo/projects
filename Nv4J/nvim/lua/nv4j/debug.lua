@@ -247,7 +247,8 @@ function M.on_attach(client)
   local adapter = dap.adapters.java
   M._adapter = function(callback, config, parent)
     if config.request ~= "launch" then return adapter(callback, config, parent) end
-    M.refresh_and_build(config.cwd, function() adapter(callback, config, parent) end)
+    -- config.nv4j_what names the launch in the build messages (nv4j.tests: "test run"/"test debug")
+    M.refresh_and_build(config.cwd, function() adapter(callback, config, parent) end, config.nv4j_what)
   end
   dap.adapters.java = M._adapter
   dap.listeners.on_config["nv4j_junit_launcher"] = M.junit_launcher

@@ -155,6 +155,8 @@ return {
         -- Java launch, no debuggee left after terminate. Runs after LazyVim's setup_dap, which
         -- registers the java adapter wrapped here.
         require("nv4j.debug").on_attach(client)
+        -- Test keys (nv4j/tests.lua) for this buffer, over LazyVim's <leader>tr/<leader>tt just added.
+        require("nv4j.tests").bind(args.buf)
       end
       -- The "Publish Diagnostics" / "Building" / "Validate documents" toasts
       -- (bottom-right, checkmark list) are jdtls's $/progress notifications,

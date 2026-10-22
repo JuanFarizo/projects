@@ -301,32 +301,13 @@ map("n", "<leader>sp", function()
   require("nv4j.spring_nav").pick()
 end, { desc = "Spring symbols (beans, request mappings)" })
 
--- ── Run the whole test suite via the project's actual build tool ───────────
--- nvim-jdtls's test runner (jdtls.dap: test_class/test_nearest_method/
--- pick_test, bound above under <leader>t) is file-scoped only — no
--- project-wide entry point exists in it. Only way to run everything is the
--- build tool itself; detect Maven vs Gradle from the project root (same
--- markers as root_dir in plugins/java.lua) instead of hardcoding one.
-map("n", "<leader>tp", function()
-  local root = vim.fs.root(0, { "pom.xml", "mvnw", "build.gradle", "build.gradle.kts", "gradlew" })
-  if not root then
-    vim.notify("No pom.xml/build.gradle found above this file", vim.log.levels.WARN)
-    return
-  end
-
-  local cmd
-  if vim.uv.fs_stat(root .. "/mvnw") then
-    cmd = { root .. "/mvnw", "test" }
-  elseif vim.uv.fs_stat(root .. "/pom.xml") then
-    cmd = { "mvn", "test" }
-  elseif vim.uv.fs_stat(root .. "/gradlew") then
-    cmd = { root .. "/gradlew", "test" }
-  else
-    cmd = { "gradle", "test" }
-  end
-
-  Snacks.terminal.open(cmd, { cwd = root, auto_close = false })
-end, { desc = "Run all tests (project build tool)" })
+-- ── Tests (nv4j/tests.lua, decision D21, check 60_tests_runner) ─────────────────────────────
+-- <leader>tr nearest, <leader>tt class, <leader>tp project (replaces the old `mvn test` terminal: results
+-- now in the editor), <leader>tf failed again, <leader>tl last again, <leader>to results (quickfix),
+-- <leader>td debug nearest. Global here; Java buffers get the same keys per buffer on attach
+-- (plugins/java.lua), over LazyVim's java extra keys. <leader>tT stays LazyVim's pick (nvim-jdtls).
+-- `mvn test` itself: <leader>tn opens a terminal.
+require("nv4j.tests").bind()
 
 -- ── LSP (additive aliases; LazyVim core already binds gd/gr/gI/gy/K/<leader>ca/<leader>cr) ──
 map("n", "<F2>", vim.lsp.buf.rename, { desc = "Rename symbol" })

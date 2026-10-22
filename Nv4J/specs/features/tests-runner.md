@@ -1,6 +1,6 @@
 # Feature: Test runner
 
-Priority: P3. Status: Task 0 done (research, fixture, failing check `60_tests_runner`); Task 2 builds it. Decision: D21 in `specs/001-architecture.md`. Spec: `specs/005-p3-tests-scaffold-refactor.md`. Check: `tests/checks/60_tests_runner.lua`. Product (Task 2): `nvim/lua/nv4j/tests.lua`, keys in `nvim/lua/config/keymaps.lua`.
+Priority: P3. Status: built in Task 2 (`60_tests_runner` 20 cases pass, 3 of 3 runs, see "Task 2"). Decision: D21 in `specs/001-architecture.md`. Spec: `specs/005-p3-tests-scaffold-refactor.md`. Check: `tests/checks/60_tests_runner.lua`. Product: `nvim/lua/nv4j/tests.lua`, keys in `nvim/lua/config/keymaps.lua` (global) and `nvim/lua/plugins/java.lua` (per Java buffer, on attach).
 
 ## Budget
 
@@ -60,3 +60,54 @@ Negative controls: n60a (Task 0) drops the `jdtls-tests` quickfix list and the `
 | t0-c | `E.keymap`: `maparg`, else the which-key queue (buffer or global spec) | `<leader>tr` "Run Nearest Test", `<leader>tt` "Run All Test" found | kept |
 | t0-d | n60a negative control (above) | `failure_shown` FAIL | evidence |
 | t0-e | surefire alternative for D21: `mvn -o -q test -Dtest='PriceCalculatorTest#totalMultiplies'` (JDK 25, offline, warm `~/.m2`), 2 runs | 4.5 s, 3.1 s, rc 0 (nearest through the bundle: 0.80 to 1.0 s warm); logs `/tmp/nv4j/logs/t0-surefire-{1,2}.log` | evidence: surefire rejected |
+| t2-a | java-test commands probed (`/tmp/nv4j/logs/t2-probe1.log`): `vscode.java.test.junit.argument` with `testLevel` 3 (project, `testNames` `{ "demo" }` or `{}`) and 4 (package) | both answer `errorMessage` "The input type of the launch configuration does not exist": project/package level does not work on 0.43.1 (the open item of Task 0, now verified). `testLevel` 5 with 2 class names and 6 with 2 method handlers answer `-testNameFile`: one JVM for a list. `findJavaProjects` + `findTestPackagesAndTypes` list a project's test classes (nested ones as children) | project = one launch per Java project and test kind with every top-level class |
+| t2-b | First `nv4j/tests.lua` (`t2-probe2.log`) | nearest 2.4 s first / 0.8 s warm, class 5/0/1 with the 3 invocations (`%TSTTREE` display `[1] quantity=1`) and the nested test, failing class 1/1 with quickfix line 22, project 7/1/1. Wrong: failed-only reran the whole class (1/1): a project run indexes classes only, so no method item was found; the build message said "Building before debug" for a plain run | fixed (t2-c, t2-d) |
+| t2-c | Failed-only fetches the method items of the failing files first (`findTestTypesAndMethods`) | 0/1, only `failsOnPurpose` (`t2-probe3.log`) | kept |
+| t2-d | `config.nv4j_what` read by P2's adapter wrapper (`nv4j/debug.lua`) for the build message | "Building before test run..." / "test debug"; `40_debug` `build_guard` still sees "Building before debug" (its configs have no label) | kept |
+| t2-e | `t2-probe3.log`: debug with a breakpoint, `dap.continue()` straight from the `stopped` listener | the JVM never resumed (nvim-dap had not taken the stop yet), the run hit the 120 s product timeout, and the started-but-unended test was counted as passed | product: an unended test is not counted any more; check: continue once `session.stopped_thread_id` is set (as `40_debug` does). Without a breakpoint the debug run ends in 1.3 s (`t2-probe4.log`, `-probe5.log`) |
+| t2-f | Non-compiling test class (`BrokenTest`, `int x = "text"`) and a Maven project without JUnit (`t2-probe3.log`) | build warns "has compile errors; launching anyway", the run reports 0/1 with `java.lang.Error: Unresolved compilation problem` at line 8 in about 1 s; no-JUnit project: "No tests found in PlainTest.java ..." and "No JUnit tests found in nojunit ..." at once (its jdt.ls import took 9 s) | kept |
+| t2-g | Check run 1 (`/tmp/nv4j/logs/test-20261022-090506.log`) | debug case timed out (t2-e); `F.restore` wipes the fixture buffers, the next case used a dead buffer | check reopens the buffer after the restore |
+| t2-h | Check run 2 (`-090941.log`) | timeout case got "cancelled" instead of "no result within": the timer cancelled the launch first and the launch's own error finished the run | timer finishes the run first, then cancels |
+| t2-i | Keys: rebinding at VimEnter (first design) | wrong for a real session: which-key loads at VeryLazy (after VimEnter, `vim_did_enter == 1`), so a VimEnter rebind runs before which-key creates LazyVim's queued keys | replaced by t2-j |
+| t2-j | Keys: on attach, LazyVim's queued `<leader>tr`/`<leader>tt` for that buffer are removed from which-key's queue (`_queue`, which-key `3aab214` pinned), then Nv4J's are bound per buffer; when which-key is already loaded its `add()` created LazyVim's keys synchronously and the bind replaces them | `keys_after_whichkey` (which-key loaded, VimEnter fired, queue processed) passes; control n60g fails it | kept |
+| t2-k | Check run 3 (`-091135.log`) | which-key's queue processing died on "Invalid buffer id: 1" (specs queued for a buffer the check wiped), so its load never finished | check prunes queued specs of invalid buffers before loading which-key (a headless artifact, see the check comment) |
+| t2-l | Check run 4 (`-091309.log`) | 20 of 20 PASS | kept |
+| t2-m | Key desc check by pattern only | n60g showed LazyVim's "Run Nearest Test" matches `[Nn]earest`: only `<leader>tt` was reported as overridden | the desc must equal Nv4J's (`nv4j.tests.keys`); n60g then reports both |
+
+## Task 2
+
+Mechanism (D21, one deviation): the java-test bundle commands nvim-jdtls uses (`findTestTypesAndMethods`, `findJavaProjects`, `findTestPackagesAndTypes`, `vscode.java.test.junit.argument`, `java.project.getClasspaths` test scope) are called directly from `nv4j/tests.lua`, and `dap.run` is called with Nv4J's own TCP server and parser. `jdtls.dap.experimental.run` was not reused: it always runs nvim-jdtls's result layer (`junit` namespace, its quickfix list, `print`) besides any callback, which would show two result sets. P2's path still applies to every launch: the `dap.adapters.java` wrapper (refresh + build, message "Building before test run/debug..."), the JUnit launcher swap (`on_config`), the JDT launching gate (client `request` wrapper). The JDK is `javaExec` = the default runtime of `nv4j.jdk.runtimes(root)` (the same rule as `nv4j.run`). Console `internalConsole` (output in the dap-repl, no terminal split per run); `noDebug = true` for runs, `false` for `debug = true`.
+
+Results: `%TSTTREE`/`%TESTS`/`%TESTE`/`%FAILED`/`%ERROR`/`%TRACES` by test id; `@Ignore: ` and `@AssumptionFailure: ` count as skipped; parameterized invocations are separate leaves (display `[n] ...`); a test that started but never ended is not counted. Failures: `vim.diagnostic` (namespace `nv4j_tests`) at the first stack frame in the test's class, quickfix list "Nv4J tests: <counts> (<label>)" with the message entry then one entry per stack frame that is a project file (`src/*/java` of the root or one module level down), skipped tests as `W` entries; sign extmarks `✓`/`✗`/`○` on the method lines of loaded buffers (after a project run they come a moment later, the method lines are fetched then); a summary notification. The whole run is bounded (`vim.g.nv4j_test_timeout_ms`, default 120 s): then the session is disconnected and "no result within ..." is shown. A second run while one is running is refused with a message. The JVM's dap session is disconnected 3 s after its results if still alive.
+
+Keys (D21/005): `<leader>tr` nearest, `<leader>tt` class, `<leader>tp` project (replaces the `mvn test` terminal), `<leader>tf` failed, `<leader>tl` last, `<leader>to` results (quickfix), `<leader>td` debug nearest; global from `config/keymaps.lua`, per Java buffer from `plugins/java.lua` on attach (t2-j). `<leader>tT` stays LazyVim's (nvim-jdtls's pick, its own result layer).
+
+### Cases (`60_tests_runner`, 20)
+
+`attached`, `api`, `keys` (7 keys, desc equal to Nv4J's, `queued == false`; `<leader>tn` still the terminal), `nearest_warm`, `class_counts`, `file_scope`, `nearest_param`, `nearest_nested`, `failure_shown`, `project_counts`, `failed_only`, `last_again`, `results_panel`, `debug_nearest`, `broken_class`, `no_tests_file`, `no_junit_project`, `timeout_bounded`, `keys_after_whichkey`, `fixture_restored` (details in the check header). Every run case asserts, besides the counts, a RemoteTestRunner launch seen by nvim-dap's `on_config` during the run and Nv4J's quickfix title with the same counts (carried review item a): a stub cannot pass them.
+
+### Negative controls (product changed for one run, reverted; `cmp` with the saved file after each)
+
+| # | Change | Cases that FAIL | Log |
+|---|--------|-----------------|-----|
+| n60b | `run` replaced by a stub that calls `on_done` with the expected counts, nothing launched | all 15 run cases (launches 0, no Nv4J quickfix) | `/tmp/nv4j/logs/test-20261022-091448.log` |
+| n60c | `run` delegates to nvim-jdtls (`test_nearest_method`/`test_class`, counts from `after_test`) | all 15 run cases (`class_counts` 6/0/0, no Nv4J title, no `nv4j_tests` diagnostic, no ✓ sign; no-tests cases wait 150 s with no message) | `-091534.log` |
+| n60d+e+g+j+k+m+o | one run: `@Ignore:` not recognised (d), failed-only reruns classes (e), no queue strip (g), timer x1000 (j), `refuse` silent (k), `results()` without `copen` (m), `last` refused (o) | `class_counts`, `file_scope`, `project_counts` (d: 6/0/0, 8/1/0); `failed_only` (e: 1/1); `keys_after_whichkey` (g); `timeout_bounded` (j); `no_tests_file`, `no_junit_project` (k: message MISSING); `results_panel` (m); `last_again` (o) | `-092405.log` |
+| n60h+l+n | one run: no finish on `%RUNTIME` (h), failure message dropped (l), nearest always the class (n) | `nearest_warm`, `nearest_param`, `nearest_nested`, `debug_nearest`, `timeout_bounded` (n: 5/0/1); `failure_shown`, `broken_class` (l). h alone breaks no case: finishing on `%RUNTIME` is defensive (EOF follows) | `-092457.log` |
+| n60g | no queue strip (after t2-m) | `keys_after_whichkey`: `<leader>tr=Run Nearest Test, <leader>tt=Run All Test` | `-092630.log` |
+| n60f | `bind` a no-op | `keys` (5 unmapped, tr/tt queued LazyVim keys), `keys_after_whichkey` | `-092743.log` |
+
+Deterministic twins: `timeout_bounded` forces the bound with a 300 ms product timeout (instead of a stuck JVM); `keys_after_whichkey` replays the which-key load order headless (lazy load + VimEnter) instead of waiting for a real VeryLazy.
+
+### Final runs
+
+Three consecutive runs 20/0 (`/tmp/nv4j/logs/test-20261022-092842.log`, `-092935.log`, `-093026.log`) and the full run 20/0 (`-093117.log`); numbers in `specs/005-p3-tests-scaffold-refactor.md` "Task 2" and the README (Capabilities: Tests).
+
+### Open items
+
+- TestNG is not run by Nv4J's runner (a message points to `<leader>tT`, nvim-jdtls). JUnit 4 goes through the same path (test kind 1) but no fixture covers it.
+- Project scope runs one JVM per jdt.ls Java project and test kind; a multi-module project was not measured. Gradle not tested.
+- Frames are resolved to files under `src/*/java` of the root and one module level down; deeper modules show the message entry without frames.
+- Stdout of the tests goes to the dap-repl only (`internalConsole`), not into the results.
+- The which-key queue strip relies on which-key's private `_queue` (pinned `3aab214`); a which-key update can break it, `keys_after_whichkey` catches it.
+- `<leader>to` is the quickfix list (failures and skipped tests), not a tree of every test as IntelliJ's panel.

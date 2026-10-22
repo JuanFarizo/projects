@@ -1,6 +1,6 @@
 # 005 - P3: tests runner, scaffolding, refactors, async import
 
-Status: Task 0 done (research, fixture, decisions D21 to D24, four failing checks). Task 1 done (async import, frecency vs project ranking, dirty-fixture guard; `63_async_import` passes, see "Task 1"). Tasks 2 to 5 not started. Plan: `docs/superpowers/plans/2026-10-21-nv4j-p3-tests-scaffold-refactor.md`. Does not contradict `001-architecture.md`; decisions D21 and later live in its decisions table.
+Status: Task 0 done (research, fixture, decisions D21 to D24, four failing checks). Task 1 done (async import, frecency vs project ranking, dirty-fixture guard; `63_async_import` passes, see "Task 1"). Task 2 done (test runner; `60_tests_runner` passes, see "Task 2"). Tasks 3 to 5 not started. Plan: `docs/superpowers/plans/2026-10-21-nv4j-p3-tests-scaffold-refactor.md`. Does not contradict `001-architecture.md`; decisions D21 and later live in its decisions table.
 
 ## Goal
 
@@ -101,3 +101,15 @@ Dirty-fixture guard: `tests/lib/fixture_guard.sh`, called from `run.sh` before t
 jdt.ls's import ranges are never applied any more (only the statement, placed by Nv4J in its importOrder group); details, 12 new cases, controls r2 to r19 and the 50-run real-resolve loop (50/50, lossy jdt.ls edit seen in 36 of 50) in `specs/features/async-import.md`. `63_async_import` now 28 cases: three consecutive runs 28/0 (`/tmp/nv4j/logs/test-20261021-222940.log`, `-223017.log`, `-223053.log`).
 
 Full `tests/run.sh` after the fix, log `/tmp/nv4j/logs/test-20261021-224104.log` (exit 1, only from 60, 61, 62): P1/P2 223 PASS 0 FAIL (same per-check counts as above), cold first 42 ms, worst warm p95 42 ms; `DONE 63_async_import 28 0`; `60_tests_runner 3 5`, `61_scaffold 3 14`, `62_refactor 8 5` as before. The full run just before it (`-223221.log`) had `20_java25 6 1`: `attached` failed after Neovim reported `LSP[jdtls]: Error INVALID_SERVER_JSON: "Expected colon but found invalid token at character 65537"` (a transport glitch at the 64 KiB boundary, not in completion code); `20` alone passed 10/0 right after (`-224040.log`), then the full rerun above.
+
+## Task 2 (test runner)
+
+Details, mechanism (D21 with one deviation: java-test commands called directly, not through `jdtls.dap.experimental.run`), 20 cases, negative controls n60b to n60o and trials t2-a to t2-m: `specs/features/tests-runner.md`. Verified: java-test 0.43.1 refuses project and package `testLevel` (`/tmp/nv4j/logs/t2-probe1.log`), so project = one JVM per Java project and test kind with every test class (`-testNameFile`). Keys as ruled in Task 0: `<leader>tr`/`tt`/`tp`/`tf`/`tl`/`to`/`td`; `<leader>tp` no longer runs `mvn test` in a terminal.
+
+Three consecutive `60_tests_runner` runs: `DONE 60_tests_runner 20 0` each (`/tmp/nv4j/logs/test-20261022-092842.log`, `-092935.log`, `-093026.log`): nearest warm 690/854/891 ms (budget 10 s), first 2753/2189/2212 ms, class 898/913/892 ms, failure shown 714/711/614 ms, project 754/965/2118 ms, failed only 628/836/921 ms, debug with a breakpoint 897/1100/1267 ms, non-compiling class 1980/1710/1995 ms.
+
+Full `tests/run.sh` before the Task 2 commit, log `/tmp/nv4j/logs/test-20261022-093117.log` (exit 1, only from 61 and 62, which Tasks 3 and 4 build):
+
+- P1/P2 unchanged, 223 PASS 0 FAIL: `00_boot 11 0`, `01_jdtls_ready 2 0`, `10_completion_latency 17 0`, `11_completion_ranking 26 0`, `12_usage_index 7 0`, `20_java25 10 0`, `30_diagnostics 24 0`, `31_imports 10 0`, `32_code_actions 28 0`, `40_debug 16 0`, `41_run 27 0`, `50_spring_ls 13 0`, `51_spring_completion 20 0`, `52_spring_nav 12 0`.
+- `60_tests_runner 20 0` (nearest warm 912 ms, first 3072 ms, project 1045 ms, debug 1185 ms), `63_async_import 28 0`.
+- Still failing as expected: `61_scaffold 3 14` (same cases as Task 0). `62_refactor 7 6`: the expected 5 plus `change_signature` ("build NOT clean": Checkout.java still reported the old `total(Invoice)` errors after the 3 call sites were rewritten). `62_refactor` alone right after: `8 5`, `change_signature` PASS build clean (`/tmp/nv4j/logs/test-20261022-093834.log`). Task 2 changed nothing in the refactor path (its `nv4j/debug.lua` change is a build-message label); recorded as a flake for Task 4 to look at (the build-clean wait after a change signature).

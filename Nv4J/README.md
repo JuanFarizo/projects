@@ -2,7 +2,7 @@
 
 A fast, lightweight Neovim setup for Java and Spring development. It is built on LazyVim and runs next to your normal Neovim: your own `~/.config/nvim` is never touched. IntelliJ is the feature reference. Every feature has a priority and a pass/fail number, and the numbers are re-measured by a headless test suite you can run yourself.
 
-Status: **P1 and P2 are built and passing** (P1: completion, diagnostics, imports, code actions, JDK handling). P2: debugging a main class or a JUnit test works and is checked (`40_debug`), running a Spring Boot app with profile and env works and is checked (`41_run`), and the Spring Boot language server runs for Spring Boot projects with `application.properties`/`yml` key completion and hover (`50_spring_ls`), `@Value`/`@Profile` completion (`51_spring_completion`), go to definition from `@Value` and a beans/request-mappings picker (`52_spring_nav`). P3 to P5 are planned, not built. The "Not yet" list below is honest about that.
+Status: **P1 and P2 are built and passing** (P1: completion, diagnostics, imports, code actions, JDK handling). P2: debugging a main class or a JUnit test works and is checked (`40_debug`), running a Spring Boot app with profile and env works and is checked (`41_run`), and the Spring Boot language server runs for Spring Boot projects with `application.properties`/`yml` key completion and hover (`50_spring_ls`), `@Value`/`@Profile` completion (`51_spring_completion`), go to definition from `@Value` and a beans/request-mappings picker (`52_spring_nav`). P3 is in progress: asynchronous import (`63_async_import`) and the test runner (`60_tests_runner`) are built and checked; scaffolding and refactors are not built yet. P4 and P5 are planned, not built. The "Not yet" list below is honest about that.
 
 ## Priorities
 
@@ -10,7 +10,7 @@ Status: **P1 and P2 are built and passing** (P1: completion, diagnostics, import
 |----------|-------|--------|
 | P1 | Completion speed and ranking, diagnostics, imports, code actions, Java 25 and JDK handling | Done (this README, Capabilities) |
 | P2 | Spring awareness (annotations, attributes, `application.properties`/`yml`), run and debug Spring Boot | Done (Capabilities: Debug, Run Spring Boot, Spring Boot language server, Spring completion and navigation); leftovers in Not yet |
-| P3 | Tests runner polish, scaffolding (package/class creation), refactors beyond what jdt.ls already offers | Not yet |
+| P3 | Tests runner polish, scaffolding (package/class creation), refactors beyond what jdt.ls already offers | In progress: async import and test runner done (Capabilities: Tests); scaffolding and refactors not yet |
 | P4 | Gradle, Spring navigation, JPA checks | Spring navigation (beans, request mappings, `@Value` definition) done early with P2 Task 4; Gradle and JPA checks not yet |
 | P5 | Everything else | Not yet |
 
@@ -87,13 +87,30 @@ Breakpoints hit, also in files added while Neovim was closed (a `git pull`), and
 | What you get | Measured (budget) | Check |
 |--------------|-------------------|-------|
 | Debug a Spring Boot main class (`<leader>dc`, pick the class): stops at the breakpoint, frame and variables readable | stop 2.9 to 3.6 s after launch, including a refresh and build of the project (20 s) | `40_debug` `breakpoint_hit`, `variable` |
-| Debug the nearest JUnit 5 test (`<leader>tr`): stops at the breakpoint, then the test finishes and passes | stop 0.7 to 0.9 s (20 s) | `40_debug` `test_breakpoint_hit`, `test_variable`, `test_finished` |
+| Debug a JUnit 5 test: stops at the breakpoint, then the test finishes and passes (the P2 path; since P3 the key is `<leader>td`, Tests below) | stop 0.7 to 0.9 s (20 s) | `40_debug` `test_breakpoint_hit`, `test_variable`, `test_finished` |
 | No "Could not resolve classpath ... m2e.launchconfig.classpathProvider" at start, every main class gets a debug config | 0 errors, 3 of 3 main classes, in 69 of 69 runs (before: failed 4 of 4) | `40_debug` `classpath_first`, `configs` |
 | The debugged JVM runs on the project's JDK, not on `PATH`'s (JDK 21 first on `PATH`, `JAVA_HOME` unset) | `java.version` 25.0.4 for the main class and the test | `40_debug` `debuggee_jdk`, `test_debuggee_jdk` |
 | Terminate leaves no JVM behind | gone within 10 s (10 s) | `40_debug` `no_orphan`, `test_finished` |
 | A debug launch starts no second jdt.ls | 0 extra starts | `40_debug` `one_jdtls` |
 
 Before each launch the project's source folders are refreshed and built (VS Code builds too, you see "Building before debug..."). If the build has compile errors, fails or takes more than 60 s you get a warning and the launch goes ahead. If a JUnit run needs a `junit-platform-launcher` jar that is not in your Maven repository, a warning names it and the `mvn dependency:get` command that fetches it.
+
+### Tests (P3)
+
+Run JUnit tests from the editor and see the results in the file, as in IntelliJ: `<leader>tr` the test at the cursor, `<leader>tt` the class, `<leader>tp` every test of the project, `<leader>tf` the tests that failed last time, `<leader>tl` the last run again, `<leader>td` debug the test at the cursor (breakpoints stop), `<leader>to` the results. Before each run the project is refreshed and built ("Building before test run..."), the test JVM runs on the project's JDK. A failing assertion gets an error diagnostic on its line, the method lines get `✓`/`✗`/`○` signs, the quickfix list ("Nv4J tests: 7 passed, 1 failed, 1 skipped") holds each failure message followed by the stack frames that are files of the project (each jumps to its line) and the skipped tests, and a notification sums it up. `@Disabled` counts as skipped, each parameterized invocation and `@Nested` test counts on its own. The editor runs a class that surefire's `excludedGroups` keeps out of `mvn test`, as IntelliJ does. Code: `nvim/lua/nv4j/tests.lua`, details in `specs/features/tests-runner.md` (decision D21). Numbers from 3 consecutive runs of `60_tests_runner` (20 of 20 PASS each) and the full run before the commit (20 of 20):
+
+| What you get | Measured (budget) | Check |
+|--------------|-------------------|-------|
+| Nearest test, result visible, warm (second run of the session) | 0.69 to 0.91 s (10 s); first run 2.2 to 3.1 s | `60_tests_runner` `nearest_warm` |
+| Class with a plain, 3 parameterized, 1 nested and 1 `@Disabled` test: 5 passed, 1 skipped | 0.89 to 0.91 s | `class_counts`, `file_scope`, `nearest_param`, `nearest_nested` |
+| Failing assertion: quickfix entry and diagnostic on the `assertEquals` line with the message | 0.61 to 0.71 s | `failure_shown` |
+| Whole project (3 classes, one JVM): 7 passed, 1 failed, 1 skipped | 0.75 to 2.1 s | `project_counts` |
+| Failed tests only, then the last run again: only the failing test, 0 passed 1 failed | 0.63 to 0.92 s, 0.83 to 1.03 s | `failed_only`, `last_again` |
+| Debug the nearest test: stops at the breakpoint, then passes | 0.90 to 1.27 s | `debug_nearest` |
+| A test class that does not compile: a failure "Unresolved compilation problem" (after the build warning), no hang | 1.7 to 2.0 s | `broken_class` |
+| No tests in the file, or a project without JUnit: a clear message, nothing launched | 12 to 19 ms; 0.13 to 1.7 s | `no_tests_file`, `no_junit_project` |
+| A run never hangs: it stops after 120 s at most (`vim.g.nv4j_test_timeout_ms`) with a message | stopped at 0.33 to 0.36 s with the bound set to 0.3 s | `timeout_bounded` |
+| The keys are Nv4J's, also after which-key created LazyVim's java test keys | 7 of 7 | `keys`, `keys_after_whichkey` |
 
 ### Run Spring Boot (P2)
 
@@ -154,7 +171,7 @@ Be aware before you rely on Nv4J for a full workday:
 
 - **P2 leftovers: Spring awareness.** Properties/yml completion and hover, `@Value`/`@Profile` completion, `@Value` go to definition, beans and request mappings are checked (Capabilities). Not checked yet: annotation attribute checks beyond jdt.ls (`@Table(`/`@Column(` lists come from jdt.ls only), the Spring server's own diagnostics (unknown keys, bad values), `:SpringBoot` (the plugin's command; `<leader>sp` is the checked path).
 - **P2 leftovers: run.** Spring Boot run and debug are checked (Capabilities). The build-tool fallback (`spring-boot:run`, `bootRun`, used only without jdt.ls) is checked as a command, not run (Maven could not reach its plugin offline here). No saved run configurations: the profile is asked each time with `<leader>rp`, `<leader>rs` runs without one. `<leader>rj` (plain main class) is checked by hand only.
-- **P3: tests runner polish.** `<leader>tr` (debug the nearest test) is covered by `40_debug`. `<leader>tt`, `<leader>tT` (nvim-jdtls) and `<leader>tp` (whole project via `mvn test`) exist, they are not covered by checks.
+- **P3: tests runner leftovers.** The runner is checked (Capabilities: Tests). Not done: TestNG (`<leader>tT`, nvim-jdtls's picker, still runs it), JUnit 4 and multi-module or Gradle projects are not covered by a check, no tree view of every test (`<leader>to` is the quickfix list).
 - **P3: scaffolding** (create package, class, with a wizard). Only the basic new-file template above exists.
 - **P3: refactors beyond what jdt.ls already offers.** Extract and rename work through jdt.ls. Move, inline, change signature, safe delete are not set up or tested.
 - **P3: carried follow-ups.** Saved run configurations (profile, env, VM args per project). (Asynchronous import apply and project ranking above frecency shipped with P3 Task 1: Capabilities, Imports and Completion.)
@@ -255,7 +272,7 @@ Generate getters, constructors, `toString`, `equals`/`hashCode`: put the cursor 
 | `<C-b>` / `<leader>e` / `<leader>ef` | file explorer / explorer at root / reveal current file |
 | `<leader>cc` / `<leader>cC` | run / refresh code lens ("n references" above methods) |
 
-**Run, debug, test** (debugging a main class and `<leader>tr` are covered by `40_debug`, the Spring Boot keys by `41_run`; the rest is not checked, see Not yet):
+**Run, debug, test** (debugging a main class is covered by `40_debug`, the Spring Boot keys by `41_run`, the test keys by `60_tests_runner`; the rest is not checked, see Not yet):
 
 | Key | Does |
 |-----|------|
@@ -263,8 +280,10 @@ Generate getters, constructors, `toString`, `equals`/`hashCode`: put the cursor 
 | `<leader>rS` | run the Spring Boot app through Maven/Gradle (`spring-boot:run` / `bootRun`) |
 | `<leader>rx` | stop every Spring Boot run |
 | `<leader>rj` | run a main class with plain `java` in a terminal (picks the class if several; uses the project's JDK from jdt.ls) |
-| `<leader>tt` / `<leader>tr` / `<leader>tT` | run all tests in this class / nearest test / pick a test, in the debugger (breakpoints stop) |
-| `<leader>tp` | run all project tests (`mvnw test` or `mvn test`) in a terminal |
+| `<leader>tr` / `<leader>tt` / `<leader>tp` | run the nearest test / the class / every test of the project, results in the editor (`<leader>tp` replaces the old `mvn test` terminal; for `mvn test` open a terminal with `<leader>tn`) |
+| `<leader>tf` / `<leader>tl` / `<leader>to` | run the failed tests again / the last run again / open the results (quickfix list) |
+| `<leader>td` | debug the nearest test (breakpoints stop) |
+| `<leader>tT` | pick a test of the file (nvim-jdtls, its own result layer; also runs TestNG) |
 | `<leader>db` / `<leader>dc` / `<leader>dO` / `<leader>di` / `<leader>dB` / `<leader>dt` / `<leader>du` | toggle breakpoint / run or continue / step over / step into / conditional breakpoint / terminate / debug UI |
 
 ### Switch JDK with `sdk use`
@@ -365,8 +384,9 @@ The checks (each file lists its cases at the top):
 | `50_spring_ls` | Spring Boot language server: attach, properties completion and hover, memory, gating, server JDK, off switch |
 | `51_spring_completion` | Spring completion in blink: properties, yml, `@Value`, `@Profile`, broken files, latency, `@` regression |
 | `52_spring_nav` | Spring hover, `@Value` go to definition, beans and request mappings, `<leader>sp` picker |
+| `60_tests_runner` | test runner: nearest/class/file/project/failed/last, counts with parameterized, nested, `@Disabled`, failure in quickfix and diagnostics, debug, non-compiling class, no JUnit, bounded time, keys (20 cases) |
 
-Budgets: warm completion p95 at most 150 ms per case; first completion after ready at most 400 ms; expected item in the top 5 plus a relative rule per case; diagnostics at most 3 s from edit to screen; import accept at most 1.5 s (P3: item text in at most 100 ms after the accept, its import at most 1.5 s, `63_async_import`); one code action round trip at most 1 s. P2: breakpoint hit at most 20 s from launch, no JVM 10 s after terminate, Spring LS initialized at most 10 s after jdt.ls is ready, `application.properties`/yml/`@Value` first completion at most 400 ms and warm p95 at most 150 ms, Spring hover and go to definition at most 500 ms, Spring LS memory at most 1 GB (hard limit 1.5 GB). `NV4J_SPRING=0 tests/run.sh` starts every check with the Spring LS off (A/B timing). The fixture is `tests/fixtures/demo`, planted broken sources are in `tests/fixtures/planted/*.java.txt` and are loaded into a buffer in memory only, never written to disk.
+Budgets: warm completion p95 at most 150 ms per case; first completion after ready at most 400 ms; expected item in the top 5 plus a relative rule per case; diagnostics at most 3 s from edit to screen; import accept at most 1.5 s (P3: item text in at most 100 ms after the accept, its import at most 1.5 s, `63_async_import`; nearest test result at most 10 s warm, `60_tests_runner`); one code action round trip at most 1 s. P2: breakpoint hit at most 20 s from launch, no JVM 10 s after terminate, Spring LS initialized at most 10 s after jdt.ls is ready, `application.properties`/yml/`@Value` first completion at most 400 ms and warm p95 at most 150 ms, Spring hover and go to definition at most 500 ms, Spring LS memory at most 1 GB (hard limit 1.5 GB). `NV4J_SPRING=0 tests/run.sh` starts every check with the Spring LS off (A/B timing). The fixture is `tests/fixtures/demo`, planted broken sources are in `tests/fixtures/planted/*.java.txt` and are loaded into a buffer in memory only, never written to disk.
 
 ### What is measured and what you must judge
 
@@ -423,6 +443,7 @@ The test run keeps its blink.cmp state in `/tmp/nv4j/state` so your own accepted
 - **Spring Boot LS install for everyone:** Mason's `ensure_installed` installs `vscode-spring-boot-tools` (about 90 MB) at the first start for every user, also for non-Spring work, unless `vim.g.nv4j_spring = false` was set before that first start. Offline or behind a proxy Mason shows its install error at start; Java support (jdt.ls) is not affected. `tests/run.sh` then prints a WARN and a SKIP line for each Spring check (50, 51, 52) and runs the rest.
 - **Plugin internals wrapped at runtime:** to fix upstream races Nv4J wraps, in memory, the jdt.ls client's `request`, `jdtls.start_or_attach` (nvim-jdtls) and `dap.adapters.java` (`nvim/lua/nv4j/debug.lua`). No files of the plugins are patched, and `nvim/lazy-lock.json` pins the versions the checks ran with; a plugin update can break a wrap, and `40_debug` is what catches it.
 - **Run limits:** the real `mvn spring-boot:run` (and the kill of Maven's forked JVM) was never run by the checks here (Maven could not resolve the plugin through an unreachable company mirror): `<leader>rS` is checked as a command, the process-tree stop on a synthetic tree whose processes ignore SIGTERM. `<leader>rd`'s Started and failure notifications are read from nvim-dap's terminal buffer, whose width is unknown (a pooled or hidden terminal is 80 columns or less): Started and the port are matched on the rows joined, the failure block row by row, so a Description or Action wrapped in the middle of a word shows a stray space (`41_run` `dap_scan`, `leave_stops_debug`). Children forked after the stop's process snapshot are only caught through the process group.
+- **Test runner limits:** only JUnit 5 is covered by a check (JUnit 4 takes the same path, TestNG is not run: use `<leader>tT`). Stack frames jump to files under `src/*/java` of the project root and one module level down. Test output (`System.out`) goes to the dap-repl, not into the results. One run at a time (a second key press while a run is going says so). Nv4J's per-buffer test keys take LazyVim's queued `<leader>tr`/`<leader>tt` out of which-key's private queue (which-key pinned in `nvim/lazy-lock.json`; `60_tests_runner` `keys_after_whichkey` catches an update that breaks it).
 - **Terminal needs:** `<C-m>` needs the kitty keyboard protocol, `<D-Left>`/`<D-Right>` and Cmd+bracket terminal keys are for kitty on macOS.
 - **Test harness limits:** the latency checks type each case in one step, not key by key (two cases cover the typed path); `lsp.complete` in the harness sends no completion context, the ranking path uses blink's own.
 
