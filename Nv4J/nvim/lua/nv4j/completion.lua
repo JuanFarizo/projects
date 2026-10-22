@@ -175,7 +175,10 @@ function M.transform_lsp(ctx, items)
         keep = false
       end
     end
-    if keep then out[#out + 1] = it end
+    if keep then
+      M.take_imports(it)
+      out[#out + 1] = it
+    end
   end
   return out
 end
@@ -282,16 +285,22 @@ end
 -- that also renders the javadoc (0.4-0.8 s for List/HashMap). blink waits resolve_timeout_ms for it
 -- (plugins/blink.lua: now 50 ms) and then inserts the item without it. The resolve keeps running
 -- (blink's task:timeout does not cancel it; the provider caches it per context), so this wrapper
--- around blink's accept picks up that same task and applies the late import itself, once, guarded.
--- Every outcome is appended to M.async_log ({ status = "applied"|"placed"|"present"|"dropped"|"none",
--- why, ms, edits }); M.async_count counts them all (the log keeps the last 20).
+-- around blink's accept picks up that same task and adds the late import itself, once, guarded, at a
+-- place computed from the current buffer (jdt.ls's ranges are never applied late).
+-- Every outcome is appended to M.async_log ({ status = "applied"|"present"|"dropped"|"none", why, ms,
+-- edits = what jdt.ls sent, placed = the import lines added }); M.async_count counts them all (the log
+-- keeps the last 20). Outcomes other than applied/present are also sent to vim.notify at DEBUG level.
 M.async_log = {}
 M.async_count = 0
+M.ASYNC_WAIT_MS = 10000 -- give up on a resolve that never answers (jdt.ls died or hung)
 local ASYNC_LOG_MAX = 20
 
-local function async_note(status, why, t0, edits)
+local function async_note(status, why, t0, edits, placed)
   M.async_count = M.async_count + 1
-  M.async_log[#M.async_log + 1] = { status = status, why = why, ms = t0 and (vim.uv.hrtime() / 1e6 - t0) or nil, edits = edits }
+  M.async_log[#M.async_log + 1] = { status = status, why = why, ms = t0 and (vim.uv.hrtime() / 1e6 - t0) or nil, edits = edits, placed = placed }
+  if status ~= "applied" and status ~= "present" then
+    vim.notify(("nv4j async import: %s (%s)"):format(status, why), vim.log.levels.DEBUG)
+  end
   if #M.async_log > ASYNC_LOG_MAX then table.remove(M.async_log, 1) end
 end
 
@@ -308,153 +317,201 @@ local function import_lines(edit)
   return out
 end
 
---- Header of a Java buffer: 0-based index of the package line (or nil), of every import line, and
---- of the first line that is neither blank, a comment, `package` nor `import` (the type).
+--- `import [static] a.b.C;` -> { name = "a.b.C", static = bool, module = bool, text = normalized } or nil.
+--- Resolved jdt.ls items: import-only additionalTextEdits move to `nv4j_imports`, so blink never
+--- applies jdt.ls's ranges (they can be stale or lossy: measured 22 of 50 `HashMap` resolves sent
+--- 2:0-2:22 "import java.util.HashMap;", which replaces the `import java.util.List;` line); the
+--- accept wrapper adds the statements itself (place_import). Mixed edits stay for blink, as in P1.
+function M.take_imports(it)
+  local edits = it.additionalTextEdits
+  if type(edits) ~= "table" or #edits == 0 or not from_jdtls(it) then return end
+  for _, e in ipairs(edits) do
+    if not import_lines(e) then return end
+  end
+  it.nv4j_imports, it.additionalTextEdits = edits, nil
+end
+
+local function parse_import(line)
+  local t = vim.trim(line)
+  local m = t:match("^import%s+module%s+([%w_$.]+)%s*;")
+  if m then return { name = m, module = true, static = false, text = "import module " .. m .. ";" } end
+  local st = t:match("^import%s+static%s+([%w_$.%*]+)%s*;")
+  if st then return { name = st, static = true, text = "import static " .. st .. ";" } end
+  local n = t:match("^import%s+([%w_$.%*]+)%s*;")
+  if n then return { name = n, static = false, text = "import " .. n .. ";" } end
+end
+
+--- Header of a Java buffer, comment aware (import-looking text inside comments is not an import):
+--- { pkg = row or nil, imports = { {row, name, static, module, text} }, first_code = row of the first
+--- line that is neither blank, a comment, `package` nor `import` }. Rows are 0-based.
 local function java_header(lines)
-  local pkg, imports, in_block = nil, {}, false
+  local h, in_block = { imports = {} }, false
   for i, l in ipairs(lines) do
     local t = vim.trim(l)
     if in_block then
       if t:find("%*/") then in_block = false end
     elseif t == "" or t:find("^//") then -- skip
     elseif t:find("^/%*") then
-      in_block = not t:find("%*/")
+      in_block = not t:find("%*/", 3)
     elseif t:find("^package%s") then
-      pkg = i - 1
+      h.pkg = i - 1
     elseif t:find("^import%s") then
-      imports[#imports + 1] = i - 1
+      local imp = parse_import(t)
+      if imp then
+        imp.row = i - 1
+        h.imports[#h.imports + 1] = imp
+      end
     else
-      return pkg, imports, i - 1
+      h.first_code = i - 1
+      return h
     end
   end
-  return pkg, imports, #lines
+  h.first_code = #lines
+  return h
 end
 
---- Insert `import` lines into the header ourselves (used when the import region changed since the
---- accept, so jdt.ls's ranges may no longer point where it meant): each line in sorted position
---- among the imports of the same kind (static or not), else after the last import, else after the
---- package line with a blank line around it. Pure line insertions before the first type line.
---- Returns false (nothing changed) when the header cannot hold it before `limit` (the accepted line).
-local function place_imports(buf, imports_txt, limit)
-  for _, imp in ipairs(imports_txt) do
-    local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
-    local pkg, imps, first_code = java_header(lines)
-    if first_code > limit then return false end
-    local static = imp:find("^import%s+static%s") ~= nil
-    local at, block
-    if #imps > 0 then
-      local last_same, before
-      for _, i in ipairs(imps) do
-        local t = vim.trim(lines[i + 1])
-        if (t:find("^import%s+static%s") ~= nil) == static then
-          last_same = i
-          if not before and t > imp then before = i end
-        end
-      end
-      at = before or ((last_same or imps[#imps]) + 1)
-      block = { imp }
-    elseif pkg then
-      at, block = pkg + 1, { "", imp }
-      if vim.trim(lines[pkg + 2] or "") ~= "" then block[#block + 1] = "" end
-    else
-      at, block = 0, { imp, "" }
+-- Import groups: java.completion.importOrder, the same list plugins/java.lua sends to jdt.ls
+-- (used by its auto-import, quick fix and organize imports). "" = every other package, "#" = static.
+M.IMPORT_ORDER = { "", "javax", "jakarta", "java", "#" }
+local function import_order(client_id)
+  local c = client_id and vim.lsp.get_client_by_id(client_id)
+  return (c and vim.tbl_get(c.settings or {}, "java", "completion", "importOrder")) or M.IMPORT_ORDER
+end
+local function group_of(order, imp)
+  if imp.static then
+    for i, e in ipairs(order) do
+      if e == "#" then return i end
     end
-    if at > limit then return false end
-    vim.api.nvim_buf_set_lines(buf, at, at, false, block)
-    limit = limit + #block
+    return #order + 1
   end
+  local best, best_len = #order + 1, -1
+  for i, e in ipairs(order) do
+    if e == "" and best_len < 0 then
+      best, best_len = i, 0
+    elseif e ~= "" and e ~= "#" and (imp.name == e or imp.name:sub(1, #e + 1) == e .. ".") and #e > best_len then
+      best, best_len = i, #e
+    end
+  end
+  return best
+end
+
+--- Insert one import line into the header, computed from the CURRENT buffer only (jdt.ls's
+--- ranges are never used: they refer to the text jdt.ls saw, which an earlier late import or the
+--- user may have changed). Like organize imports with importOrder: sorted within its group, a blank
+--- line between groups, statics last; no imports yet: after `package` (or, without one, at the top
+--- of the code, below any leading license comment). `import module` lines are left alone.
+--- Returns false (nothing changed) when the place would be below `limit` (the accepted line).
+local function place_import(buf, imp, order, limit)
+  local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+  local h = java_header(lines)
+  imp.group = group_of(order, imp)
+  local regular, modules = {}, {}
+  for _, it in ipairs(h.imports) do
+    if it.module then modules[#modules + 1] = it else
+      it.group = group_of(order, it)
+      regular[#regular + 1] = it
+    end
+  end
+  local at, block
+  local function blank_after()
+    -- keep a blank line between the new import and a following non-blank line of another group
+    if lines[at + 1] and lines[at + 1]:find("%S") then block[#block + 1] = "" end
+  end
+  if #regular > 0 then
+    local last_same
+    for _, it in ipairs(regular) do
+      if it.group == imp.group then
+        if not at and it.name > imp.name then at, block = it.row, { imp.text } end
+        last_same = it
+      end
+    end
+    if not at and last_same then at, block = last_same.row + 1, { imp.text } end
+    if not at then
+      local lower, higher
+      for _, it in ipairs(regular) do
+        if it.group < imp.group then lower = it end
+        if it.group > imp.group and not higher then higher = it end
+      end
+      if lower then
+        at, block = lower.row + 1, { "", imp.text }
+        blank_after()
+      else
+        at, block = higher.row, { imp.text, "" }
+      end
+    end
+  elseif #modules > 0 then
+    at, block = modules[#modules].row + 1, { "", imp.text }
+    blank_after()
+  elseif h.pkg then
+    at, block = h.pkg + 1, { "", imp.text }
+    blank_after()
+  else
+    at, block = h.first_code, { imp.text, "" }
+  end
+  if at > limit then return false end
+  vim.api.nvim_buf_set_lines(buf, at, at, false, block)
   return true
 end
 
---- The late resolve answered: apply its import once, if it is still wanted and safe (D24 guards).
+--- The late resolve answered: add its import(s) once, if still wanted (D24 guards). Only the import
+--- statements are taken from jdt.ls's edits; where they go is computed by place_import.
 local function late_import(st, resolved)
   local buf = st.buf
-  local edits = resolved and resolved.additionalTextEdits
+  local edits = resolved and (resolved.nv4j_imports or resolved.additionalTextEdits)
   if type(edits) ~= "table" or #edits == 0 then return async_note("none", "no additionalTextEdits", st.t0) end
   if not (vim.api.nvim_buf_is_valid(buf) and vim.api.nvim_buf_is_loaded(buf)) then
-    return async_note("dropped", "buffer closed", st.t0)
+    return async_note("dropped", "buffer closed", st.t0, edits)
+  end
+  if vim.api.nvim_buf_get_name(buf):find("module%-info%.java$") then
+    return async_note("dropped", "module-info.java is left alone", st.t0, edits)
   end
   -- 1. Imports only: anything else (a rewrite of code) is never applied late.
-  local present = {}
-  for _, l in ipairs(vim.api.nvim_buf_get_lines(buf, 0, -1, false)) do present[vim.trim(l)] = true end
-  local todo, missing_txt, max_line = {}, {}, -1
+  local wanted = {}
   for _, e in ipairs(edits) do
     local ls = import_lines(e)
-    if not ls then return async_note("dropped", "edit is not an import: " .. vim.inspect(e.newText), st.t0) end
-    local missing = false
+    if not ls then return async_note("dropped", "edit is not an import: " .. vim.inspect(e.newText), st.t0, edits) end
     for _, l in ipairs(ls) do
-      if not present[l] then
-        missing = true
-        missing_txt[#missing_txt + 1] = l
-      end
-    end
-    -- 2. Never a duplicate: an edit whose imports are all in the buffer already (blink applied it in
-    -- time, or the user typed it) is skipped.
-    if missing then
-      todo[#todo + 1] = e
-      max_line = math.max(max_line, e.range["end"].line, e.range.start.line)
+      local imp = parse_import(l)
+      if imp and not imp.module then wanted[#wanted + 1] = imp end
     end
   end
-  if #todo == 0 then return async_note("present", "import already in the buffer", st.t0) end
+  -- 2. Never a duplicate: imports already in the header (blink applied it in time, or the user typed
+  -- it) are skipped; import-looking text in comments does not count.
+  local present = {}
+  for _, it in ipairs(java_header(vim.api.nvim_buf_get_lines(buf, 0, -1, false)).imports) do present[it.text] = true end
+  local missing = {}
+  for _, imp in ipairs(wanted) do
+    if not present[imp.text] then
+      present[imp.text] = true
+      missing[#missing + 1] = imp
+    end
+  end
+  if #missing == 0 then return async_note("present", "import already in the buffer", st.t0, edits) end
   -- 3. The accepted text is still there (an undo of the accept drops its import). The extmark spans
-  -- the accepted line and grows with text typed or inserted around it (lines opened above, the
-  -- line replaced).
+  -- the accepted line and grows with text typed or inserted around it.
   local m = vim.api.nvim_buf_get_extmark_by_id(buf, st.ns, st.mark, { details = true })
   local row = m[1]
   local region = row and table.concat(vim.api.nvim_buf_get_text(buf, row, m[2], m[3].end_row, m[3].end_col, {}), "\n")
   if not region or not region:find(st.word, 1, true) then
-    return async_note("dropped", "accepted text no longer in the buffer (undone or edited)", st.t0)
-  end
-  -- 4. jdt.ls's ranges are positions in the text before the accept: used as they are only when they
-  -- lie above the accepted line and that region is unchanged since the accept. Otherwise (the
-  -- user edited the imports, or an earlier late import landed there) the import lines are placed
-  -- by place_imports instead; never applied on stale ranges.
-  local verbatim = max_line < st.row
-  if verbatim then
-    local now_lines = vim.api.nvim_buf_get_lines(buf, 0, max_line + 1, false)
-    for i = 1, max_line + 1 do
-      if now_lines[i] ~= st.top[i] then verbatim = false break end
-    end
-  end
-  -- 5. Additive only: an edit that would remove a non-blank line (seen once: jdt.ls's late edit for
-  -- `HashMap` replaced the `import java.util.List;` line, trial t1-l) is not applied as sent.
-  local why_placed = "import region changed since the accept"
-  if verbatim then
-    for _, e in ipairs(todo) do
-      local sr, er = e.range.start.line, e.range["end"].line
-      local ls = vim.api.nvim_buf_get_lines(buf, sr, er + 1, false)
-      if #ls > 0 then
-        -- import lines are ASCII: LSP characters are bytes there
-        ls[#ls] = ls[#ls]:sub(1, e.range["end"].character)
-        ls[1] = ls[1]:sub(e.range.start.character + 1)
-      end
-      local kept = {}
-      for l in (e.newText or ""):gmatch("[^\n]+") do kept[vim.trim(l)] = true end
-      for _, l in ipairs(ls) do
-        if l:find("%S") and not kept[vim.trim(l)] then
-          verbatim, why_placed = false, "jdt.ls's edit would remove " .. vim.inspect(vim.trim(l))
-        end
-      end
-    end
+    return async_note("dropped", "accepted text no longer in the buffer (undone or edited)", st.t0, edits)
   end
   -- One `u` removes the item and its import when nothing changed since the accept's own edit
   -- (changedtick recorded when blink applied it), else the import is its own undo step.
   local ut = vim.fn.undotree(buf)
   local join = st.tick ~= nil and vim.b[buf].changedtick == st.tick and ut.seq_cur == ut.seq_last
-  local client = vim.lsp.get_client_by_id(st.client_id)
-  local placed = true
+  local order = import_order(st.client_id)
+  local placed, limit = {}, row
   vim.api.nvim_buf_call(buf, function()
     if join then pcall(vim.cmd.undojoin) end
-    if verbatim then
-      vim.lsp.util.apply_text_edits(todo, buf, client and client.offset_encoding or "utf-16")
-    else
-      placed = place_imports(buf, missing_txt, row)
+    for _, imp in ipairs(missing) do
+      if place_import(buf, imp, order, limit) then
+        placed[#placed + 1] = imp.text
+        limit = vim.api.nvim_buf_get_extmark_by_id(buf, st.ns, st.mark, {})[1] or limit
+      end
     end
   end)
-  local how = join and "joined to the accept's undo step" or "own undo step"
-  if verbatim then return async_note("applied", how, st.t0, todo) end
-  if not placed then return async_note("dropped", "no place for the import above the accepted line", st.t0) end
-  async_note("placed", why_placed .. "; " .. how, st.t0, missing_txt)
+  if #placed == 0 then return async_note("dropped", "no place for the import above the accepted line", st.t0, edits) end
+  async_note("applied", join and "joined to the accept's undo step" or "own undo step", st.t0, edits, placed)
 end
 
 --- Wrap blink's accept function (module blink.cmp.completion.accept).
@@ -462,6 +519,7 @@ function M.wrap_accept(accept)
   return function(ctx, item, callback)
     local buf = ctx and ctx.bufnr
     local java = buf and vim.api.nvim_buf_is_valid(buf) and vim.bo[buf].filetype == "java"
+    -- mixed (non-import) edits already resolved: blink applies them, as in P1
     if not java or not item or not from_jdtls(item) or (item.additionalTextEdits and #item.additionalTextEdits > 0) then
       return accept(ctx, item, callback)
     end
@@ -473,7 +531,6 @@ function M.wrap_accept(accept)
     local line = vim.api.nvim_buf_get_lines(buf, row, row + 1, false)[1] or ""
     local st = {
       buf = buf, row = row, word = word, client_id = item.client_id, ns = ns,
-      top = vim.api.nvim_buf_get_lines(buf, 0, row, false),
       mark = vim.api.nvim_buf_set_extmark(buf, ns, row, 0,
         { end_row = row, end_col = #line, right_gravity = false, end_right_gravity = true, strict = false }),
       t0 = vim.uv.hrtime() / 1e6,
@@ -489,15 +546,26 @@ function M.wrap_accept(accept)
       end,
     })
     accept(ctx, item, callback)
+    local function finish()
+      st.done = true
+      if vim.api.nvim_buf_is_valid(buf) then pcall(vim.api.nvim_buf_del_extmark, buf, ns, st.mark) end
+    end
+    -- No answer at all (jdt.ls died or hung, the resolve was cancelled): drop and clear the extmark.
+    vim.defer_fn(function()
+      if not st.done then
+        finish()
+        async_note("dropped", ("no resolve answer within %d ms"):format(M.ASYNC_WAIT_MS), st.t0)
+      end
+    end, M.ASYNC_WAIT_MS)
     -- Same context and item: blink's cached resolve task, no second request to jdt.ls.
     require("blink.cmp.sources.lib").resolve(ctx, item):map(function(resolved)
       -- After blink's own handler: if the answer came within its timeout, blink applied the import
       -- and the "present" guard skips it here.
       vim.schedule(function()
-        st.done = true
+        if st.done then return end -- the watchdog gave up already
         local ok, err = pcall(late_import, st, resolved)
         if not ok then async_note("dropped", "error: " .. tostring(err), st.t0) end
-        if vim.api.nvim_buf_is_valid(buf) then pcall(vim.api.nvim_buf_del_extmark, buf, ns, st.mark) end
+        finish()
       end)
     end)
   end

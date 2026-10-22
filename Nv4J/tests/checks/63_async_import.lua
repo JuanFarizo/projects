@@ -24,6 +24,12 @@
 --                                                              would delete the new import)
 --   rf_removing_edit the late edit would replace an existing import line (rewritten in the gate,
 --                    twin of trial t1-l)                    -> import placed, nothing removed
+--   rf_stale_insert  a stale pure insertion from jdt.ls (B1)  -> import added by Nv4J, sorted, no split line
+--   place_*          importOrder groups, sort, statics, no package + license, comment text, module import
+--   rf_resolve_error the resolve answers with an error         -> outcome `none` logged, extmark cleared
+--   rf_no_answer     no answer within ASYNC_WAIT_MS (500 here) -> `dropped` logged, extmark cleared
+--   rf_in_time_lossy resolved before the accept with jdt.ls's lossy edit (replaces `import java.util.List;`)
+--                                                           -> blink does not apply it; import added, List kept
 --   rf_undo          `u` undoes the accept                  -> import dropped, buffer as before the accept
 --   rf_undo_one      an undo boundary (<Esc>), no text change -> import applied; one `u` removes item and import
 --   rf_second        a second accept (`HashMap`) before the first resolve answered -> both imports once
@@ -50,7 +56,7 @@ local NV = require("nv4j.completion")
 -- Same accept path as 31_imports: blink's own accept (resolve, then the edits), with only the
 -- dot-repeat hack and the frecency write stubbed (headless normal mode / user state).
 local real_access -- blink's frecency write, kept for the frecency cases
-local function accept(buf, lnum, col, pick, word, keep_access)
+local function accept(buf, lnum, col, pick, word, keep_access, preresolve)
   local fuzzy = C.blink()
   if not fuzzy then return nil, "blink not loaded" end
   require("blink.cmp.lib.text_edits").write_to_dot_repeat = function() end
@@ -67,6 +73,11 @@ local function accept(buf, lnum, col, pick, word, keep_access)
     id = math.random(1, 1e9), providers = { "lsp" }, initial_trigger_kind = "keyword", trigger_kind = "keyword",
   })
   vim.api.nvim_win_set_cursor(0, { lnum + 1, col })
+  if preresolve then
+    -- resolved before the accept (what blink's doc popup does): blink's accept then uses it at once
+    local task = require("blink.cmp.sources.lib").resolve(ctx, item)
+    vim.wait(10000, function() return task.status ~= 1 end, 5)
+  end
   local done, cb_ms, ins_ms = false, nil, nil
   local typed = vim.api.nvim_buf_get_lines(buf, lnum, lnum + 1, false)[1]
   -- the import lands above the typed line in the same apply: follow the line with an extmark
@@ -115,6 +126,21 @@ local function count(buf, s)
   end
 end
 
+local function fmt_edits(edits)
+  local ed = {}
+  for _, e in ipairs(edits or {}) do
+    ed[#ed + 1] = ("%d:%d-%d:%d %q"):format(e.range.start.line, e.range.start.character, e.range["end"].line,
+      e.range["end"].character, e.newText)
+  end
+  return table.concat(ed, ", ")
+end
+local function fmt_outcomes(list)
+  return table.concat(vim.tbl_map(function(o)
+    return o.status .. " (" .. tostring(o.why) .. ")" .. (o.placed and (" added " .. table.concat(o.placed, ", ")) or "")
+      .. (o.edits and (" [jdt.ls: " .. fmt_edits(o.edits) .. "]") or "")
+  end, list), ", ")
+end
+
 --- One case: accept, then report control-return time and import time against the budgets.
 local function case(name, buf, lnum, col, pick, word, fq, extra)
   local since = NV.async_count
@@ -129,13 +155,7 @@ local function case(name, buf, lnum, col, pick, word, fq, extra)
   -- what nv4j.completion did with the late resolve (diagnosis on failure)
   local outs = {}
   for i = math.max(1, #NV.async_log - (NV.async_count - since) + 1), #NV.async_log do
-    local o = NV.async_log[i]
-    local ed = {}
-    for _, e in ipairs(o.edits or {}) do
-      ed[#ed + 1] = type(e) == "string" and e or (("%d:%d-%d:%d %q"):format(e.range.start.line, e.range.start.character,
-        e.range["end"].line, e.range["end"].character, e.newText))
-    end
-    outs[#outs + 1] = o.status .. " (" .. tostring(o.why) .. ")" .. (#ed > 0 and (" [" .. table.concat(ed, ", ") .. "]") or "")
+    outs[#outs + 1] = fmt_outcomes({ NV.async_log[i] })
   end
   why_extra = why_extra .. (why_extra ~= "" and "; " or "") .. "late import: " .. (#outs > 0 and table.concat(outs, ", ") or "no outcome")
   lsp.report(P .. name, r.done and r.ms ~= nil and r.ms <= RETURN_BUDGET_MS and imp_ms ~= nil and imp_ms <= IMPORT_BUDGET_MS and ok_extra,
@@ -148,6 +168,8 @@ end
 -- Review Focus 1 ------------------------------------------------------------------------------
 
 --- Hold every completionItem/resolve answer of `client` until release() (deterministic late resolve).
+local gate_pass -- answers are transformed but not held (rf_in_time_lossy)
+local hold_forever -- rf_no_answer: the held answer is released only after the case
 local gate_transform -- optional fn(result) applied to each held resolve answer (rf_removing_edit)
 local function gate(client)
   local real = client.request
@@ -157,7 +179,13 @@ local function gate(client)
       return real(self, method, params, function(...)
         local n, a = select("#", ...), { ... }
         answered = answered + 1
-        if gate_transform and a[2] then gate_transform(a[2]) end
+        if gate_pass then
+          if gate_transform and a[2] then gate_transform(a[2]) end
+          return handler(unpack(a, 1, n))
+        end
+        if gate_transform and a[2] then
+          if gate_transform(a[2]) == "error" then a, n = { { code = -32603, message = "stubbed resolve error" }, nil, a[3] }, 3 end
+        end
         held[#held + 1] = function() handler(unpack(a, 1, n)) end
       end, bufnr)
     end
@@ -182,9 +210,6 @@ local function outcomes(since, n)
   for i = math.max(1, #NV.async_log - k + 1), #NV.async_log do got[#got + 1] = NV.async_log[i] end
   return got
 end
-local function fmt_outcomes(list)
-  return table.concat(vim.tbl_map(function(o) return o.status .. " (" .. tostring(o.why) .. ")" end, list), ", ")
-end
 
 local function nonblank(buf)
   local out = {}
@@ -198,6 +223,13 @@ local function same(buf, want)
   local got = nonblank(buf)
   return vim.deep_equal(got, want), ("non-blank lines %s"):format(vim.deep_equal(got, want) and "as expected"
     or ("DIFFER: got [" .. table.concat(got, " | ") .. "] want [" .. table.concat(want, " | ") .. "]"))
+end
+
+--- The buffer is exactly `want`, blank lines included (import groups).
+local function exact(buf, want)
+  local got = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+  local ok = vim.deep_equal(got, want)
+  return ok, ok and "lines exactly as expected" or ("lines DIFFER: got [" .. table.concat(got, " | ") .. "] want [" .. table.concat(want, " | ") .. "]")
 end
 
 local BASE = { "package demo;", "", "public class App {", "    public static void main(String[] args) {",
@@ -230,10 +262,18 @@ local function rf(name, buf, client, action, verify, lines, n_outcomes, row)
     local r, why = accept(buf, row or 4, 16, label("ArrayList", "java.util"), "ArrayList")
     if not r then return lsp.report(P .. name, false, why) end
     local held = g.wait(1)
-    local early = count(buf, AL)
+    -- new `import java.util.ArrayList;` lines since the case's text was set (place_comment_not_import
+    -- has that text inside a comment from the start)
+    local early = 0
+    for _, l in ipairs(vim.api.nvim_buf_get_lines(buf, 0, -1, false)) do
+      if l == AL then early = early + 1 end
+    end
+    for _, l in ipairs(lines or BASE) do
+      if l == AL then early = early - 1 end
+    end
     local ctx = { r = r, since = since }
     if action then action(buf, ctx) end
-    g.release()
+    if not hold_forever then g.release() end
     local outs = outcomes(since, n_outcomes or 1)
     vim.wait(300) -- a second (duplicate) apply would land by now
     local okv, detail = verify(buf, outs, ctx)
@@ -286,7 +326,7 @@ local function rf_cases(buf, client)
     vim.api.nvim_buf_set_lines(b, 1, 1, false, { "import java.util.Map;" })
   end, function(b, outs)
     local ok, d = same(b, cat({ "package demo;", AL, "import java.util.Map;" }, body("        ArrayList")))
-    return ok and status_is(outs, "placed") and count(b, AL) == 1, d .. ("; import count %d (want 1)"):format(count(b, AL))
+    return ok and status_is(outs, "applied") and count(b, AL) == 1, d .. ("; import count %d (want 1)"):format(count(b, AL))
   end)
 
   -- Deterministic twin of trial t1-l (jdt.ls once sent, for `HashMap`, an edit replacing the existing
@@ -299,10 +339,109 @@ local function rf_cases(buf, client)
   end
   local ok_rm, err_rm = pcall(rf, "rf_removing_edit", buf, client, nil, function(b, outs)
     local ok, d = same(b, cat({ "package demo;", AL, "import java.util.List;" }, body("        ArrayList")))
-    return ok and status_is(outs, "placed"), d
+    return ok and status_is(outs, "applied"), d
+  end, LB, nil, 6)
+
+  -- B1 (review): a stale pure insertion. jdt.ls inserts after `import java.util.List;` at (2,22) in
+  -- the text it saw; the user meanwhile put a longer import on line 2. Applied as sent, the insertion
+  -- would split `import java.util.concurrent.Future;`. The import must be added by Nv4J, sorted.
+  gate_transform = function(res)
+    res.additionalTextEdits = { { range = { start = { line = 2, character = 22 }, ["end"] = { line = 2, character = 22 } },
+      newText = "\nimport java.util.ArrayList;" } }
+  end
+  local ok_st, err_st = pcall(rf, "rf_stale_insert", buf, client, function(b)
+    vim.api.nvim_buf_set_lines(b, 2, 2, false, { "import java.util.concurrent.Future;" })
+  end, function(b, outs)
+    local ok, d = exact(b, cat({ "package demo;", "", AL, "import java.util.concurrent.Future;", "import java.util.List;", "" },
+      body("        ArrayList")))
+    return ok and status_is(outs, "applied"), d
   end, LB, nil, 6)
   gate_transform = nil
+  if not ok_st then lsp.report(P .. "rf_stale_insert", false, "error: " .. tostring(err_st)) end
+
+  -- Placement (M1): java.completion.importOrder groups ("", javax, jakarta, java, static), sorted within a
+  -- group, a blank line between groups; the import text comes from the (rewritten) resolve answer.
+  local function place_case(name, header, imp, want_header)
+    local lines = cat(header, { "public class App {", "    public static void main(String[] args) {", "        ArrayLis", "    }", "}" })
+    gate_transform = function(res)
+      res.additionalTextEdits = { { range = { start = { line = 0, character = 0 }, ["end"] = { line = 0, character = 0 } },
+        newText = imp .. "\n" } }
+    end
+    local okc, errc = pcall(rf, name, buf, client, nil, function(b, outs)
+      local ok, d = exact(b, cat(want_header, body("        ArrayList")))
+      return ok and status_is(outs, "applied"), d
+    end, lines, nil, #header + 2)
+    gate_transform = nil
+    if not okc then lsp.report(P .. name, false, "error: " .. tostring(errc)) end
+  end
+  local PK, LIST, SVC = "package demo;", "import java.util.List;", "import org.springframework.stereotype.Service;"
+  local STAT = "import static java.util.Objects.requireNonNull;"
+  place_case("place_other_first", { PK, "", LIST, "" }, SVC, { PK, "", SVC, "", LIST, "" })
+  place_case("place_group_between", { PK, "", SVC, "", LIST, "" }, "import jakarta.persistence.Entity;",
+    { PK, "", SVC, "", "import jakarta.persistence.Entity;", "", LIST, "" })
+  place_case("place_sorted_in_group", { PK, "", LIST, "import java.util.Map;", "" }, "import java.util.HashMap;",
+    { PK, "", "import java.util.HashMap;", LIST, "import java.util.Map;", "" })
+  place_case("place_before_static", { PK, "", STAT, "" }, AL, { PK, "", AL, "", STAT, "" })
+  place_case("place_static_last", { PK, "", LIST, "" }, STAT, { PK, "", LIST, "", STAT, "" })
+  place_case("place_no_package_license", { "/*", " * License text", " */", "" }, AL,
+    { "/*", " * License text", " */", "", AL, "" })
+  place_case("place_comment_not_import", { PK, "", "/*", AL, "*/", "// " .. AL, "" }, AL,
+    { PK, "", AL, "", "/*", AL, "*/", "// " .. AL, "" })
+  place_case("place_module_import_kept", { PK, "", "import module java.base;", "" }, AL,
+    { PK, "", "import module java.base;", "", AL, "" })
+  gate_transform = nil
   if not ok_rm then lsp.report(P .. "rf_removing_edit", false, "error: " .. tostring(err_rm)) end
+
+  -- The resolve fails (error answer) or never answers (jdt.ls died): outcome logged, extmark cleared,
+  -- the accepted text stays, nothing else changes.
+  local ANS = vim.api.nvim_create_namespace("nv4j_async_import")
+  local function no_marks(b) return #vim.api.nvim_buf_get_extmarks(b, ANS, 0, -1, {}) == 0 end
+  gate_transform = function() return "error" end
+  local ok_e, err_e = pcall(rf, "rf_resolve_error", buf, client, nil, function(b, outs)
+    local ok, d = exact(b, { "package demo;", "", "public class App {", "    public static void main(String[] args) {",
+      "        ArrayList", "    }", "}" })
+    return ok and status_is(outs, "none") and no_marks(b), d .. "; extmarks left " .. #vim.api.nvim_buf_get_extmarks(b, ANS, 0, -1, {})
+  end)
+  gate_transform = nil
+  if not ok_e then lsp.report(P .. "rf_resolve_error", false, "error: " .. tostring(err_e)) end
+  local wait0 = NV.ASYNC_WAIT_MS
+  NV.ASYNC_WAIT_MS, hold_forever = 500, true
+  local ok_n, err_n = pcall(rf, "rf_no_answer", buf, client, nil, function(b, outs)
+    local ok, d = exact(b, { "package demo;", "", "public class App {", "    public static void main(String[] args) {",
+      "        ArrayList", "    }", "}" })
+    return ok and status_is(outs, "dropped") and outs[#outs].why:find("no resolve answer") ~= nil and no_marks(b),
+      d .. "; extmarks left " .. #vim.api.nvim_buf_get_extmarks(b, ANS, 0, -1, {})
+  end)
+  NV.ASYNC_WAIT_MS, hold_forever = wait0, nil
+  if not ok_n then lsp.report(P .. "rf_no_answer", false, "error: " .. tostring(err_n)) end
+
+  -- The resolve answered before the accept (doc popup) with jdt.ls's lossy edit seen in 22 of 50 real
+  -- runs (2:0-2:22 replacing the existing import line): blink must not apply it as sent either.
+  do
+    local LB2 = { "package demo;", "", "import java.util.List;", "", "public class App {",
+      "    public static void main(String[] args) {", "        ArrayLis", "    }", "}" }
+    vim.diagnostic.reset(nil, buf)
+    E.set(buf, LB2)
+    E.wait_diags(buf, function(d) return E.has(d, nil, "ArrayLis cannot be resolved") ~= nil end, 10000)
+    gate_pass = true
+    gate_transform = function(res)
+      res.additionalTextEdits = { { range = { start = { line = 2, character = 0 }, ["end"] = { line = 2, character = 22 } },
+        newText = AL } }
+    end
+    local g = gate(client)
+    local since = NV.async_count
+    local okp, errp = pcall(function()
+      local r, why = accept(buf, 6, 16, label("ArrayList", "java.util"), "ArrayList", false, true)
+      if not r then return lsp.report(P .. "rf_in_time_lossy", false, why) end
+      local outs = outcomes(since, 1)
+      local ok, d = exact(buf, cat({ "package demo;", "", AL, "import java.util.List;", "" }, body("        ArrayList")))
+      lsp.report(P .. "rf_in_time_lossy", ok and status_is(outs, "applied") and r.ms <= RETURN_BUDGET_MS,
+        ("inserted after %.0f ms; outcome: %s; %s"):format(r.ms or -1, fmt_outcomes(outs), d))
+    end)
+    gate_pass, gate_transform = nil, nil
+    g.restore()
+    if not okp then lsp.report(P .. "rf_in_time_lossy", false, "error: " .. tostring(errp)) end
+  end
 
   rf("rf_undo", buf, client, function(b)
     vim.api.nvim_buf_call(b, function() vim.cmd("silent undo") end)
@@ -423,6 +562,47 @@ vim.fn.delete(FRECENCY_DIR, "rf")
 vim.fn.mkdir(FRECENCY_DIR, "p")
 if C.blink() then require("blink.cmp.config").fuzzy.frecency.path = FRECENCY_DIR .. "/frecency.dat" end
 
+--- NV4J_63_REPEAT=N: accept `List` then `HashMap` N times against the REAL jdt.ls resolve (no gate),
+--- printing what jdt.ls sent and the final import block; one PASS/FAIL line with the counts.
+function repeat_real(buf, n)
+  local good, missing, corrupt, dup, nones = 0, 0, 0, 0, 0
+  local want = { "package demo;", "import java.util.HashMap;", "import java.util.List;", "public class App {",
+    "    public static void main(String[] args) {", "        List<String> a = null;", "        HashMap", "    }", "}" }
+  for i = 1, n do
+    vim.diagnostic.reset(nil, buf)
+    E.set(buf, { "package demo;", "", "public class App {", "    public static void main(String[] args) {",
+      "        Lis", "        HashMa", "    }", "}" })
+    E.wait_diags(buf, function(d) return E.has(d, nil, "Lis cannot be resolved") ~= nil end, 10000)
+    vim.o.undolevels = vim.o.undolevels
+    local since = NV.async_count
+    local r1 = accept(buf, 4, 11, label("List", "java.util"), "List")
+    if r1 then wait_import(buf, "java.util.List", r1.t0) end
+    local l1 = E.line_of(buf, "^        List$")
+    if l1 then vim.api.nvim_buf_set_lines(buf, l1, l1 + 1, false, { "        List<String> a = null;" }) end
+    local l2 = E.line_of(buf, "^        HashMa$")
+    local r2 = l2 and accept(buf, l2, 14, label("HashMap", "java.util"), "HashMap")
+    if r2 then wait_import(buf, "java.util.HashMap", r2.t0) end
+    vim.wait(3000, function() return NV.async_count >= since + 2 end, 5)
+    local outs = {}
+    for k = math.max(1, #NV.async_log - (NV.async_count - since) + 1), #NV.async_log do
+      outs[#outs + 1] = NV.async_log[k]
+      if NV.async_log[k].status == "none" then nones = nones + 1 end
+    end
+    local nl, nh = count(buf, "import java.util.List;"), count(buf, "import java.util.HashMap;")
+    local ok = vim.deep_equal(nonblank(buf), want)
+    if ok then good = good + 1 end
+    if nl == 0 or nh == 0 then missing = missing + 1 end
+    if nl > 1 or nh > 1 then dup = dup + 1 end
+    if not ok and nl <= 1 and nh <= 1 and nl + nh == 2 then corrupt = corrupt + 1 end
+    local block = {}
+    for _, l in ipairs(vim.api.nvim_buf_get_lines(buf, 0, 4, false)) do block[#block + 1] = l end
+    print(("REPEAT %d %s; outcomes: %s; head: %s"):format(i, ok and "ok" or "BAD", fmt_outcomes(outs), table.concat(block, " | ")))
+  end
+  lsp.report(P .. "repeat_real", good == n,
+    ("%d/%d runs with both imports once and every line as expected; import missing %d, duplicated %d, other line wrong %d; resolve without import edit (none) %d")
+      :format(good, n, missing, dup, corrupt, nones))
+end
+
 local ok_all, err = pcall(function()
   local sr = vim.g.nv4j_service_ready_ms
   if sr then vim.wait(10000, function() return vim.uv.hrtime() / 1e6 >= sr + 1000 end, 5) end
@@ -464,6 +644,8 @@ local ok_all, err = pcall(function()
   client.request = real
   if not ok_s then lsp.report(P .. "stub_slow", false, "error: " .. tostring(err_s)) end
 
+  local rep_n = tonumber(vim.env.NV4J_63_REPEAT or "")
+  if rep_n then return repeat_real(buf, rep_n) end
   rf_cases(buf, client)
   frecency_cases(buf)
   rf_closed(buf, client)

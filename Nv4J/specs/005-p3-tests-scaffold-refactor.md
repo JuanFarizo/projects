@@ -95,3 +95,9 @@ Full `tests/run.sh` before the Task 1 commit, log `/tmp/nv4j/logs/test-20261021-
 - Still failing as expected, same cases as Task 0: `DONE 60_tests_runner 3 5`, `DONE 61_scaffold 3 14`, `DONE 62_refactor 8 5`.
 
 Dirty-fixture guard: `tests/lib/fixture_guard.sh`, called from `run.sh` before the build (`NV4J_FIXTURE_DIRTY=fail|restore|allow`); tests in `/tmp/nv4j/guard-test.log` (scratch git copy) and `/tmp/nv4j/guard-runsh.log` (real fixture, untracked probe: exit 3 before any build).
+
+### Task 1 fix round 1 (review B1, M1)
+
+jdt.ls's import ranges are never applied any more (only the statement, placed by Nv4J in its importOrder group); details, 12 new cases, controls r2 to r19 and the 50-run real-resolve loop (50/50, lossy jdt.ls edit seen in 36 of 50) in `specs/features/async-import.md`. `63_async_import` now 28 cases: three consecutive runs 28/0 (`/tmp/nv4j/logs/test-20261021-222940.log`, `-223017.log`, `-223053.log`).
+
+Full `tests/run.sh` after the fix, log `/tmp/nv4j/logs/test-20261021-224104.log` (exit 1, only from 60, 61, 62): P1/P2 223 PASS 0 FAIL (same per-check counts as above), cold first 42 ms, worst warm p95 42 ms; `DONE 63_async_import 28 0`; `60_tests_runner 3 5`, `61_scaffold 3 14`, `62_refactor 8 5` as before. The full run just before it (`-223221.log`) had `20_java25 6 1`: `attached` failed after Neovim reported `LSP[jdtls]: Error INVALID_SERVER_JSON: "Expected colon but found invalid token at character 65537"` (a transport glitch at the 64 KiB boundary, not in completion code); `20` alone passed 10/0 right after (`-224040.log`), then the full rerun above.

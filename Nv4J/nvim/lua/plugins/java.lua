@@ -53,7 +53,7 @@ return {
             -- Import groups, IntelliJ-like (its default: all other, javax, java, static), with
             -- jakarta next to javax. "" = every package no other entry matches, "#" = static imports.
             -- Used by auto-import on completion, quick fix imports and organize imports.
-            importOrder = { "", "javax", "jakarta", "java", "#" },
+            importOrder = require("nv4j.completion").IMPORT_ORDER, -- also used by the late import (D24)
           },
           -- No wildcard imports (jdt.ls default 99; IntelliJ folds at 5/3, Spring's style forbids *).
           sources = { organizeImports = { starThreshold = 99, staticStarThreshold = 99 } },

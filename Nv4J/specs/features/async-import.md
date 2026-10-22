@@ -1,6 +1,6 @@
 # Feature: Asynchronous import on completion accept (P1 follow-up)
 
-Priority: P3 (P1 follow-up). Status: built in Task 1 (`63_async_import` 16 cases pass; Task 0: research and the failing check). Decision: D24 in `specs/001-architecture.md`. Spec: `specs/005-p3-tests-scaffold-refactor.md`. Check: `tests/checks/63_async_import.lua` (`31_imports` and `11_completion_ranking` must stay green). Product (Task 1): `nvim/lua/nv4j/completion.lua`, `nvim/lua/plugins/blink.lua`.
+Priority: P3 (P1 follow-up). Status: built in Task 1 (`63_async_import` 28 cases pass, fix round 1 included; Task 0: research and the failing check). Decision: D24 in `specs/001-architecture.md`. Spec: `specs/005-p3-tests-scaffold-refactor.md`. Check: `tests/checks/63_async_import.lua` (`31_imports` and `11_completion_ranking` must stay green). Product (Task 1): `nvim/lua/nv4j/completion.lua`, `nvim/lua/plugins/blink.lua`.
 
 ## Budget
 
@@ -53,9 +53,10 @@ Negative control n1 (Task 0): `resolve_timeout_ms = 50` without any late apply (
 ## Task 1: what was built
 
 - `nvim/lua/plugins/blink.lua`: `completion.accept.resolve_timeout_ms` 1500 -> 50; `init` calls `require("nv4j.completion").install_async_import()`, which installs a `package.preload` for `blink.cmp.completion.accept` (blink's `list.accept` and the checks require it at call time) that loads blink's file and returns `M.wrap_accept(original)`.
-- `nvim/lua/nv4j/completion.lua` `wrap_accept`: for a Java buffer and a jdt.ls item without `additionalTextEdits` it records the accepted row, the lines above it, an extmark spanning the accepted line (left gravity start, right gravity end) and, through `nvim_buf_attach` `on_lines`, the changedtick right after blink's own edit of that line; calls blink's accept; then takes `require("blink.cmp.sources.lib").resolve(ctx, item)` (same context and item: blink's cached task, no second request) and, when it completes, runs `late_import` scheduled (after blink's own handler).
-- `late_import` guards, in order: resolve carries edits (else `none`); buffer valid and loaded (else `dropped`, "buffer closed"); every edit's non-blank text is `import ...;` (else `dropped`: no late code rewrites); edits whose imports are all in the buffer are skipped (`present`: blink applied it in time, or the user typed it; never a duplicate); the extmark region still contains the accepted word (else `dropped`: the accept was undone); then **verbatim** (jdt.ls's edits with `vim.lsp.util.apply_text_edits`) only when every edit range lies above the accepted line, those lines are unchanged since the accept and no edit would remove a non-blank line (additive only, trial t1-l); otherwise **placed**: the missing import lines are inserted by Nv4J (sorted among imports of the same kind, else after the last import, else after `package` with blank lines), pure line insertions above the accepted line, never on stale ranges. `undojoin` when the changedtick is still the one after blink's edit (one `u` removes item and import, also across the undo boundary <Esc> makes). Every outcome is logged in `require("nv4j.completion").async_log` (last 20) and counted in `async_count`.
-- Change against D24 as written in Task 0: an import whose region changed is **placed**, not dropped (the stale-range case is also what two quick accepts produce: the first late import changes the region the second's ranges refer to; dropping lost the second import). D24 in 001 updated.
+- `nvim/lua/nv4j/completion.lua` `wrap_accept` (design after fix round 1, see below): for a Java buffer and a jdt.ls item without (mixed) `additionalTextEdits` it records the accepted row, an extmark spanning the accepted line (left gravity start, right gravity end) and, through `nvim_buf_attach` `on_lines`, the changedtick right after blink's own edit of that line; calls blink's accept; then takes `require("blink.cmp.sources.lib").resolve(ctx, item)` (same context and item: blink's cached task, no second request) and, when it completes, runs `late_import` scheduled. A watchdog (`ASYNC_WAIT_MS`, 10 s) drops a resolve that never answers; every path clears the extmark.
+- `M.take_imports` (called from `transform_lsp`, which blink also runs on the resolved item): import-only `additionalTextEdits` of a jdt.ls item move to `nv4j_imports`, so **blink never applies jdt.ls's import ranges**, not even when the resolve came in time (doc popup). Mixed edits stay for blink, as in P1.
+- `late_import` guards, in order: resolve carries import edits (else `none`); buffer valid and loaded (else `dropped`, "buffer closed"); not `module-info.java`; every edit's non-blank text is `import ...;` (else `dropped`); only the import **statements** are taken; those already among the header's imports (comment-aware scan: import text in `//` or `/* */` comments does not count) are skipped (`present`: never a duplicate); the extmark region still contains the accepted word (else `dropped`: the accept was undone); then each statement is inserted by `place_import` at a place computed from the **current** buffer: `java.completion.importOrder` group (read from the jdtls client settings, defined once as `M.IMPORT_ORDER` and sent by `plugins/java.lua`), sorted within the group, a blank line between groups, statics last, after `package` when there are no imports, at the top of the code below any leading license comment when there is no package; `import module` lines are left alone. `undojoin` when the changedtick is still the one after blink's edit (one `u` removes item and import, also across the undo boundary <Esc> makes; otherwise the import is its own undo step). Outcomes: `async_log` (last 20) / `async_count`; outcomes other than applied/present also go to `vim.notify` at DEBUG level.
+- Changes against D24 as written in Task 0: jdt.ls's ranges are never applied (first version: applied when unchanged, else placed; review B1), and a changed region no longer drops the import. D24 in 001 updated.
 - Bug fixed on the way: a resolve answering after its buffer was wiped threw "Invalid buffer id" from `transform_lsp` (`is_java`) (P1 code, reached now because resolves outlive the accept); `is_java` and `snippets_should_show` check the buffer first.
 
 ### Frecency vs project ranking (P1 follow-up, same task)
@@ -64,7 +65,7 @@ Root cause measured (trial t1-e): blink v1.10.2's Rust `fuzzy` (`fuzzy/rust/lib.
 
 Fix: `M.sorts()` returns `java_sort_empty` for Java when no keyword character is typed before the cursor: score_offset (deprecated -2, postfix -6, snippet, project-key offsets) first, then jdt.ls relevance and project usage as in `java_sort`, then blink's `score` (with nothing typed, that is exactly the frecency bonus: a tie breaker), then jdt.ls order. With a typed prefix the fuzzy match dominates and the order is unchanged (`score`, `java_sort`); cmdline completion with a Java buffer current gets blink's default sort (its items are not Java items). Clean database: identical order to before (score = score_offset there), confirmed by 10/11 unchanged. Trade-off: on an empty-prefix list frecency now only breaks ties (it can no longer lift an item over higher jdt.ls relevance or project usage), which is the point; in `java.util.` member lists, where relevance is flat, it still orders.
 
-## Task 1 check (`63_async_import`, 16 cases)
+## Task 1 check (`63_async_import`, first version: 16 cases; 28 after fix round 1, below)
 
 | Case | What | Result (3 consecutive final runs) |
 |------|------|-----------------------------------|
@@ -86,7 +87,7 @@ Fix: `M.sorts()` returns `java_sort_empty` for Java when no keyword character is
 
 The Review Focus cases are deterministic: every `completionItem/resolve` answer of the jdtls client is held by a gate until the case releases it, so the action always happens between accept and late resolve. Two test-side rules (deviations from a plain replay, documented here): (1) before each `rf_*` accept the check clears the buffer's diagnostics, resets the text and waits (<= 10 s) for jdt.ls's "ArrayLis cannot be resolved" publish, because right after a case that ended with the import in place jdt.ls's resolve sometimes still saw the import and sent no `additionalTextEdits` (trial t1-h; a jdt.ls staleness, not Nv4J's; it means "no import", as P1 behaved with any missing edit); (2) an undo boundary (`let &undolevels = &undolevels`) is made before the accept, as the user's own typing makes one: blink skips its undo point for jdt.ls items (they are snippet-format), and headless API edits are otherwise one undo block.
 
-### Negative controls (product or check mutated for one run, restored byte for byte, `cmp` identical)
+### Negative controls, first version (verbatim path, superseded by fix round 1; product or check mutated for one run, restored byte for byte, `cmp` identical)
 
 | # | Mutation | Fails | Log |
 |---|----------|-------|-----|
@@ -103,6 +104,45 @@ The Review Focus cases are deterministic: every `completionItem/resolve` answer 
 | n11 | check: frecency write stubbed during the 20 accepts | `frecency_polluted` (db 0 bytes), `frecency_at` (bonus 0) | `-214512.log` |
 
 n1 (Task 0, timeout 50 without late apply) is the same as n2 for the first three cases. Mutation script: the trial runner in the Task 1 report.
+
+## Fix round 1 (review: B1 blocking, M1)
+
+**B1.** The first version applied jdt.ls's ranges when the lines they touch were unchanged since the accept, but jdt.ls computes them on its own snapshot, which may predate an earlier late import or user edit: a stale pure insertion passed every guard. Measured with the new 50-run loop (below, first run before the fix to `take_imports`): jdt.ls's `HashMap` edit was `2:0-2:22 "import java.util.HashMap;"` in 22 of 50 runs, a replacement of the existing `import java.util.List;` line (28 runs: `2:0-2:0 "import java.util.HashMap;\n"`). That is the t1-a/t1-l flake. Now jdt.ls's ranges are never applied: `take_imports` moves import-only edits off the resolved item (blink's in-time path cannot apply them either) and `place_import` inserts the statements at a place computed from the current buffer.
+
+**M1.** `place_import` follows `java.completion.importOrder` (one definition, `M.IMPORT_ORDER`, sent by `plugins/java.lua`, read back from the client settings), see the design bullets above.
+
+Resolve errors and missing answers: an error answer gives `none`; no answer within `ASYNC_WAIT_MS` (10 s) gives `dropped`; both are logged (`async_log`, `vim.notify` DEBUG) and clear the extmark.
+
+Spring-client items (the Spring Boot LS on Java buffers) go through blink's plain accept: with the 50 ms timeout, a resolve-only edit arriving later would be lost. None exist today (its `@Value`/`@Profile` items carry their edits in the completion answer), `51_spring_completion` passes.
+
+New cases (12): `rf_stale_insert` (jdt.ls's pure insertion at (2,22) while line 2 now holds a longer import: added before it, sorted, no split line), `rf_in_time_lossy` (resolved before the accept with the lossy 2:0-2:22 edit: blink does not apply it, `List` kept), `rf_resolve_error`, `rf_no_answer` (extmark cleared, outcome logged), `place_other_first`, `place_group_between` (jakarta between other and java with blank lines), `place_sorted_in_group`, `place_before_static`, `place_static_last`, `place_no_package_license` (below the license comment, at the top of the code), `place_comment_not_import` (a bare `import java.util.ArrayList;` line inside `/* */` and one after `//` do not count as present), `place_module_import_kept`. Placement cases compare every line, blank lines included. `rf_region_changed`, `rf_removing_edit`, `rf_second` now expect `applied` (one path). Case count: 28 (attached, 3 accept cases, 21 `rf_*`/`place_*`, 3 frecency).
+
+Real-resolve loop: `NV4J_63_REPEAT=50 NV4J_CHECKS=63_async_import tests/run.sh` accepts `List` then `HashMap` 50 times against the real resolve (no gate; each run waits for jdt.ls to settle), prints `REPEAT i ok|BAD; outcomes: ... [jdt.ls: <edits>]; head: <first 4 lines>` per run and one `repeat_real` case with the counts. Final code (`/tmp/nv4j/logs/test-20261021-223129.log`): **50/50** runs with both imports once and every line as expected; import missing 0, duplicated 0, other line wrong 0, `none` 0; 100 of 100 outcomes `applied` (blink applied none in time); jdt.ls's `HashMap` edit was the lossy `2:0-2:22 "import java.util.HashMap;"` in 36 of 50 runs (14: `2:0-2:0 "import java.util.HashMap;\n"`), `List` always `0:13-2:0 "\n\nimport java.util.List;\n\n"`. First loop run (place_import already in, `take_imports` not yet): also 50/50, lossy edit 22 of 50 (`-221420.log`).
+
+Three consecutive runs after the fix: `DONE 63_async_import 28 0` (`-222940.log`, `-223017.log`, `-223053.log`): text 43 to 51 ms, import `List` 658 to 790 ms, `HashMap` 461 to 479 ms, stubbed 871 to 877 ms.
+
+### Negative controls, fix round 1 (one mutation per run, restored, `cmp` identical; runner `negctl2.py` in the Task 1 report)
+
+| # | Mutation | Fails | Log |
+|---|----------|-------|-----|
+| r2 | wrapper not installed | every accept, `rf_*` and `place_*` case (24) | `/tmp/nv4j/logs/test-20261021-221816.log` |
+| r3 | present guard off | `rf_import_typed` | `-222010.log` |
+| r4 | undo guard off | `rf_undo` | `-222047.log` |
+| r5 | jdt.ls ranges applied as sent (verbatim) | `rf_region_changed`, `rf_removing_edit`, `rf_stale_insert`, `rf_in_time_lossy`, `rf_second`, all 8 `place_*` (13) | `-222124.log` |
+| r6 | no undojoin | `rf_undo_one` | `-222201.log` |
+| r7 | cursor saved/restored around the insertion | `rf_cursor_moved` | `-222238.log` |
+| r8 | buffer-valid guards off | `rf_closed` | `-222315.log` |
+| r9 | old Java sort | `frecency_at` (24) | `-222351.log` |
+| r10 | no Java sort | `frecency_at` (29), `frecency_http` (9) | `-222429.log` |
+| r11 | check: frecency write stubbed | `frecency_polluted`, `frecency_at` | `-222509.log` |
+| r14 | one group for everything | `place_other_first`, `place_group_between`, `place_before_static`, `place_static_last` | `-222546.log` |
+| r15 | naive present test (any trimmed line) | `place_comment_not_import` (`present`, import lost) | `-222623.log` |
+| r16 | `import module` not recognized | `place_module_import_kept` | `-222659.log` |
+| r17 | no package: insert at line 0 | `place_no_package_license` (above the license) | `-222736.log` |
+| r18 | no watchdog | `rf_no_answer` (extmark left, no outcome) | `-222849.log` |
+| r19 | `take_imports` off (blink applies import edits) | `rf_in_time_lossy` (`List` import replaced) | `-222812.log` |
+
+`place_sorted_in_group` fails under r5 only (sorting has no separate control: r14 keeps one group sorted).
 
 ## Dirty-fixture guard (carried item)
 
@@ -123,4 +163,5 @@ n1 (Task 0, timeout 50 without late apply) is the same as n2 for the first three
 | t1-i | `rf_region_changed` with a blank line before the new import, `rf_undo_one` without an undo boundary | n5 and n6 did not fail (stale ranges happened to give the same non-blank lines; headless edits joined anyway); the cases were made strict (import right below `package`; undo boundary) and then both controls fail | kept |
 | t1-j | `frecency_at_typed` (`@Re`) | rank 1 with any sort (no control can fail it): removed | removed |
 | t1-l | 8-run repeat of `63`: one run had `accept_second` with the `List` import gone after a verbatim apply (`/tmp/nv4j/logs/test-20261021-215052.log`, same symptom as t1-a): jdt.ls's late `HashMap` edit replaced the `List` import line (edits were not yet printed then; the only verbatim path that can remove that line). Guard 5 (additive only: an edit that would remove a non-blank line is placed instead) + deterministic twin `rf_removing_edit` (n12 fails without the guard); the case output now prints the late edits | kept |
+| t1-m | review B1/M1: verbatim path removed, `take_imports`, `place_import` with importOrder, watchdog; 12 new cases, controls r2 to r19 | all pass; every control fails its cases | kept |
 | t1-k | cmdline completion with a Java buffer current | Java sorts would have applied to cmdline items (pre-existing); now blink's default there | kept |
