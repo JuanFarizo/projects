@@ -151,8 +151,8 @@ Gaps found:
 
 ## Planned follow-ups
 
-- **Async import apply** (removes the accept stall, gap 2): accept with a short resolve timeout (about 150 ms) and, when the late `completionItem/resolve` returns, apply its `additionalTextEdits` if they do not overlap edits made since. Needs a small blink.cmp accept hook or a wrapper around the lsp source; to be done with the P3 plan. The README (Task 7) lists it under known gaps.
-- **Frecency vs project ranking**: see `specs/002-p1-completion.md`, follow-ups.
+- **Async import apply** (removes the accept stall, gap 2), **built in P3 Task 1** (`specs/features/async-import.md`; timeout 50 ms, late import guarded, placed when the region changed): accept with a short resolve timeout (about 150 ms) and, when the late `completionItem/resolve` returns, apply its `additionalTextEdits` if they do not overlap edits made since. Needs a small blink.cmp accept hook or a wrapper around the lsp source; to be done with the P3 plan. The README (Task 7) lists it under known gaps.
+- **Frecency vs project ranking**: built in P3 Task 1 (`specs/002-p1-completion.md`, follow-ups; `specs/features/async-import.md`).
 
 ## Harness findings (fixed in Task 6)
 

@@ -5,6 +5,8 @@ return {
     dependencies = {
       "xzbdmw/colorful-menu.nvim",
     },
+    -- Async import on accept (D24): wraps blink's accept function when blink first requires it.
+    init = function() require("nv4j.completion").install_async_import() end,
     opts = {
       -- Signature + docs while typing a call's args; LSP signatureHelp works on unfinished code.
       signature = { enabled = true, window = { border = "rounded", show_documentation = true } },
@@ -31,11 +33,11 @@ return {
       },
       completion = {
         -- jdt.ls sends the auto-import (additionalTextEdits) only in completionItem/resolve, and
-        -- resolving a well documented type (List, HashMap, ObjectMapper) takes 0.4-0.7 s because it
-        -- also renders the javadoc. With blink's default 100 ms the item was inserted without its
-        -- import. Accept now waits for resolve up to 1.5 s (only as long as resolve really takes).
-        -- Measured: specs/features/diagnostics-imports-actions.md.
-        accept = { resolve_timeout_ms = 1500 },
+        -- resolving a well documented type (List, HashMap, ObjectMapper) takes 0.4-0.8 s because it
+        -- also renders the javadoc. P1 waited up to 1.5 s for it; P3 (D24) inserts the text after at
+        -- most 50 ms and nv4j.completion applies the import when that resolve answers (guarded, once).
+        -- Measured: specs/features/async-import.md.
+        accept = { resolve_timeout_ms = 50 },
         ghost_text = { enabled = true },
         documentation = {
           auto_show = true,

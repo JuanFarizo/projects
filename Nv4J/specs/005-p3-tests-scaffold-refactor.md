@@ -1,6 +1,6 @@
 # 005 - P3: tests runner, scaffolding, refactors, async import
 
-Status: Task 0 done (research, fixture, decisions D21 to D24, four failing checks). Tasks 1 to 5 not started. Plan: `docs/superpowers/plans/2026-10-21-nv4j-p3-tests-scaffold-refactor.md`. Does not contradict `001-architecture.md`; decisions D21 and later live in its decisions table.
+Status: Task 0 done (research, fixture, decisions D21 to D24, four failing checks). Task 1 done (async import, frecency vs project ranking, dirty-fixture guard; `63_async_import` passes, see "Task 1"). Tasks 2 to 5 not started. Plan: `docs/superpowers/plans/2026-10-21-nv4j-p3-tests-scaffold-refactor.md`. Does not contradict `001-architecture.md`; decisions D21 and later live in its decisions table.
 
 ## Goal
 
@@ -83,3 +83,15 @@ Full `tests/run.sh` before the Task 0 commit, log `/tmp/nv4j/logs/test-20261021-
 Fixture left unchanged on disk after the run (`git status` clean for `tests/fixtures`).
 
 Negative controls run in Task 0 (product or behaviour stubbed for one run, reverted): n1 (`63`, `resolve_timeout_ms = 50`, imports lost -> FAIL, `/tmp/nv4j/logs/test-20261021-205435.log`), n60a (`60`, results kept out of quickfix/diagnostics -> `failure_shown` FAIL, `-210751.log`), n62a (`62`, workspace edits limited to the current buffer -> rename/move/change signature FAIL, `-210328.log`). The template baseline is the control for `61`'s "saved" condition.
+
+## Task 1 (async import, frecency vs project ranking, dirty-fixture guard)
+
+Details, cases, negative controls n2 to n12 and trials t1-a to t1-l: `specs/features/async-import.md`. Three consecutive `63_async_import` runs: `DONE 63_async_import 16 0` each (`/tmp/nv4j/logs/test-20261021-215442.log`, `-215506.log`, `-215531.log`); text in 45 to 51 ms, import 317 to 871 ms, `@` `RestController` 1 with a polluted frecency database (blink's own order 27).
+
+Full `tests/run.sh` before the Task 1 commit, log `/tmp/nv4j/logs/test-20261021-215600.log` (exit 1, only from 60, 61, 62, which Tasks 2 to 4 build):
+
+- P1/P2 unchanged, 223 PASS 0 FAIL: `DONE 00_boot 11 0`, `01_jdtls_ready 2 0`, `10_completion_latency 17 0`, `11_completion_ranking 26 0`, `12_usage_index 7 0`, `20_java25 10 0`, `30_diagnostics 24 0`, `31_imports 10 0`, `32_code_actions 28 0`, `40_debug 16 0`, `41_run 27 0`, `50_spring_ls 13 0`, `51_spring_completion 20 0`, `52_spring_nav 12 0`. Budgets: cold first 46 ms (400), worst warm p95 50 ms (150).
+- `DONE 63_async_import 16 0` (text 47/50/50 ms, import 736/347/936 ms).
+- Still failing as expected, same cases as Task 0: `DONE 60_tests_runner 3 5`, `DONE 61_scaffold 3 14`, `DONE 62_refactor 8 5`.
+
+Dirty-fixture guard: `tests/lib/fixture_guard.sh`, called from `run.sh` before the build (`NV4J_FIXTURE_DIRTY=fail|restore|allow`); tests in `/tmp/nv4j/guard-test.log` (scratch git copy) and `/tmp/nv4j/guard-runsh.log` (real fixture, untracked probe: exit 3 before any build).

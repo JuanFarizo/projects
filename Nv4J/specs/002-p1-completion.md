@@ -195,8 +195,8 @@ Menu drawing (colorful-menu labels, treesitter in the menu), documentation auto-
 
 ## Follow-ups (logged in Task 6 fix round 1, for the P3 plan)
 
-- **Frecency noise on empty-prefix lists.** blink.cmp's frecency boosts every item whose label the user accepted, even with an empty prefix. In testing, accepting `List` a few times pushed the nested `@...List` container annotations to the top of `@` and `RestController` fell from rank 4 to 27. The checks are isolated from it (`XDG_STATE_HOME=/tmp/nv4j/state`, frecency writes stubbed in check 31), but the user's own sessions are not. Candidate: for Java, weight jdt.ls relevance and project usage above frecency (e.g. frecency only as a tie breaker after `nv4j_rel`, or off for empty prefixes). Not built now.
-- **Async import apply**: see `specs/features/diagnostics-imports-actions.md`, "Planned follow-ups".
+- **Frecency noise on empty-prefix lists.** blink.cmp's frecency boosts every item whose label the user accepted, even with an empty prefix. In testing, accepting `List` a few times pushed the nested `@...List` container annotations to the top of `@` and `RestController` fell from rank 4 to 27. The checks are isolated from it (`XDG_STATE_HOME=/tmp/nv4j/state`, frecency writes stubbed in check 31), but the user's own sessions are not. Candidate: for Java, weight jdt.ls relevance and project usage above frecency (e.g. frecency only as a tie breaker after `nv4j_rel`, or off for empty prefixes). **Built in P3 Task 1:** with nothing typed, frecency is a tie breaker after score_offset, relevance and usage (`java_sort_empty`); root cause: blink v1.10.2's Rust adds the bonus whenever its database is open (`use_frecency` is never read). `63_async_import` `frecency_at`/`frecency_http`, `specs/features/async-import.md`.
+- **Async import apply**: built in P3 Task 1 (`specs/features/async-import.md`).
 
 ### Concerns for the user
 

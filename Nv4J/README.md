@@ -29,6 +29,7 @@ Each row says what you get, the measured result (ranges come from the three cons
 | First completion after jdt.ls is ready is not slow (warm-up on start) | 51 to 55 ms (400 ms); 48 to 61 ms in the final P2 runs. Before the warm-up it was 740 to 827 ms | `10_completion_latency` (`cold_first`, sent 1.0 s after ServiceReady) |
 | Expected item near the top | `@` gives `RestController` at 1 since P2 (4 at the end of P1, jdt.ls order 6), `http.` gives `authorizeHttpRequests` at 2 (was 19), `repository.` gives `save` at 1 (was 42). `@Auto`, `@Rest`, `@Table(`, `@Column(` first or in the short list. Local variables and fields beat JDK types | `11_completion_ranking` |
 | Postfix templates (`http.cast`, `sysout`...) come after real members, `http.va` still finds `var` | rule checked | `11_completion_ranking` |
+| What you accepted before (blink's frecency) no longer buries the expected item on a list with nothing typed: after accepting `List` 20 times, `@` still gives `RestController` at 1 (blink's own order: 27) and `http.` `authorizeHttpRequests` at 2; frecency only breaks ties there (P3) | top 5 / top 3 | `63_async_import` `frecency_*` |
 | Members you use most in the project rank higher (IntelliJ style "most used"), counted with ripgrep | rule checked, rg failing or timing out keeps old counts; a loose `.java` file with no build marker (`pom.xml`, `build.gradle*`, `settings.gradle*`, `.git`) is not counted, so `rg` never scans e.g. your home folder | `11_completion_ranking`, `12_usage_index` |
 | Less JDK noise: internal packages, `com.apple.*`, AspectJ internals, `java.awt.List` hidden, so `List` completes to `java.util.List` | `no_noise` cases a, s, m, List | `11_completion_ranking` |
 
@@ -55,6 +56,7 @@ Inline diagnostics are drawn by tiny-inline-diagnostic. They refresh when you le
 | What you get | Measured (budget 1.5 s) | Check |
 |--------------|-------------------------|-------|
 | Accepting a completion adds its import, also the very first one of a session | first `List` 685 to 746 ms, second documented type (`HashMap`) 379 to 439 ms (final P2 runs 676 to 749 ms and 307 to 466 ms) | `31_imports` |
+| Accepting does not wait for the import (P3): the item text is in at once, the import follows when jdt.ls has it, once, in the right place; edits, cursor moves, an undo or a closed buffer in between never duplicate or corrupt it (an undone accept drops its import); one `u` removes item and import | text 45 to 51 ms (100 ms, before P3: 405 to 802 ms); import first `List` 659 to 787 ms, `HashMap` 317 to 372 ms, with an 800 ms stubbed resolve 867 to 871 ms (1.5 s) | `63_async_import` |
 | Imports land in IntelliJ-like groups: everything else, `javax`, `jakarta`, `java`, then static | checked on a planted file | `31_imports` |
 | `<leader>co` organizes: removes unused imports, orders groups, also when the file has a compile error | 137 to 183 ms | `31_imports` |
 | No wildcard imports (star threshold 99) | config | none |
@@ -155,7 +157,7 @@ Be aware before you rely on Nv4J for a full workday:
 - **P3: tests runner polish.** `<leader>tr` (debug the nearest test) is covered by `40_debug`. `<leader>tt`, `<leader>tT` (nvim-jdtls) and `<leader>tp` (whole project via `mvn test`) exist, they are not covered by checks.
 - **P3: scaffolding** (create package, class, with a wizard). Only the basic new-file template above exists.
 - **P3: refactors beyond what jdt.ls already offers.** Extract and rename work through jdt.ls. Move, inline, change signature, safe delete are not set up or tested.
-- **P3: carried follow-ups.** Asynchronous import apply (removes the up to 0.8 s accept wait), project ranking weighted above blink's frecency, saved run configurations (profile, env, VM args per project).
+- **P3: carried follow-ups.** Saved run configurations (profile, env, VM args per project). (Asynchronous import apply and project ranking above frecency shipped with P3 Task 1: Capabilities, Imports and Completion.)
 - **P4: Gradle** (supported by jdt.ls, not tested; the Boot detector, the `bootRun` fallback command and the build-file notification know Gradle files, nothing runs a Gradle build in the checks), JPA checks. Spring beans/request mappings navigation, planned for P4, already shipped with P2 (`<leader>sp`, Capabilities).
 - **P5:** everything else.
 
@@ -341,6 +343,7 @@ tests/run.sh                          # every check, each in its own headless Ne
 NV4J_CHECKS=30 tests/run.sh           # only checks whose file name starts with 30
 NV4J_CHECKS='3*' tests/run.sh         # a glob works too
 NV4J_PATH_JDK=25 tests/run.sh         # friendly case: JDK 25 first on PATH (default is the hostile 21)
+NV4J_FIXTURE_DIRTY=restore tests/run.sh  # restore a fixture an aborted run left changed (default: stop with the command)
 ```
 
 It needs `~/.config/nv4j` linked (above), a JDK 25 (to compile the fixture) and Maven. It installs jdt.ls and `vscode-spring-boot-tools` into Nv4J's own Mason directory if they are missing, prints only PASS/FAIL/SKIP lines plus one `DONE <check> <passed> <failed>` line per check, and writes the full output to `/tmp/nv4j/logs/test-<timestamp>.log`. Exit code is 0 only if everything passed. A check that stops before its `DONE` line (an error outside its guarded cases) counts as FAIL, with its last output lines shown, so missing cases never pass silently. Each run moves the previous `latency.jsonl` to `latency.prev.jsonl`, so the samples file holds one run.
@@ -363,7 +366,7 @@ The checks (each file lists its cases at the top):
 | `51_spring_completion` | Spring completion in blink: properties, yml, `@Value`, `@Profile`, broken files, latency, `@` regression |
 | `52_spring_nav` | Spring hover, `@Value` go to definition, beans and request mappings, `<leader>sp` picker |
 
-Budgets: warm completion p95 at most 150 ms per case; first completion after ready at most 400 ms; expected item in the top 5 plus a relative rule per case; diagnostics at most 3 s from edit to screen; import accept at most 1.5 s; one code action round trip at most 1 s. P2: breakpoint hit at most 20 s from launch, no JVM 10 s after terminate, Spring LS initialized at most 10 s after jdt.ls is ready, `application.properties`/yml/`@Value` first completion at most 400 ms and warm p95 at most 150 ms, Spring hover and go to definition at most 500 ms, Spring LS memory at most 1 GB (hard limit 1.5 GB). `NV4J_SPRING=0 tests/run.sh` starts every check with the Spring LS off (A/B timing). The fixture is `tests/fixtures/demo`, planted broken sources are in `tests/fixtures/planted/*.java.txt` and are loaded into a buffer in memory only, never written to disk.
+Budgets: warm completion p95 at most 150 ms per case; first completion after ready at most 400 ms; expected item in the top 5 plus a relative rule per case; diagnostics at most 3 s from edit to screen; import accept at most 1.5 s (P3: item text in at most 100 ms after the accept, its import at most 1.5 s, `63_async_import`); one code action round trip at most 1 s. P2: breakpoint hit at most 20 s from launch, no JVM 10 s after terminate, Spring LS initialized at most 10 s after jdt.ls is ready, `application.properties`/yml/`@Value` first completion at most 400 ms and warm p95 at most 150 ms, Spring hover and go to definition at most 500 ms, Spring LS memory at most 1 GB (hard limit 1.5 GB). `NV4J_SPRING=0 tests/run.sh` starts every check with the Spring LS off (A/B timing). The fixture is `tests/fixtures/demo`, planted broken sources are in `tests/fixtures/planted/*.java.txt` and are loaded into a buffer in memory only, never written to disk.
 
 ### What is measured and what you must judge
 
@@ -398,12 +401,13 @@ The test run keeps its blink.cmp state in `/tmp/nv4j/state` so your own accepted
 | Red `pom.xml` notification | Read it, it is jdt.ls's reason (malformed XML, missing artifact). Fix the pom; it reloads on save with no prompt. |
 | First start errors about tree-sitter parsers | Install the CLI: `brew install tree-sitter-cli`, then `:TSUpdate`. |
 | `tests/run.sh`: "symlink missing" | Run the `ln -s` step from Install. |
+| `tests/run.sh`: "the fixture has uncommitted changes" | An aborted run left edits in `tests/fixtures/demo`. Run the printed `git -C ... checkout ... && git -C ... clean ...` command (it touches only the fixture's `src` and `pom.xml`), or rerun with `NV4J_FIXTURE_DIRTY=restore` (does the same) or `NV4J_FIXTURE_DIRTY=allow` (keeps your fixture changes). |
 | `tests/run.sh`: "JDK 25 not found" | `sdk install java 25-amzn`; the fixture needs a JDK 25 compiler. |
 
 ## Known limitations
 
-- **Accept can wait up to about 0.8 s** the first time you accept a well documented type (`List`, `HashMap`, `ObjectMapper`) that the doc popup has not loaded yet. jdt.ls sends the auto-import only together with the javadoc, and blink waits up to 1.5 s for it so the import is never lost. Planned fix: apply the import asynchronously when the late resolve returns (`specs/features/diagnostics-imports-actions.md`, "Planned follow-ups"), with the P3 plan.
-- **Frecency can blur ranking.** blink.cmp remembers what you accepted and boosts those labels, even with an empty prefix. After accepting `List` several times, `@` can show annotation noise first and push `RestController` far down. The checks are isolated from this, your own session is not. Planned: weight jdt.ls relevance and project usage above frecency for Java (`specs/002-p1-completion.md`, Follow-ups).
+- **A late import can be dropped.** When jdt.ls sends the import after the item is in (P3), Nv4J drops it if you undid the accept or closed the buffer first; the unresolved type then shows as an error and the quick fix or `<leader>co` adds it. If you changed the import lines in between, the import line is placed by Nv4J (sorted) instead of jdt.ls's exact edit. Only import edits are applied late.
+- **Frecency still counts once you type.** With a typed prefix blink's frecency bonus (up to +6) still adds to the match score, as before; on lists with nothing typed it only breaks ties (P3).
 - **Usage counts are by name**, not resolved references: `save` on any receiver counts. They need `rg`. A loose file outside any project (no `pom.xml`, `build.gradle*`, `settings.gradle*`, `.git` in its folder) gets no counts.
 - **Prefix-less `@`** gives `RestController` at 1 on the fixture (4 before P2's ranking changes) because the project uses annotations. In a project that has never used an annotation the list is jdt.ls's order. Typing one letter fixes it.
 - **Unused local in a method that has an error** is not reported (jdt.ls skips that method). Unused imports are handled (Nv4J's own pass). That pass also treats a fully qualified use or the same name used as a local as a use, so it can miss an unused import (a false negative, not a false alarm).

@@ -17,6 +17,13 @@ if [ ! -L "$HOME/.config/nv4j" ] || [ ! -d "$HOME/.config/nv4j" ]; then
   exit 2
 fi
 
+# Dirty-fixture guard: an aborted run can leave a check's edits in the fixture on disk. Fails with the
+# exact recovery command (only tests/fixtures/demo/src and its pom.xml are looked at), or restores them
+# with NV4J_FIXTURE_DIRTY=restore, or runs anyway with NV4J_FIXTURE_DIRTY=allow.
+bash "$HERE/lib/fixture_guard.sh" "$NV4J_FIXTURE" "${NV4J_FIXTURE_DIRTY:-fail}" 2>&1 | tee -a "$LOG"
+guard_rc=${PIPESTATUS[0]}
+[ "$guard_rc" -eq 0 ] || exit "$guard_rc"
+
 # Same JDK discovery as the config (SDKMAN, ~/Library/Java/JavaVirtualMachines, /Library/...).
 find_jdk() { nvim -l "$HERE/lib/jdk_home.lua" "$1" 2>/dev/null; }
 
