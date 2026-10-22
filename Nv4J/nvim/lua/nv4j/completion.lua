@@ -289,7 +289,7 @@ end
 -- place computed from the current buffer (jdt.ls's ranges are never applied late).
 -- Every outcome is appended to M.async_log ({ status = "applied"|"present"|"dropped"|"none", why, ms,
 -- edits = what jdt.ls sent, placed = the import lines added }); M.async_count counts them all (the log
--- keeps the last 20). Outcomes other than applied/present are also sent to vim.notify at DEBUG level.
+-- keeps the last 20). With vim.g.nv4j_async_debug = true, outcomes other than applied/present are also sent to vim.notify at DEBUG level (off by default: most accepts end as `none`, which would toast on every accept).
 M.async_log = {}
 M.async_count = 0
 M.ASYNC_WAIT_MS = 10000 -- give up on a resolve that never answers (jdt.ls died or hung)
@@ -298,7 +298,7 @@ local ASYNC_LOG_MAX = 20
 local function async_note(status, why, t0, edits, placed)
   M.async_count = M.async_count + 1
   M.async_log[#M.async_log + 1] = { status = status, why = why, ms = t0 and (vim.uv.hrtime() / 1e6 - t0) or nil, edits = edits, placed = placed }
-  if status ~= "applied" and status ~= "present" then
+  if vim.g.nv4j_async_debug and status ~= "applied" and status ~= "present" then
     vim.notify(("nv4j async import: %s (%s)"):format(status, why), vim.log.levels.DEBUG)
   end
   if #M.async_log > ASYNC_LOG_MAX then table.remove(M.async_log, 1) end

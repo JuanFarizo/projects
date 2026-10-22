@@ -564,7 +564,7 @@ if C.blink() then require("blink.cmp.config").fuzzy.frecency.path = FRECENCY_DIR
 
 --- NV4J_63_REPEAT=N: accept `List` then `HashMap` N times against the REAL jdt.ls resolve (no gate),
 --- printing what jdt.ls sent and the final import block; one PASS/FAIL line with the counts.
-function repeat_real(buf, n)
+local function repeat_real(buf, n)
   local good, missing, corrupt, dup, nones = 0, 0, 0, 0, 0
   local want = { "package demo;", "import java.util.HashMap;", "import java.util.List;", "public class App {",
     "    public static void main(String[] args) {", "        List<String> a = null;", "        HashMap", "    }", "}" }
