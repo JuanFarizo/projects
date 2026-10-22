@@ -10,6 +10,8 @@
 
 **Spec:** `specs/001-architecture.md` (decisions, budgets), `specs/003-lessons-and-method.md` (method rules, P2 lessons). This plan adds decisions D21+ to 001 and a P3 spec `specs/005-p3-tests-scaffold-refactor.md`.
 
+> **Superseded by Task 0 rulings (`specs/005-p3-tests-scaffold-refactor.md`, D21-D24):** nearest test stays `<leader>tr` (not `<leader>tn`); refactor keys live under `<leader>j` (not `<leader>cr`); `<leader>tp` replaces the old `mvn test` terminal key. Where a task below names other keys, use 005.
+
 ## Global Constraints
 
 - `~/.config/nvim` is never modified. Config lives in `Nv4J/nvim/`, run as `NVIM_APPNAME=nv4j`.
