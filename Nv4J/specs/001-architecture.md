@@ -1,6 +1,6 @@
 # 001 - Architecture and workflow
 
-Status: P1 and P2 confirmed and built (14 checks, 218 PASS 0 FAIL in each of the three consecutive final P2 runs; 223 PASS 0 FAIL after the final review fix wave, `41_run` 27 cases; P2 details in `specs/004-p2-spring-run-debug.md`), P3 to P5 not started. Source of truth for Nv4J. Later specs must not contradict this file. User-facing summary: `README.md` (keep both consistent; each later plan updates the README Capabilities section in its last task).
+Status: P1 and P2 confirmed and built (14 checks, 218 PASS 0 FAIL in each of the three consecutive final P2 runs; 223 PASS 0 FAIL after the final review fix wave, `41_run` 27 cases; P2 details in `specs/004-p2-spring-run-debug.md`), P3 in progress (Task 0 done: research, fixture, decisions D21 to D24, failing checks 60 to 63; `specs/005-p3-tests-scaffold-refactor.md`), P4 and P5 not started. Source of truth for Nv4J. Later specs must not contradict this file. User-facing summary: `README.md` (keep both consistent; each later plan updates the README Capabilities section in its last task).
 
 ## Goal
 
@@ -8,7 +8,7 @@ A fast, lightweight Neovim setup for Java and Spring development. IntelliJ is th
 
 ## Decisions
 
-D1 to D6 are confirmed by P1 (nothing was reversed). D7 to D13 are decisions taken during P1. D14 and later are P2 decisions (`specs/004-p2-spring-run-debug.md`).
+D1 to D6 are confirmed by P1 (nothing was reversed). D7 to D13 are decisions taken during P1. D14 to D20 are P2 decisions (`specs/004-p2-spring-run-debug.md`). D21 and later are P3 decisions (`specs/005-p3-tests-scaffold-refactor.md`).
 
 | # | Decision | Owner | Status |
 |---|----------|-------|--------|
@@ -32,6 +32,10 @@ D1 to D6 are confirmed by P1 (nothing was reversed). D7 to D13 are decisions tak
 | D18 | The `spring-boot` client stays on Java buffers with full capabilities (needed for `@Value`/`@Profile` completion and go to definition). Spring items keep the server's order inside blink; jdt.ls's sortText formula is read only for `jdtls` items; inside `@Value("${` the keys set in the project's own config files rank first. | P2 Tasks 3 and 4 | Built: `nvim/lua/nv4j/completion.lua`, `51_spring_completion`. A/B with the Spring LS off: worst warm p95 +5 ms (budget 150). |
 | D19 | The Spring symbols picker is `<leader>sp` (beans `@+`, request mappings `@/`, Spring client only). `<leader>ss` stays LazyVim's Goto Symbol. | P2 Task 4 ruling | Built: `nvim/lua/nv4j/spring_nav.lua`, `52_spring_nav` `key`, `picker`. Cost: collides with the snacks picker extra's plugin-spec search if that extra is enabled. |
 | D20 | First requests to the Spring Boot LS (properties completion, `@Value`, `@Profile`, yml hover) are measured 1.0 s after the client initializes or the file opens, the D13 rule applied to P2. Outliers get their own case with a regression limit instead of a warm-up (`hover_yml_port`, 1 s). | P2 Tasks 0 and 4 rulings | Confirmed by `50_spring_ls`, `51_spring_completion`, `52_spring_nav`. Deviation listed in README Known limitations. |
+| D21 | Test results UI: keep nvim-jdtls's launch path (java-test bundle via `jdtls.dap.experimental`: test items, launch arguments, `dap.run`, so P2's build-before-launch, project JDK and JUnit-launcher fixes apply) and add a thin result layer in `nvim/lua/nv4j/tests.lua`: own parse of JDT's RemoteTestRunner stream (pass/fail/ignored counts, nested and parameterized names), failures as `vim.diagnostic` + quickfix with message and frames that jump to the line, a summary notification, scopes nearest/class/failed/project/last. Not a view over surefire XML: `mvn test` costs seconds of Maven start, depends on plugin resolution (failed offline in P2), honours `excludedGroups` (a tagged-out class never runs from the editor, unlike IntelliJ) and is Maven only. Reason: nearest already runs in 0.8 to 1.0 s warm (budget 10 s) through nvim-jdtls; what is missing is the result layer (it counts `@Disabled` as passed, no counts, no project or failed scope). | P3 Task 0, Claude (user can overturn) | Decided; Task 2 builds it (`60_tests_runner`). Details: `specs/features/tests-runner.md`. |
+| D22 | Scaffolding entry: own command `require("nv4j.scaffold").new({ kind, name, dir })` with `vim.ui.select`/`vim.ui.input` for missing answers, global key `<leader>jn`; neo-tree's add and the `:e Foo.java` template call the same templates (one source). The file is written with its content before it is opened. Reason: works without the tree open and from any buffer; a neo-tree-only hook needs the tree and gets the file after neo-tree created it; today's template leaves only the EMPTY file nvim-jdtls writes for new buffers on disk. | P3 Task 0, Claude (user can overturn) | Decided; Task 3 builds it (`61_scaffold`). Details: `specs/features/scaffolding.md`. |
+| D23 | Refactor surface: jdt.ls code actions and nvim-jdtls's command handlers (rename with file rename, move, inline, change signature already work and measured 101 to 761 ms against the 2 s budget), behind thin functions in `nvim/lua/nv4j/refactor.lua` that pick the action by kind (`refactor.move`, `refactor.inline`, `refactor.change.signature`) and take answers as arguments; own code only for what jdt.ls/the clients lack: package rename (`workspace/willRenameFiles` BEFORE the folder moves, edits written, buffers re-pointed; also for neo-tree folder renames, where LazyVim asks after the move and leaves the wrong `package` line), safe delete (references first: usages listed in quickfix, else delete), change signature with arguments (`java/getChangeSignatureInfo` + `java/getRefactorEdit`). Keys `<leader>jm/ji/js/jd/jr` (Java group shared with `<leader>jn`); `<leader>cr` stays Rename (a `<leader>cr` prefix would delay rename by `timeoutlen`). | P3 Task 0, Claude (user can overturn) | Decided; Task 4 builds it (`62_refactor`). Details: `specs/features/refactors.md`. |
+| D24 | Async import on accept: blink's `resolve_timeout_ms` lowered so the text lands <= 100 ms (about 50 ms), and Nv4J applies the import when the item's resolve, which blink keeps running after its timeout (`task:timeout` does not cancel, the provider caches the task), completes: a wrapper around blink's accept function applies the late `additionalTextEdits` once, guarded (buffer valid, import absent, edit range inside the import block with unchanged text, else dropped), joined to the accept's undo block. No second resolve request. Reason: smallest change that meets both halves of the budget; today the text waits 0.4 to 0.8 s for the javadoc render that carries the import. | P3 Task 0, Claude (user can overturn) | Decided; Task 1 builds it (`63_async_import`). Details: `specs/features/async-import.md`. |
 
 ## Budgets and results (P1, P2)
 
@@ -115,7 +119,7 @@ Nv4J/
     fixtures/       demo/ (Spring Boot Maven project) and planted/ (broken sources, in-memory only)
     run.sh          runs all checks headlessly
     checks/         one script per measurable requirement
-    lib/            headless helpers (lsp, completion, edit, jdk_home)
+    lib/            headless helpers (lsp, completion, edit, jdk_home, fixture)
 ```
 
 ## How to run

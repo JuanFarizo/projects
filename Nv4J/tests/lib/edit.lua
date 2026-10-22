@@ -147,6 +147,32 @@ function M.restore(buf, lines)
   end
 end
 
+--- The normal-mode mapping of `lhs` as a user session has it: maparg, else a which-key spec still
+--- queued for `buf` (or global). which-key sets up at VimEnter, which a headless check never
+--- reaches (its -c commands run before VimEnter), so LazyVim's which-key buffer keys (jdtls test and
+--- extract keys) stay in which-key's queue there. Returns { desc, queued = bool } or nil.
+function M.keymap(lhs, buf)
+  local m = vim.fn.maparg(lhs, "n", false, true)
+  if next(m) then return { desc = m.desc, queued = false } end
+  local ok, wk = pcall(require, "which-key")
+  if not ok or type(wk._queue) ~= "table" then return nil end
+  local want = vim.keycode(lhs)
+  local found
+  local function walk(spec, inherited)
+    if type(spec) ~= "table" then return end
+    local b = spec.buffer or inherited.buffer
+    local mode = spec.mode or inherited.mode or "n"
+    if type(spec[1]) == "string" and spec[2] ~= nil and vim.keycode(spec[1]) == want
+      and (b == nil or b == buf or (b == 0 and buf == vim.api.nvim_get_current_buf()))
+      and (mode == "n" or (type(mode) == "table" and vim.tbl_contains(mode, "n"))) then
+      found = { desc = spec.desc, queued = true }
+    end
+    for _, child in ipairs(spec) do walk(child, { buffer = b, mode = mode }) end
+  end
+  for _, todo in ipairs(wk._queue) do walk(todo.spec, {}) end
+  return found
+end
+
 --- Collect vim.notify messages (the config's visible notifications) from now on.
 function M.capture_notify()
   local got = {}
