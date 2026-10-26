@@ -32,6 +32,14 @@
 --  rename_package_conflict: into an existing package / into itself: refused, nothing changed.
 --  neotree_rename_package, neotree_rename_file: neo-tree's own rename_node (prompt answered): package
 --                       line / class and references follow, LazyVim's after-the-move hook not run.
+--  rename_package_first_null: jdt.ls stubbed null for the first root: refused, nothing changed.
+--  rename_class_strings: JPQL/class-name strings and a properties value naming Invoice: listed in a
+--                       warning, not rewritten.
+--  neotree_rename_billing: neo-tree folder rename with a src/test/java namesake: both folders move.
+--  neotree_refused    : a refused neo-tree rename: nothing moves, buffers intact, no success toast.
+--  jr_package_line, prompt_class: <leader>jr on a `package` line; the prompt when no name is given.
+--  Unbuilt functions (move, inline, change_signature, safe_delete): their cases FAIL "pending" (today's
+--  path shown after it) and `api` adds a pending_<fn> FAIL line each: the check stays red until 4e.
 --  inline_method      : `gross(invoice)` call in total inlined: `invoice.quantity() * invoice.unitPrice()`.
 --  inline_variable    : local `gross` in total inlined: `return gross(invoice);`.
 --  change_signature   : total gets `int discount` with default 0: the 3 call sites in Checkout pass 0.
@@ -72,6 +80,22 @@ local ok_mod, refactor = pcall(require, "nv4j.refactor")
 -- `keys` check the built ones and list the rest as pending (a pending case still fails on its own).
 local FNS = { "rename_class", "rename_package", "move", "inline", "change_signature", "safe_delete" }
 local function has(f) return ok_mod and type(refactor) == "table" and type(refactor[f]) == "function" end
+-- Unbuilt functions fail visibly (ruling, Task 4a fix round 1): the check stays red until 4e. Their cases
+-- still run today's path and show it after the pending reason, but never PASS through plain jdt.ls.
+local TASK = { rename_class = "4a", rename_package = "4a", move = "4b", inline = "4c", change_signature = "4d", safe_delete = "4e" }
+local KEY = { rename_class = "<leader>jr", rename_package = "<leader>jp", move = "<leader>jm", inline = "<leader>ji",
+  change_signature = "<leader>js", safe_delete = "<leader>jd" }
+local CASE_FN = { move_class = "move", inline_method = "inline", inline_variable = "inline", change_signature = "change_signature",
+  safe_delete_blocked = "safe_delete", safe_delete_free = "safe_delete" }
+local function pending_reason(f) return ("pending: nv4j.refactor.%s not built (Task %s)"):format(f, TASK[f]) end
+do
+  local real_report = lsp.report
+  lsp.report = function(name, ok, detail)
+    local fn = CASE_FN[name:sub(#P + 1)]
+    if fn and not has(fn) then return real_report(name, false, pending_reason(fn) .. "; today's path: " .. tostring(detail)) end
+    return real_report(name, ok, detail)
+  end
+end
 do
   local built, pending = {}, {}
   for _, f in ipairs(FNS) do
@@ -80,6 +104,9 @@ do
   lsp.report(P .. "api", #built > 0, ok_mod and ("nv4j.refactor built: %s; pending: %s"):format(
     #built > 0 and table.concat(built, ", ") or "none", #pending > 0 and table.concat(pending, ", ") or "none")
     or ("nv4j.refactor does not load: " .. tostring(refactor)))
+  for _, f in ipairs(pending) do
+    lsp.report(P .. "pending_" .. f, false, pending_reason(f) .. "; key " .. KEY[f] .. " not mapped")
+  end
 end
 
 do
@@ -663,6 +690,177 @@ case("neotree_rename_file", function()
     { "Invoice.java gone, no buffer on it", vim.uv.fs_stat(INVOICE) == nil and loaded(INVOICE) == nil },
     { "no Invoice token left", word_count(text_of(CHECKOUT), "Invoice") + word_count(text_of(CALC), "Invoice") + word_count(text_of(BILL), "Invoice") == 0 },
   }, ok_clean, why)
+end)
+
+--- Stub jdt.ls's willRenameFiles to answer null for old uris containing `part`; returns undo, count.
+local function null_will_rename(part)
+  local real, n = client.request_sync, { 0 }
+  client.request_sync = function(self, m, params, t, b)
+    if m == "workspace/willRenameFiles" and params.files[1].oldUri:find(part, 1, true) then
+      n[1] = n[1] + 1
+      return { result = nil }
+    end
+    return real(self, m, params, t, b)
+  end
+  return function() client.request_sync = real end, n
+end
+
+--- Answer the next vim.ui.input with `answer`; the returned table gets the prompt and default.
+local function answer_input(answer)
+  local real, seen = vim.ui.input, {}
+  vim.ui.input = function(o, cb)
+    vim.ui.input = real
+    seen.prompt, seen.default = o and o.prompt, o and o.default
+    cb(answer)
+  end
+  return seen
+end
+
+-- rename_package_first_null: jdt.ls answers null for the FIRST (only) root every time (stubbed): refused,
+-- nothing moved, nothing changed (before the fix the folder moved with the old `package` line).
+case("rename_package_first_null", function()
+  if not has("rename_package") then return lsp.report(P .. "rename_package_first_null", false, pending_reason("rename_package")) end
+  local chk = lsp.open(CHECKOUT)
+  vim.api.nvim_set_current_buf(chk); vim.api.nvim_win_set_cursor(0, { 1, 0 })
+  local undo, n = null_will_rename("/src/main/java/demo/shop")
+  local got, stop = capture()
+  local t0 = E.now()
+  local ok = refactor.rename_package({ name = "demo.store" })
+  local ms = E.now() - t0
+  undo(); stop()
+  local msg = find_msg(got, "gave no edit", vim.log.levels.ERROR)
+  local d = F.diff(snap)
+  lsp.report(P .. "rename_package_first_null", ok == false and msg ~= nil and #d.added + #d.changed + #d.missing + #d.dirs == 0
+    and loaded(CHECKOUT) ~= nil and not vim.bo[chk].modified,
+    ("returned %s after %.0f ms, %d null answer(s); message: %s; disk %s"):format(tostring(ok), ms, n[1], tostring(msg), F.fmt(d)))
+end)
+
+-- rename_class_strings: a JPQL string, a class-name string and an application.properties value name
+-- Invoice (planted for the case): the rename does not rewrite them (scope: warn only), the summary is a
+-- warning listing each place.
+case("rename_class_strings", function()
+  if not has("rename_class") then return lsp.report(P .. "rename_class_strings", false, pending_reason("rename_class")) end
+  local Q = main .. "demo/shop/InvoiceQueries.java"
+  local PROPS = fixture .. "/src/main/resources/application.properties"
+  local fq = assert(io.open(Q, "w"))
+  fq:write([[package demo.shop;
+
+// planted by 62_refactor rename_class_strings, removed after the case
+public class InvoiceQueries {
+    static final String ALL = "SELECT i FROM Invoice i WHERE i.quantity > 0";
+    static final String TYPE = "demo.billing.Invoice";
+}
+]])
+  fq:close()
+  local fp = assert(io.open(PROPS, "a"))
+  fp:write("demo.refactor.type=demo.billing.Invoice\n")
+  fp:close()
+  local props_line = #vim.fn.readfile(PROPS)
+  local inv = lsp.open(INVOICE)
+  lsp.open(CHECKOUT); lsp.open(CALC)
+  local l, c = pos(inv, "^public class Invoice", "Invoice")
+  vim.api.nvim_set_current_buf(inv); vim.api.nvim_win_set_cursor(0, { l + 1, c })
+  local got, stop = capture()
+  local t0 = E.now()
+  refactor.rename_class({ name = "Bill" })
+  local applied, ms = until_ms(t0, function() return find_msg(got, "Renamed class Invoice -> Bill: ") ~= nil end)
+  stop()
+  local sum = find_msg(got, "Renamed class Invoice -> Bill: ", vim.log.levels.WARN) or ""
+  local want = { "src/main/java/demo/shop/InvoiceQueries.java:5", "src/main/java/demo/shop/InvoiceQueries.java:6",
+    "src/main/resources/application.properties:" .. props_line }
+  local missing = vim.tbl_filter(function(w) return not sum:find(w, 1, true) end, want)
+  local qt = disk(Q) or ""
+  local ok_clean, why = clean({ CHECKOUT, CALC, BILL }, t0)
+  report_apply("rename_class_strings", ("nv4j.refactor.rename_class (scan %.0f ms)"):format((refactor.last or {}).scan_ms or -1),
+    applied, ms, {
+      { "warning lists the 3 places" .. (#missing > 0 and (" (missing " .. table.concat(missing, ", ") .. ")") or ""), #missing == 0 },
+      { "nothing rewritten", qt:find("FROM Invoice i", 1, true) ~= nil and (disk(PROPS) or ""):find("=demo.billing.Invoice", 1, true) ~= nil },
+      { "no false hit (Checkout, PriceCalculator)", not sum:find("Checkout.java:", 1, true) and not sum:find("PriceCalculator.java:", 1, true) },
+    }, ok_clean, why)
+end)
+
+-- neotree_rename_billing: billing -> invoicing in the tree (src/main/java): the namesake folder in
+-- src/test/java follows (as with rename_package), test package lines and Checkout's imports updated.
+case("neotree_rename_billing", function()
+  local test = fixture .. "/src/test/java/"
+  local NM, NT = main .. "demo/invoicing/", test .. "demo/invoicing/"
+  lsp.open(CHECKOUT); lsp.open(CALC)
+  local inv = lsp.open(INVOICE)
+  vim.api.nvim_set_current_buf(inv)
+  local t0 = E.now()
+  local done = neotree_rename(main .. "demo/billing", "invoicing")
+  local applied, ms = until_ms(t0, function()
+    return (disk(NT .. "PriceCalculatorTest.java") or ""):find("package demo.invoicing;", 1, true) ~= nil
+      and (text_of(CHECKOUT) or ""):find("import demo.invoicing.Invoice;", 1, true) ~= nil
+  end)
+  vim.wait(300)
+  local calls = done()
+  local ok_clean, why = clean({ CHECKOUT, NM .. "Invoice.java", NT .. "PriceCalculatorTest.java" }, t0)
+  report_apply("neotree_rename_billing", "neo-tree rename_node (folder with a src/test/java namesake)", applied, ms, {
+    { "main and test folders moved", vim.uv.fs_stat(main .. "demo/billing") == nil and vim.uv.fs_stat(test .. "demo/billing") == nil },
+    { "test package lines", (disk(NT .. "PriceCalculatorFailingTest.java") or ""):find("package demo.invoicing;", 1, true) ~= nil },
+    { "tests import nothing from their own package", not (disk(NT .. "PriceCalculatorTest.java") or ""):find("import demo.invoicing.", 1, true) },
+    { ("LazyVim after-move hook skipped (%d call)"):format(calls), calls == 0 },
+  }, ok_clean, why)
+end)
+
+-- neotree_refused: a neo-tree folder rename that Nv4J refuses (jdt.ls stubbed null): nothing moves, the
+-- buffer stays on its file, our error is shown and neo-tree's "Renamed ... successfully" is not (neo-tree
+-- cannot cancel from its before-event: its own rename is made to fail, the placeholder removed after 1 s).
+case("neotree_refused", function()
+  local chk = lsp.open(CHECKOUT)
+  vim.api.nvim_set_current_buf(chk)
+  local undo, n = null_will_rename("/src/main/java/demo/shop")
+  local got, stop = capture()
+  local done = neotree_rename(main .. "demo/shop", "store")
+  vim.wait(2500, function() return find_msg(got, "successfully") ~= nil end, 20)
+  done(); undo(); stop()
+  local b = loaded(CHECKOUT)
+  local err, ok_msg = find_msg(got, "gave no edit", vim.log.levels.ERROR), find_msg(got, "successfully")
+  local d = F.diff(snap)
+  lsp.report(P .. "neotree_refused", err ~= nil and ok_msg == nil and #d.added + #d.changed + #d.missing + #d.dirs == 0
+    and b ~= nil and E.text(b) == (snap.files[CHECKOUT]:gsub("\n$", "")) and loaded(main .. "demo/store/Checkout.java") == nil,
+    ("%d null answer(s); error: %s; success toast: %s; Checkout buffer %s; disk %s"):format(n[1], tostring(err), tostring(ok_msg),
+      b and (E.text(b) == (snap.files[CHECKOUT]:gsub("\n$", "")) and "intact" or "CHANGED") or "GONE", F.fmt(d)))
+end)
+
+-- jr_package_line: <leader>jr (the mapping's own function) with the cursor on the `package` line renames
+-- the package; the name comes from the prompt (answered "demo.store").
+case("jr_package_line", function()
+  local chk = lsp.open(CHECKOUT)
+  vim.api.nvim_set_current_buf(chk); vim.api.nvim_win_set_cursor(0, { 1, 3 })
+  local m = vim.fn.maparg("<leader>jr", "n", false, true)
+  if not m.callback then return lsp.report(P .. "jr_package_line", false, "<leader>jr has no Lua callback: " .. vim.inspect(m.rhs)) end
+  local MOVED = main .. "demo/store/Checkout.java"
+  local seen = answer_input("demo.store")
+  local t0 = E.now()
+  m.callback()
+  local applied, ms = until_ms(t0, function() return (disk(MOVED) or ""):find("package demo.store;", 1, true) ~= nil end)
+  report_apply("jr_package_line", ("<leader>jr on `package demo.shop;` (prompt %q, default %q)"):format(tostring(seen.prompt),
+    tostring(seen.default)), applied, ms, {
+    { "package prompt", (seen.prompt or ""):find("Rename package demo.shop", 1, true) ~= nil and seen.default == "demo.shop" },
+    { "buffer re-pointed", loaded(MOVED) ~= nil and loaded(CHECKOUT) == nil },
+  }, clean({ MOVED }, t0))
+end)
+
+-- prompt_class: rename_class() without a name asks with vim.ui.input (prompt names the class, default
+-- is its name) and renames with the answer.
+case("prompt_class", function()
+  if not has("rename_class") then return lsp.report(P .. "prompt_class", false, pending_reason("rename_class")) end
+  local inv = lsp.open(INVOICE)
+  lsp.open(CHECKOUT); lsp.open(CALC)
+  vim.api.nvim_set_current_buf(inv); vim.api.nvim_win_set_cursor(0, { 1, 0 })
+  local seen = answer_input("Bill")
+  local t0 = E.now()
+  refactor.rename_class()
+  local applied, ms = until_ms(t0, function()
+    return vim.uv.fs_stat(BILL) ~= nil and (text_of(CHECKOUT) or ""):find("import demo.billing.Bill;", 1, true) ~= nil
+  end)
+  local ok_clean, why = clean({ CHECKOUT, CALC, BILL }, t0)
+  report_apply("prompt_class", ("rename_class() with no name (prompt %q, default %q)"):format(tostring(seen.prompt), tostring(seen.default)),
+    applied, ms, {
+      { "prompt names Invoice, default Invoice", (seen.prompt or ""):find("Rename class Invoice", 1, true) ~= nil and seen.default == "Invoice" },
+    }, ok_clean, why)
 end)
 
 --- Inline at (pat, word) in PriceCalculator; `want` must appear in the file afterwards.

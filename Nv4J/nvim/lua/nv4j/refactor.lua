@@ -59,6 +59,88 @@ local function valid_identifier(s)
   return require("nv4j.scaffold").valid_identifier(s)
 end
 
+--- Source root and package of a directory inside `src/<set>/java` (nil outside one).
+local function src_root_of(dir)
+  return require("nv4j.scaffold").source_root(dir)
+end
+
+-- ── strings and config that still name the old class/package (warn only, never rewritten) ────────
+
+local SCAN_EXT = { java = true, properties = true, yml = true, yaml = true, xml = true }
+local SCAN_SKIP = { [".git"] = true, target = true, build = true, node_modules = true, out = true, bin = true,
+  [".gradle"] = true, [".idea"] = true }
+local SCAN_MAX_FILES = 5000
+
+local function word(name)
+  return "%f[%w_$]" .. vim.pesc(name) .. "%f[^%w_$]"
+end
+
+--- "file:line" where an old name is still written as text after a rename: inside a Java string literal
+--- (JPQL `FROM Invoice`, `"demo.billing.Invoice"`, a `@Qualifier`/`@Named`/`@Resource` bean name) or
+--- anywhere in a .properties/.yml/.xml file of the project. `names.java` / `names.config`: Lua patterns.
+--- jdt.ls's rename does not touch these (IntelliJ offers "search in strings"); Nv4J warns, nothing more.
+function M.stale_refs(root, names)
+  local out, n = {}, 0
+  local function scan(path, ext)
+    local b = vim.fn.bufnr(path)
+    local lines = (b ~= -1 and vim.api.nvim_buf_is_loaded(b)) and vim.api.nvim_buf_get_lines(b, 0, -1, false)
+      or (vim.fn.getfsize(path) < 1048576 and vim.fn.readfile(path)) or {}
+    for i, l in ipairs(lines) do
+      local hit = false
+      if ext == "java" then
+        for lit in l:gmatch('"(.-)"') do
+          for _, pat in ipairs(names.java) do
+            if lit:find(pat) then hit = true end
+          end
+        end
+        if not hit and names.bean and l:find("@[QNRD][%a]*%(") and (l:find("@Qualifier", 1, true) or l:find("@Named", 1, true)
+            or l:find("@Resource", 1, true) or l:find("@DependsOn", 1, true)) then
+          for lit in l:gmatch('"(.-)"') do
+            if lit:find(names.bean) then hit = true end
+          end
+        end
+      else
+        for _, pat in ipairs(names.config) do
+          if l:find(pat) then hit = true end
+        end
+      end
+      if hit then out[#out + 1] = ("%s:%d"):format(rel(path, root), i) end
+    end
+  end
+  local function walk(dir)
+    for name, kind in vim.fs.dir(dir) do
+      local p = dir .. "/" .. name
+      if kind == "directory" and not SCAN_SKIP[name] then
+        walk(p)
+      elseif kind == "file" then
+        local ext = name:match("%.(%w+)$")
+        n = n + 1
+        if ext and SCAN_EXT[ext] and n <= SCAN_MAX_FILES then scan(p, ext) end
+      end
+    end
+  end
+  if root then walk(root) end
+  return out
+end
+
+--- Patterns for a renamed class `old` in package `pkg` (nil = default package).
+local function class_names(old, pkg)
+  local fqn = pkg and (pkg .. "." .. old) or nil
+  local bean = old:sub(1, 1):lower() .. old:sub(2)
+  return { java = { word(old) }, config = fqn and { word(fqn), word(old) } or { word(old) }, bean = word(bean) }
+end
+
+--- Patterns for a renamed package `pkg`.
+local function package_names(pkg)
+  return { java = { word(pkg) }, config = { word(pkg) } }
+end
+
+local function stale_note(stale, old)
+  if not stale or #stale == 0 then return "" end
+  return (". NOT rewritten (strings/config still name %s, check them): %s%s"):format(old,
+    table.concat(vim.list_slice(stale, 1, 8), ", "), #stale > 8 and (", +" .. (#stale - 8) .. " more") or "")
+end
+
 -- ── errors before/after ──────────────────────────────────────────────────────────────────────────
 
 --- ERROR diagnostics per file path, all buffers (jdt.ls publishes for unopened files too).
@@ -264,8 +346,11 @@ function M.rename_class(opts)
         failed_part_way(label, why, files, root_of(client))
         return done(false)
       end
-      M.last = { label = label, files = files, ok = true }
-      notify(summary(label, files, root_of(client)))
+      local t_scan = vim.uv.hrtime()
+      local _, pkg = src_root_of(vim.fs.dirname(path))
+      local stale = M.stale_refs(require("nv4j.root").project(path), class_names(old, pkg ~= "" and pkg or nil))
+      M.last = { label = label, files = files, ok = true, stale = stale, scan_ms = (vim.uv.hrtime() - t_scan) / 1e6 }
+      notify(summary(label, files, root_of(client)) .. stale_note(stale, old), #stale > 0 and vim.log.levels.WARN or nil)
       follow_up(label, before, vim.tbl_map(function(f) return f.path end, files))
       done(true)
     end, buf)
@@ -280,11 +365,23 @@ local function has_java(dir)
   return #vim.fs.find(function(n) return n:match("%.java$") ~= nil end, { path = dir, limit = 1 }) > 0
 end
 
+--- A rename jdt.ls must answer with an edit: a .java file or a folder with Java files, from and to both
+--- inside a source root. A null answer there means "not ready", not "nothing to do".
+local function needs_edit(from, to)
+  local st = vim.uv.fs_stat(from)
+  if not st then return false end
+  local dir_from = st.type == "directory" and from or vim.fs.dirname(from)
+  local dir_to = st.type == "directory" and to or vim.fs.dirname(to)
+  if not (src_root_of(dir_from) and src_root_of(dir_to)) then return false end
+  if st.type == "directory" then return has_java(from) end
+  return from:match("%.java$") ~= nil
+end
+
 --- Fallback edit for a package folder: the `package` line of every .java file under `from` (subpackages
 --- too) set for its place under `to`. Text from the loaded buffer, else the disk.
 local function package_lines_edit(from, to)
-  local _, old_pkg = require("nv4j.scaffold").source_root(from)
-  local _, new_pkg = require("nv4j.scaffold").source_root(to)
+  local _, old_pkg = src_root_of(from)
+  local _, new_pkg = src_root_of(to)
   if not (old_pkg and new_pkg) then return false end
   local changes = {}
   for name, kind in vim.fs.dir(from, { depth = 32 }) do
@@ -322,7 +419,8 @@ end
 --- applied and written, then each move with buffers re-pointed, then didRenameFiles. Synchronous
 --- (neo-tree's before-rename hook needs it). Nothing changes when a check or the request fails.
 --- Returns ok, message.
-function M.rename_paths(moves, label, client)
+function M.rename_paths(moves, label, client, opts)
+  opts = opts or {}
   local function fail(msg, level)
     msg = label:gsub("^Renamed", "Rename") .. ": " .. msg .. "; nothing changed"
     M.last = { label = label, files = {}, ok = false, err = msg }
@@ -363,14 +461,18 @@ function M.rename_paths(moves, label, client)
     -- that move in (measured in the check run, not alone): ask again for up to 1 s, then fall back to the
     -- package lines only (said in the summary)
     local tries = 1
-    while edit == false and i > 1 and has_java(from) and tries < 10 do
+    local needs = needs_edit(from, to)
+    while edit == false and needs and tries < 10 do
       vim.wait(100)
       edit, err = will_rename(client, from, to)
       tries = tries + 1
     end
     tries_by[from] = tries
     lap("will")
-    if edit == false and i > 1 and has_java(from) then
+    if edit == false and needs and i == 1 then
+      return fail(("jdt.ls gave no edit for this Java rename (asked %d times over 1 s): the code would be left with the old names; try again once jdt.ls is idle"):format(tries))
+    end
+    if edit == false and needs then
       edit = package_lines_edit(from, to)
       notes[#notes + 1] = ("package lines in %s set by Nv4J (jdt.ls gave no edit): references to its classes from other packages were not updated"):format(rel(from, root))
     end
@@ -431,16 +533,31 @@ function M.rename_paths(moves, label, client)
     end
   end
   local moved = table.concat(vim.tbl_map(function(m) return rel(m[1], root) .. " -> " .. rel(m[2], root) end, moves), ", ")
-  M.last = { label = label, files = files, ok = true, moves = moves, tries = tries_by, notes = notes, ms = ms }
-  notify(summary(("%s (moved %s)"):format(label, moved), files, root) .. (#notes > 0 and (". NOTE: " .. table.concat(notes, "; ")) or ""),
-    #notes > 0 and vim.log.levels.WARN or nil)
+  local stale = {}
+  if opts.stale then stale = M.stale_refs(root, opts.stale.names) end
+  M.last = { label = label, files = files, ok = true, moves = moves, tries = tries_by, notes = notes, ms = ms, stale = stale }
+  local warn = #notes > 0 or #stale > 0
+  notify(summary(("%s (moved %s)"):format(label, moved), files, root) .. (#notes > 0 and (". NOTE: " .. table.concat(notes, "; ")) or "")
+    .. stale_note(stale, opts.stale and opts.stale.old), warn and vim.log.levels.WARN or nil)
   follow_up(label, before, vim.tbl_map(function(f) return f.path end, files))
   return true
 end
 
---- Package of `dir` when it is inside a `src/<set>/java` source root: root, package ("" = default).
-local function source_root(dir)
-  return require("nv4j.scaffold").source_root(dir)
+--- Moves for renaming package `pkg` to `name`: its folder in `src_root` and the namesake folders in the
+--- project's other source roots (`src/*/java`), src/main/java first (see M.rename_paths).
+local function namesake_moves(project, src_root, pkg, name)
+  local pkg_path, new_path = pkg:gsub("%.", "/"), name:gsub("%.", "/")
+  local roots = { src_root }
+  for _, r in ipairs(vim.fn.glob(project .. "/src/*/java", false, true)) do
+    r = vim.fs.normalize(r)
+    if r ~= src_root and vim.fn.isdirectory(r .. "/" .. pkg_path) == 1 then roots[#roots + 1] = r end
+  end
+  table.sort(roots, function(a, b)
+    local ma, mb = a:match("/src/main/java$") ~= nil, b:match("/src/main/java$") ~= nil
+    if ma ~= mb then return ma end
+    return a < b
+  end)
+  return vim.tbl_map(function(r) return { r .. "/" .. pkg_path, r .. "/" .. new_path } end, roots)
 end
 
 --- Package of the current buffer from its `package` line.
@@ -478,22 +595,9 @@ function M.rename_package(opts)
         return false
       end
     end
-    local new_path = name:gsub("%.", "/")
-    -- this source root and the namesake package folders in the project's other roots, src/main/java
-    -- first (see M.rename_paths)
-    local roots = { src_root }
-    local project = require("nv4j.root").project(path)
-    for _, r in ipairs(vim.fn.glob(project .. "/src/*/java", false, true)) do
-      r = vim.fs.normalize(r)
-      if r ~= src_root and vim.fn.isdirectory(r .. "/" .. pkg_path) == 1 then roots[#roots + 1] = r end
-    end
-    table.sort(roots, function(a, b)
-      local ma, mb = a:match("/src/main/java$") ~= nil, b:match("/src/main/java$") ~= nil
-      if ma ~= mb then return ma end
-      return a < b
-    end)
-    local moves = vim.tbl_map(function(r) return { r .. "/" .. pkg_path, r .. "/" .. new_path } end, roots)
-    local ok = M.rename_paths(moves, ("Renamed package %s -> %s"):format(pkg, name))
+    local moves = namesake_moves(require("nv4j.root").project(path), src_root, pkg, name)
+    local ok = M.rename_paths(moves, ("Renamed package %s -> %s"):format(pkg, name), nil,
+      { stale = { names = package_names(pkg), old = pkg } })
     if opts.on_done then opts.on_done(ok) end
     return ok
   end
@@ -511,6 +615,29 @@ end
 
 local handled = {} -- source -> destination renamed here; neo-tree's after-hooks (LazyVim's) skip them
 
+--- neo-tree (4d55ed3) cannot cancel a rename/move from its before-event: `handled` only skips its own
+--- fs_rename, then it still runs `complete` (re-points every buffer under the old path to the new, not
+--- existing, path and deletes the originals; fires file_renamed; logs "Renamed X successfully"). After a
+--- refusal we return NOT handled and make neo-tree's own uv.fs_rename fail instead: the destination is
+--- created as a non-empty folder for a moment (rename onto it fails with ENOTEMPTY / EISDIR), so neo-tree
+--- logs "Could not rename the files" and changes nothing. The placeholder is removed 1 s later.
+local function block_neotree_move(dest)
+  local created, d = {}, dest
+  while d and not vim.uv.fs_stat(d) do
+    table.insert(created, 1, d)
+    local parent = vim.fs.dirname(d)
+    d = parent ~= d and parent or nil
+  end
+  for _, dir in ipairs(created) do vim.uv.fs_mkdir(dir, 493) end
+  local marker = dest .. "/.nv4j-rename-refused"
+  local f = io.open(marker, "w")
+  if f then f:close() end
+  vim.defer_fn(function()
+    os.remove(marker)
+    for i = #created, 1, -1 do vim.uv.fs_rmdir(created[i]) end
+  end, 1000)
+end
+
 --- A neo-tree rename/move jdt.ls must know first: a .java file, or a folder with a .java file, in a
 --- jdt.ls project.
 local function is_java(source)
@@ -524,20 +651,41 @@ local function label_for(source, dest)
   if source:match("%.java$") then
     local a, b = vim.fn.fnamemodify(source, ":t:r"), vim.fn.fnamemodify(dest, ":t:r")
     if a ~= b then return ("Renamed class %s -> %s"):format(a, b) end
-    local _, p2 = source_root(vim.fs.dirname(dest))
+    local _, p2 = src_root_of(vim.fs.dirname(dest))
     return ("Moved class %s to %s"):format(a, p2 and ("package " .. p2) or vim.fs.dirname(dest))
   end
-  local _, p1 = source_root(source)
-  local _, p2 = source_root(dest)
+  local _, p1 = src_root_of(source)
+  local _, p2 = src_root_of(dest)
   if p1 and p2 and p1 ~= "" and p2 ~= "" then return ("Renamed package %s -> %s"):format(p1, p2) end
   return ("Renamed %s -> %s"):format(vim.fs.basename(source), vim.fs.basename(dest))
 end
 
 --- neo-tree before_file_rename / before_file_move handler: the whole rename is done here (jdt.ls asked
---- before the move) and neo-tree is told it is handled. On a refusal nothing moves (message shown).
+--- before the move) and neo-tree is told it is handled. On a refusal nothing moves: our message, and
+--- neo-tree's own rename is made to fail (block_neotree_move).
 function M.neotree_before(args)
   if not (args and args.source and args.destination) or not is_java(args.source) then return nil end
-  M.rename_paths({ { args.source, args.destination } }, label_for(args.source, args.destination))
+  local src, dest = vim.fs.normalize(args.source), vim.fs.normalize(args.destination)
+  local moves, opts = { { src, dest } }, {}
+  if vim.fn.isdirectory(src) == 1 then
+    -- a package folder renamed/moved inside its source root: the namesake folders (src/test/java) follow,
+    -- as with rename_package
+    local r1, p1 = src_root_of(src)
+    local r2, p2 = src_root_of(dest)
+    if r1 and r1 == r2 and p1 ~= "" and p2 ~= "" then
+      moves = namesake_moves(require("nv4j.root").project(src), r1, p1, p2)
+      opts.stale = { names = package_names(p1), old = p1 }
+    end
+  elseif src:match("%.java$") then
+    local old = vim.fn.fnamemodify(src, ":t:r")
+    local _, pkg = src_root_of(vim.fs.dirname(src))
+    opts.stale = { names = class_names(old, pkg ~= "" and pkg or nil), old = old }
+  end
+  local ok = M.rename_paths(moves, label_for(src, dest), nil, opts)
+  if not ok then
+    block_neotree_move(dest)
+    return nil
+  end
   handled[args.source] = args.destination
   return { handled = true }
 end
