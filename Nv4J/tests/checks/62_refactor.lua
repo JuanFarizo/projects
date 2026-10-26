@@ -20,8 +20,8 @@
 --                       unsaved, Bill written by the rename, the summary says both.
 --  rename_class_conflict: Invoice -> PriceCalculator: refused with a message, nothing changed.
 --  rename_class_boot  : GreetingController (@RestController) -> HelloController; build clean.
---  rename_class_errors: a syntax error in Checkout (jdt.ls then skips its references): the warning
---                       names Checkout.java. _twin: the same through refactor.new_errors (deterministic).
+--  rename_class_errors: a syntax error in Checkout (jdt.ls then skips its references): the summary
+--                       warning names Checkout.java:3. _twin: refactor.new_errors on a planted error.
 --  move_class         : Invoice to package demo.shop: demo/shop/Invoice.java, Checkout's import gone,
 --                       PriceCalculator imports demo.shop.Invoice; build clean.
 --  rename_package     : demo.shop -> demo.store from Checkout's package line: demo/store/Checkout.java,
@@ -38,6 +38,9 @@
 --  neotree_rename_billing: neo-tree folder rename with a src/test/java namesake: both folders move.
 --  neotree_refused    : a refused neo-tree rename: nothing moves, buffers intact, no success toast.
 --  jr_package_line, prompt_class: <leader>jr on a `package` line; the prompt when no name is given.
+--  rename_package_no_type: package-info.java only, jdt.ls null: moved with the package line by text + NOTE.
+--  neotree_placeholder: the refusal placeholder: kept 1 s after the last refusal, VimLeavePre removes it,
+--                       an existing destination folder is never written into.
 --  Unbuilt functions (move, inline, change_signature, safe_delete): their cases FAIL "pending" (today's
 --  path shown after it) and `api` adds a pending_<fn> FAIL line each: the check stays red until 4e.
 --  inline_method      : `gross(invoice)` call in total inlined: `invoice.quantity() * invoice.unitPrice()`.
@@ -406,9 +409,10 @@ case("rename_class_boot", function()
 end)
 
 -- rename_class_errors: a syntax error already in a referencing file (Checkout, unsaved): jdt.ls renames
--- but skips that file's references (measured), so the rename must not look clean: a warning names
--- Checkout.java (new errors there). Twin (deterministic): the module's error reader after the check
--- itself waited for jdt.ls's publish on Checkout.
+-- but skips that file's references (measured), so the rename must not look clean: the summary is a
+-- warning naming Checkout.java:3 (its import still names the old class, found from the text). The
+-- follow-up from jdt.ls's errors is shown in the detail, not required (jdt.ls does not always publish).
+-- Twin (deterministic): the module's error reader on an error set in a check namespace.
 case("rename_class_errors", function()
   if not has("rename_class") then
     lsp.report(P .. "rename_class_errors_twin", false, "pending: no nv4j.refactor.rename_class")
@@ -431,6 +435,9 @@ case("rename_class_errors", function()
   local t0 = E.now()
   refactor.rename_class({ name = "Bill" })
   local applied, ms = until_ms(t0, function() return vim.uv.fs_stat(BILL) ~= nil and loaded(BILL) ~= nil end)
+  local sum = find_msg(got, "Renamed class Invoice -> Bill: ", vim.log.levels.WARN) or ""
+  -- the follow-up (jdt.ls's own errors, 3 s / 8 s) is reported, not required: in 2 of 11 runs jdt.ls never
+  -- published Checkout's new errors at all (log in specs/features/refactors.md)
   local warn
   vim.wait(10000, function()
     warn = find_msg(got, "Renamed class Invoice -> Bill applied, but", vim.log.levels.WARN)
@@ -438,19 +445,23 @@ case("rename_class_errors", function()
   end, 20)
   stop()
   local ct = text_of(CHECKOUT) or ""
-  lsp.report(P .. "rename_class_errors", applied and ms <= APPLY_MS and warn ~= nil and warn:find("Checkout.java", 1, true) ~= nil
-    and not warn:find("Bill.java", 1, true),
-    ("applied %s after %.0f ms; Checkout %s by jdt.ls (%d error(s) before); warning: %s"):format(applied and "yes" or "NO", ms,
-      ct:find("import demo.billing.Bill;", 1, true) and "updated" or "NOT updated", before[CHECKOUT] or 0, tostring(warn)))
-  -- twin: wait (up to 15 s) for jdt.ls's error on Checkout's old reference, then ask the module directly
-  local seen = vim.wait(15000, function()
-    return E.has(vim.diagnostic.get(chk), vim.diagnostic.severity.ERROR, "Invoice cannot be resolved")
-  end, 50)
+  lsp.report(P .. "rename_class_errors", applied and ms <= APPLY_MS and sum:find("src/main/java/demo/shop/Checkout.java:3", 1, true) ~= nil
+    and not sum:find("Bill.java:", 1, true),
+    ("applied %s after %.0f ms; Checkout %s by jdt.ls (%d error(s) before); summary %s; follow-up: %s"):format(applied and "yes" or "NO", ms,
+      ct:find("import demo.billing.Bill;", 1, true) and "updated" or "NOT updated", before[CHECKOUT] or 0,
+      sum:find("Checkout.java:3", 1, true) and "names Checkout.java:3 (stale import)" or ("MISSES Checkout: " .. sum),
+      tostring(warn)))
+  -- twin of the follow-up (deterministic): an error on Checkout put in a check namespace (what jdt.ls
+  -- publishes when it does), then the module's reader: lists it, nothing for the clean files
+  local ns = vim.api.nvim_create_namespace("nv4j_check_62_twin")
+  vim.diagnostic.set(ns, chk, { { lnum = 12, col = 0, message = "Invoice cannot be resolved to a type", severity = vim.diagnostic.severity.ERROR } })
   local errs = refactor.new_errors(before, { BILL, CALC })
+  vim.diagnostic.reset(ns, chk)
   local in_chk = vim.tbl_filter(function(e) return e:find("^Checkout%.java:") end, errs)
   local other = vim.tbl_filter(function(e) return not e:find("^Checkout%.java:") end, errs)
-  lsp.report(P .. "rename_class_errors_twin", seen and #in_chk > 0 and #other == 0,
-    ("unresolved error %s; Checkout: %s; others: %s"):format(seen and "published" or "NEVER published (15 s)",table.concat(in_chk, " | "), #other == 0 and "none" or table.concat(other, " | ")))
+  lsp.report(P .. "rename_class_errors_twin", vim.iter(in_chk):any(function(e) return e:find("Invoice cannot be resolved", 1, true) ~= nil end)
+    and #other == 0,
+    ("Checkout: %s; others: %s"):format(table.concat(in_chk, " | "), #other == 0 and "none" or table.concat(other, " | ")))
 end)
 
 -- move_class
@@ -604,7 +615,7 @@ case("rename_package_fallback", function()
   client.request_sync = real
   stop()
   local ms = E.now() - t0
-  local note = find_msg(got, "set by Nv4J (jdt.ls gave no edit)", vim.log.levels.WARN)
+  local note = find_msg(got, "jdt.ls gave no edit for src/test/java/demo/billing: its package lines were set by Nv4J", vim.log.levels.WARN)
   local pt, ft = disk(NT .. "PriceCalculatorTest.java") or "", disk(NT .. "PriceCalculatorFailingTest.java") or ""
   local ok_clean, why = clean({ CHECKOUT, NT .. "PriceCalculatorTest.java" }, t0)
   report_apply("rename_package_fallback", ("nv4j.refactor.rename_package, test root stubbed null %d time(s)%s"):format(nulls,
@@ -861,6 +872,79 @@ case("prompt_class", function()
     applied, ms, {
       { "prompt names Invoice, default Invoice", (seen.prompt or ""):find("Rename class Invoice", 1, true) ~= nil and seen.default == "Invoice" },
     }, ok_clean, why)
+end)
+
+-- rename_package_no_type: a package whose only file is package-info.java (no top-level type): jdt.ls's
+-- null answer is legitimate there (stubbed null every time): moved with the package line set by text and
+-- a NOTE, not refused (the refusal is only for files declaring their own type, rename_package_first_null).
+case("rename_package_no_type", function()
+  if not has("rename_package") then return lsp.report(P .. "rename_package_no_type", false, pending_reason("rename_package")) end
+  local PI = main .. "demo/notes/package-info.java"
+  local NEW = main .. "demo/memo/package-info.java"
+  vim.fn.mkdir(vim.fs.dirname(PI), "p")
+  local f = assert(io.open(PI, "w"))
+  f:write("/** Planted by 62_refactor rename_package_no_type, removed after the case. */\npackage demo.notes;\n")
+  f:close()
+  local b = lsp.open(PI)
+  vim.api.nvim_set_current_buf(b); vim.api.nvim_win_set_cursor(0, { 2, 0 })
+  local undo, n = null_will_rename("/demo/notes")
+  local got, stop = capture()
+  local t0 = E.now()
+  local ok = refactor.rename_package({ name = "demo.memo" })
+  local ms = E.now() - t0
+  undo(); stop()
+  local note = find_msg(got, "jdt.ls gave no edit for src/main/java/demo/notes", vim.log.levels.WARN)
+  lsp.report(P .. "rename_package_no_type", ok == true and (disk(NEW) or ""):find("package demo.memo;", 1, true) ~= nil
+    and vim.uv.fs_stat(PI) == nil and loaded(NEW) ~= nil and note ~= nil and ms <= APPLY_MS + 1000,
+    ("returned %s after %.0f ms (%d null answers, 1 s of retries), new file %s, note: %s"):format(tostring(ok), ms, n[1],
+      (disk(NEW) or "MISSING"):match("package [%w.]+;") or "no package line", tostring(note)))
+end)
+
+-- neotree_placeholder: the placeholder that blocks neo-tree's own rename after a refusal (handler called
+-- directly, jdt.ls stubbed null): a second refusal within 1 s keeps it 1 s past the second; VimLeavePre
+-- removes it at once; an existing destination folder is never used (nothing written into it).
+case("neotree_placeholder", function()
+  local SHOP, STORE = main .. "demo/shop", main .. "demo/store"
+  local undo = null_will_rename("/src/main/java/demo/shop")
+  local got, stop = capture()
+  local r1 = refactor.neotree_before({ source = SHOP, destination = STORE })
+  vim.wait(600)
+  local r2 = refactor.neotree_before({ source = SHOP, destination = STORE })
+  vim.wait(600) -- 1.2 s after the first, 0.6 s after the second
+  local kept = vim.uv.fs_stat(STORE) ~= nil and vim.uv.fs_stat(STORE).type == "file"
+  vim.wait(700)
+  local gone = vim.uv.fs_stat(STORE) == nil
+  -- VimLeavePre (only our group)
+  refactor.neotree_before({ source = SHOP, destination = STORE })
+  local made = vim.uv.fs_stat(STORE) ~= nil
+  vim.api.nvim_exec_autocmds("VimLeavePre", { group = "nv4j_refactor_placeholders" })
+  local left_after_leave = vim.uv.fs_stat(STORE) ~= nil
+  -- an existing (user) destination folder: refused, nothing written into it, neo-tree told "handled"
+  vim.fn.mkdir(STORE, "p")
+  local r3 = refactor.neotree_before({ source = SHOP, destination = STORE })
+  local entries = vim.fn.readdir(STORE)
+  undo(); stop()
+  vim.uv.fs_rmdir(STORE)
+  lsp.report(P .. "neotree_placeholder", r1 == nil and r2 == nil and kept and gone and made and not left_after_leave
+    and #entries == 0 and type(r3) == "table" and r3.handled == true and next(refactor._placeholders) == nil,
+    ("not handled %s/%s; kept 0.6 s after the 2nd refusal %s; gone 1.3 s after it %s; VimLeavePre removed %s; user folder entries %d (%s), handled %s"):format(
+      tostring(r1 == nil), tostring(r2 == nil), tostring(kept), tostring(gone), tostring(made and not left_after_leave), #entries,
+      table.concat(entries, ","), tostring(r3 and r3.handled)))
+end)
+
+-- stale_scan_truncated: the strings/config scan counts only scannable files and the warning says when it
+-- stopped (cap lowered to 3 for the case; the fixture has more).
+case("stale_scan_truncated", function()
+  if not has("rename_class") then return lsp.report(P .. "stale_scan_truncated", false, pending_reason("rename_class")) end
+  local names = { java = { "%f[%w_$]Invoice%f[^%w_$]" }, config = { "%f[%w_$]Invoice%f[^%w_$]" } }
+  local _, full = refactor.stale_refs(fixture, names)
+  local keep = refactor.scan_max_files
+  refactor.scan_max_files = 3
+  local _, cut = refactor.stale_refs(fixture, names)
+  local note = refactor._stale_note({}, "Invoice", cut)
+  refactor.scan_max_files = keep
+  lsp.report(P .. "stale_scan_truncated", full == false and cut == true and note:find("scan stopped after 3 files", 1, true) ~= nil,
+    ("default cap truncated=%s; cap 3 truncated=%s; note: %s"):format(tostring(full), tostring(cut), note))
 end)
 
 --- Inline at (pat, word) in PriceCalculator; `want` must appear in the file afterwards.

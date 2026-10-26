@@ -69,18 +69,20 @@ end
 local SCAN_EXT = { java = true, properties = true, yml = true, yaml = true, xml = true }
 local SCAN_SKIP = { [".git"] = true, target = true, build = true, node_modules = true, out = true, bin = true,
   [".gradle"] = true, [".idea"] = true }
-local SCAN_MAX_FILES = 5000
+M.scan_max_files = 5000 -- scannable files (.java/.properties/.yml/.yaml/.xml) per scan
 
 local function word(name)
   return "%f[%w_$]" .. vim.pesc(name) .. "%f[^%w_$]"
 end
 
---- "file:line" where an old name is still written as text after a rename: inside a Java string literal
+--- "file:line" where an old name is still written as text after a rename: an `import` of the old name
+--- (a reference jdt.ls did not update), inside a Java string literal
 --- (JPQL `FROM Invoice`, `"demo.billing.Invoice"`, a `@Qualifier`/`@Named`/`@Resource` bean name) or
 --- anywhere in a .properties/.yml/.xml file of the project. `names.java` / `names.config`: Lua patterns.
 --- jdt.ls's rename does not touch these (IntelliJ offers "search in strings"); Nv4J warns, nothing more.
+--- Second value: true when the scan stopped at M.scan_max_files scannable files (said in the warning).
 function M.stale_refs(root, names)
-  local out, n = {}, 0
+  local out, n, truncated = {}, 0, false
   local function scan(path, ext)
     local b = vim.fn.bufnr(path)
     local lines = (b ~= -1 and vim.api.nvim_buf_is_loaded(b)) and vim.api.nvim_buf_get_lines(b, 0, -1, false)
@@ -88,6 +90,11 @@ function M.stale_refs(root, names)
     for i, l in ipairs(lines) do
       local hit = false
       if ext == "java" then
+        -- an import jdt.ls did not update (e.g. it skipped a file with a syntax error): found from the text,
+        -- whether or not jdt.ls ever reports the error
+        for _, pat in ipairs(names.imports or {}) do
+          if l:find(pat) then hit = true end
+        end
         for lit in l:gmatch('"(.-)"') do
           for _, pat in ipairs(names.java) do
             if lit:find(pat) then hit = true end
@@ -114,32 +121,40 @@ function M.stale_refs(root, names)
         walk(p)
       elseif kind == "file" then
         local ext = name:match("%.(%w+)$")
-        n = n + 1
-        if ext and SCAN_EXT[ext] and n <= SCAN_MAX_FILES then scan(p, ext) end
+        if ext and SCAN_EXT[ext] then
+          n = n + 1
+          if n <= M.scan_max_files then scan(p, ext) else truncated = true end
+        end
       end
     end
   end
   if root then walk(root) end
-  return out
+  return out, truncated
 end
 
 --- Patterns for a renamed class `old` in package `pkg` (nil = default package).
 local function class_names(old, pkg)
   local fqn = pkg and (pkg .. "." .. old) or nil
   local bean = old:sub(1, 1):lower() .. old:sub(2)
-  return { java = { word(old) }, config = fqn and { word(fqn), word(old) } or { word(old) }, bean = word(bean) }
+  local imports = fqn and { "^%s*import%s+" .. vim.pesc(fqn) .. "%s*;", "^%s*import%s+static%s+" .. vim.pesc(fqn) .. "%." } or nil
+  return { java = { word(old) }, config = fqn and { word(fqn), word(old) } or { word(old) }, bean = word(bean), imports = imports }
 end
 
 --- Patterns for a renamed package `pkg`.
 local function package_names(pkg)
-  return { java = { word(pkg) }, config = { word(pkg) } }
+  return { java = { word(pkg) }, config = { word(pkg) },
+    imports = { "^%s*import%s+" .. vim.pesc(pkg) .. "%.", "^%s*import%s+static%s+" .. vim.pesc(pkg) .. "%." } }
 end
 
-local function stale_note(stale, old)
-  if not stale or #stale == 0 then return "" end
-  return (". NOT rewritten (strings/config still name %s, check them): %s%s"):format(old,
-    table.concat(vim.list_slice(stale, 1, 8), ", "), #stale > 8 and (", +" .. (#stale - 8) .. " more") or "")
+local function stale_note(stale, old, truncated)
+  local cut = truncated and (". The strings/config scan stopped after %d files: the rest of the project was not checked")
+    :format(M.scan_max_files) or ""
+  if not stale or #stale == 0 then return cut end
+  return (". NOT rewritten, still naming %s (strings, config, or imports jdt.ls did not update; check them): %s%s"):format(old,
+    table.concat(vim.list_slice(stale, 1, 8), ", "), #stale > 8 and (", +" .. (#stale - 8) .. " more") or "") .. cut
 end
+
+M._stale_note = stale_note -- checks
 
 -- ── errors before/after ──────────────────────────────────────────────────────────────────────────
 
@@ -348,9 +363,9 @@ function M.rename_class(opts)
       end
       local t_scan = vim.uv.hrtime()
       local _, pkg = src_root_of(vim.fs.dirname(path))
-      local stale = M.stale_refs(require("nv4j.root").project(path), class_names(old, pkg ~= "" and pkg or nil))
-      M.last = { label = label, files = files, ok = true, stale = stale, scan_ms = (vim.uv.hrtime() - t_scan) / 1e6 }
-      notify(summary(label, files, root_of(client)) .. stale_note(stale, old), #stale > 0 and vim.log.levels.WARN or nil)
+      local stale, cut = M.stale_refs(require("nv4j.root").project(path), class_names(old, pkg ~= "" and pkg or nil))
+      M.last = { label = label, files = files, ok = true, stale = stale, scan_ms = (vim.uv.hrtime() - t_scan) / 1e6, truncated = cut }
+      notify(summary(label, files, root_of(client)) .. stale_note(stale, old, cut), (#stale > 0 or cut) and vim.log.levels.WARN or nil)
       follow_up(label, before, vim.tbl_map(function(f) return f.path end, files))
       done(true)
     end, buf)
@@ -379,18 +394,52 @@ end
 
 --- Fallback edit for a package folder: the `package` line of every .java file under `from` (subpackages
 --- too) set for its place under `to`. Text from the loaded buffer, else the disk.
+local function lines_of(p)
+  local b = vim.fn.bufnr(p)
+  if b ~= -1 and vim.api.nvim_buf_is_loaded(b) then return vim.api.nvim_buf_get_lines(b, 0, -1, false) end
+  return vim.uv.fs_stat(p) and vim.fn.readfile(p) or {}
+end
+
+--- True when the .java file declares a top-level type named like the file (the case where jdt.ls's
+--- willRenameFiles must answer with an edit: references to that type exist or may exist).
+local function declares_own_type(p)
+  local name = vim.fn.fnamemodify(p, ":t:r")
+  for _, l in ipairs(lines_of(p)) do
+    if not l:match("^%s") then -- top level: not indented
+      for _, kw in ipairs({ "class", "interface", "enum", "record", "@interface" }) do
+        if l:find("%f[%w@]" .. kw .. "%s+" .. vim.pesc(name) .. "%f[^%w_$]") then return true end
+      end
+    end
+  end
+  return false
+end
+
+--- A file, or any .java file under a folder, declaring its own top-level type.
+local function has_own_type(path)
+  if vim.fn.isdirectory(path) == 0 then return path:match("%.java$") ~= nil and declares_own_type(path) end
+  for name, kind in vim.fs.dir(path, { depth = 32 }) do
+    if kind == "file" and name:match("%.java$") and declares_own_type(path .. "/" .. name) then return true end
+  end
+  return false
+end
+
 local function package_lines_edit(from, to)
-  local _, old_pkg = src_root_of(from)
-  local _, new_pkg = src_root_of(to)
-  if not (old_pkg and new_pkg) then return false end
+  local is_file = vim.fn.isdirectory(from) == 0
+  local _, old_pkg = src_root_of(is_file and vim.fs.dirname(from) or from)
+  local _, new_pkg = src_root_of(is_file and vim.fs.dirname(to) or to)
+  if not (old_pkg and new_pkg) or old_pkg == new_pkg or old_pkg == "" then return false end
   local changes = {}
-  for name, kind in vim.fs.dir(from, { depth = 32 }) do
+  local entries = is_file and { { vim.fs.basename(from), "file" } } or {}
+  if not is_file then
+    for name, kind in vim.fs.dir(from, { depth = 32 }) do entries[#entries + 1] = { name, kind } end
+  end
+  for _, e in ipairs(entries) do
+    local name, kind = e[1], e[2]
     if kind == "file" and name:match("%.java$") then
-      local p = from .. "/" .. name
-      local sub = vim.fs.dirname(name)
+      local p = is_file and from or (from .. "/" .. name)
+      local sub = is_file and "." or vim.fs.dirname(name)
       sub = sub ~= "." and ("." .. sub:gsub("/", ".")) or ""
-      local b = vim.fn.bufnr(p)
-      local lines = (b ~= -1 and vim.api.nvim_buf_is_loaded(b)) and vim.api.nvim_buf_get_lines(b, 0, -1, false) or vim.fn.readfile(p)
+      local lines = lines_of(p)
       local old_name = old_pkg .. sub
       for i, l in ipairs(lines) do
         local pre = l:match("^(%s*package%s+)" .. vim.pesc(old_name) .. "%s*;")
@@ -469,12 +518,17 @@ function M.rename_paths(moves, label, client, opts)
     end
     tries_by[from] = tries
     lap("will")
-    if edit == false and needs and i == 1 then
+    -- refused only where an edit was due: the first move holds a top-level type named like its file. An
+    -- empty or broken file, package-info.java or a file without its own type gets null legitimately:
+    -- moved with the package lines set by text (NOTE), like a later root.
+    if edit == false and needs and i == 1 and has_own_type(from) then
       return fail(("jdt.ls gave no edit for this Java rename (asked %d times over 1 s): the code would be left with the old names; try again once jdt.ls is idle"):format(tries))
     end
     if edit == false and needs then
       edit = package_lines_edit(from, to)
-      notes[#notes + 1] = ("package lines in %s set by Nv4J (jdt.ls gave no edit): references to its classes from other packages were not updated"):format(rel(from, root))
+      notes[#notes + 1] = ("jdt.ls gave no edit for %s: %s"):format(rel(from, root), edit
+        and "its package lines were set by Nv4J; references to its classes from other packages were not updated"
+        or "moved as is (no package line to change)")
     end
     if edit == nil then
       if i == 1 then return fail(err) end
@@ -533,12 +587,13 @@ function M.rename_paths(moves, label, client, opts)
     end
   end
   local moved = table.concat(vim.tbl_map(function(m) return rel(m[1], root) .. " -> " .. rel(m[2], root) end, moves), ", ")
-  local stale = {}
-  if opts.stale then stale = M.stale_refs(root, opts.stale.names) end
-  M.last = { label = label, files = files, ok = true, moves = moves, tries = tries_by, notes = notes, ms = ms, stale = stale }
-  local warn = #notes > 0 or #stale > 0
+  local stale, cut = {}, false
+  if opts.stale then stale, cut = M.stale_refs(root, opts.stale.names) end
+  M.last = { label = label, files = files, ok = true, moves = moves, tries = tries_by, notes = notes, ms = ms, stale = stale,
+    truncated = cut }
+  local warn = #notes > 0 or #stale > 0 or cut
   notify(summary(("%s (moved %s)"):format(label, moved), files, root) .. (#notes > 0 and (". NOTE: " .. table.concat(notes, "; ")) or "")
-    .. stale_note(stale, opts.stale and opts.stale.old), warn and vim.log.levels.WARN or nil)
+    .. stale_note(stale, opts.stale and opts.stale.old, cut), warn and vim.log.levels.WARN or nil)
   follow_up(label, before, vim.tbl_map(function(f) return f.path end, files))
   return true
 end
@@ -618,25 +673,76 @@ local handled = {} -- source -> destination renamed here; neo-tree's after-hooks
 --- neo-tree (4d55ed3) cannot cancel a rename/move from its before-event: `handled` only skips its own
 --- fs_rename, then it still runs `complete` (re-points every buffer under the old path to the new, not
 --- existing, path and deletes the originals; fires file_renamed; logs "Renamed X successfully"). After a
---- refusal we return NOT handled and make neo-tree's own uv.fs_rename fail instead: the destination is
---- created as a non-empty folder for a moment (rename onto it fails with ENOTEMPTY / EISDIR), so neo-tree
---- logs "Could not rename the files" and changes nothing. The placeholder is removed 1 s later.
-local function block_neotree_move(dest)
-  local created, d = {}, dest
-  while d and not vim.uv.fs_stat(d) do
-    table.insert(created, 1, d)
-    local parent = vim.fs.dirname(d)
-    d = parent ~= d and parent or nil
+--- refusal we return NOT handled and make neo-tree's own uv.fs_rename fail instead, with a placeholder
+--- at the destination and nothing written into any existing folder: a file is renamed onto an empty
+--- placeholder FOLDER (EISDIR), a folder onto an empty placeholder FILE (ENOTDIR). neo-tree logs "Could
+--- not rename the files" and changes nothing. The placeholder (and the parents made for it) goes 1 s later,
+--- at VimLeavePre at the latest; a second refusal for the same destination keeps it 1 s more (the first
+--- timer does not remove it). neo-tree checks that the destination does not exist before it fires the
+--- event (rename_is_safe / get_unused_name, verified in fs_actions.lua), so an existing destination never
+--- gets here; if it does, or the placeholder cannot be made, we return `handled` (its move cannot happen;
+--- its `complete` then re-points the buffers, the lesser harm) and say so.
+local placeholders = {} -- dest -> { token, created = { paths, deepest last }, kind }
+
+local function remove_placeholder(dest)
+  local ph = placeholders[dest]
+  if not ph then return end
+  placeholders[dest] = nil
+  for i = #ph.created, 1, -1 do
+    local p = ph.created[i]
+    local st = vim.uv.fs_stat(p)
+    if st and st.type == "directory" then vim.uv.fs_rmdir(p) elseif st then os.remove(p) end -- rmdir: only if empty
   end
-  for _, dir in ipairs(created) do vim.uv.fs_mkdir(dir, 493) end
-  local marker = dest .. "/.nv4j-rename-refused"
-  local f = io.open(marker, "w")
-  if f then f:close() end
-  vim.defer_fn(function()
-    os.remove(marker)
-    for i = #created, 1, -1 do vim.uv.fs_rmdir(created[i]) end
-  end, 1000)
 end
+
+local leave_hook = false
+local function block_neotree_move(src, dest)
+  local ph = placeholders[dest]
+  if ph then
+    ph.token = ph.token + 1
+  else
+    if vim.uv.fs_stat(dest) then return false end -- an existing (user) path is never used as a placeholder
+    local created, d = {}, vim.fs.dirname(dest)
+    while d and not vim.uv.fs_stat(d) do
+      table.insert(created, 1, d)
+      local parent = vim.fs.dirname(d)
+      d = parent ~= d and parent or nil
+    end
+    for _, dir in ipairs(created) do
+      if not vim.uv.fs_mkdir(dir, 493) then return false end
+    end
+    local ok
+    if vim.fn.isdirectory(src) == 1 then
+      local f = io.open(dest, "w")
+      ok = f ~= nil and (f:close() or true)
+    else
+      ok = vim.uv.fs_mkdir(dest, 493) ~= nil
+    end
+    created[#created + 1] = dest
+    ph = { token = 1, created = created }
+    placeholders[dest] = ph
+    if not (ok and vim.uv.fs_stat(dest)) then
+      remove_placeholder(dest)
+      return false
+    end
+  end
+  if not leave_hook then
+    leave_hook = true
+    vim.api.nvim_create_autocmd("VimLeavePre", {
+      group = vim.api.nvim_create_augroup("nv4j_refactor_placeholders", { clear = true }),
+      callback = function()
+        for d in pairs(placeholders) do remove_placeholder(d) end
+      end,
+    })
+  end
+  local token = ph.token
+  vim.defer_fn(function()
+    if placeholders[dest] and placeholders[dest].token == token then remove_placeholder(dest) end
+  end, 1000)
+  return true
+end
+
+M._placeholders = placeholders -- checks: what is still on disk
 
 --- A neo-tree rename/move jdt.ls must know first: a .java file, or a folder with a .java file, in a
 --- jdt.ls project.
@@ -683,8 +789,10 @@ function M.neotree_before(args)
   end
   local ok = M.rename_paths(moves, label_for(src, dest), nil, opts)
   if not ok then
-    block_neotree_move(dest)
-    return nil
+    if block_neotree_move(src, dest) then return nil end
+    notify("neo-tree's own rename could not be blocked with a placeholder: it is skipped as handled; reopen the files if their buffers moved",
+      vim.log.levels.WARN)
+    return { handled = true }
   end
   handled[args.source] = args.destination
   return { handled = true }
