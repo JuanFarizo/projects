@@ -319,6 +319,18 @@ end, { desc = "New Java file/package (scaffold)" })
 map("n", "<leader>jt", function()
   require("nv4j.scaffold").test_for_current()
 end, { desc = "Test for this class (open or create)" })
+
+-- ── Refactors (nv4j/refactor.lua, decision D23, check 62_refactor) ─────────────────────────────
+-- <leader>jr: rename (the package on a `package` line, else the class: file renamed, references and
+-- imports updated, touched files written and listed). <leader>jp: rename the current file's package
+-- (package/import lines, folders in src/main and src/test moved, buffers re-pointed). <leader>cr stays
+-- LazyVim's Rename (any symbol). Move, inline, change signature, safe delete: not built yet.
+map("n", "<leader>jr", function()
+  require("nv4j.refactor").rename()
+end, { desc = "Refactor: rename class (package on a package line)" })
+map("n", "<leader>jp", function()
+  require("nv4j.refactor").rename_package()
+end, { desc = "Refactor: rename package" })
 pcall(function()
   require("which-key").add({ { "<leader>j", group = "java" } })
 end)

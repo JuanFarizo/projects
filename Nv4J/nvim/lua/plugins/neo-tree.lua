@@ -25,6 +25,14 @@ return {
           end
         end,
       },
+      -- Renaming/moving a .java file or a folder with Java files (a package): jdt.ls is asked
+      -- (willRenameFiles) BEFORE the move and the whole rename is done by nv4j/refactor.lua (package and
+      -- import lines, buffers re-pointed). LazyVim's own handler asks only after the move, which left the
+      -- old `package` line (specs/features/refactors.md); it is skipped for these (ours run first).
+      { event = "before_file_rename", handler = function(a) return require("nv4j.refactor").neotree_before(a) end },
+      { event = "before_file_move", handler = function(a) return require("nv4j.refactor").neotree_before(a) end },
+      { event = "file_renamed", handler = function(a) return require("nv4j.refactor").neotree_after(a) end },
+      { event = "file_moved", handler = function(a) return require("nv4j.refactor").neotree_after(a) end },
     },
   },
 }

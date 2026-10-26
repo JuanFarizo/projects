@@ -1,6 +1,6 @@
 # 005 - P3: tests runner, scaffolding, refactors, async import
 
-Status: Task 0 done (research, fixture, decisions D21 to D24, four failing checks). Task 1 done (async import, frecency vs project ranking, dirty-fixture guard; `63_async_import` passes, see "Task 1"). Task 2 done (test runner; `60_tests_runner` passes, see "Task 2"). Task 3 done (scaffolding; `61_scaffold` passes, see "Task 3"). Tasks 4 and 5 not started. Plan: `docs/superpowers/plans/2026-10-21-nv4j-p3-tests-scaffold-refactor.md`. Does not contradict `001-architecture.md`; decisions D21 and later live in its decisions table.
+Status: Task 0 done (research, fixture, decisions D21 to D24, four failing checks). Task 1 done (async import, frecency vs project ranking, dirty-fixture guard; `63_async_import` passes, see "Task 1"). Task 2 done (test runner; `60_tests_runner` passes, see "Task 2"). Task 3 done (scaffolding; `61_scaffold` passes, see "Task 3"). Task 4 split by the user into 4a-4e: 4a done (rename class and rename package, `specs/features/refactors.md` "Task 4a"; `62_refactor` 21 PASS, 2 FAIL = safe delete, Task 4e); 4b-4e and Task 5 not started. Plan: `docs/superpowers/plans/2026-10-21-nv4j-p3-tests-scaffold-refactor.md`. Does not contradict `001-architecture.md`; decisions D21 and later live in its decisions table.
 
 ## Goal
 

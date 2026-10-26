@@ -2,7 +2,7 @@
 
 A fast, lightweight Neovim setup for Java and Spring development. It is built on LazyVim and runs next to your normal Neovim: your own `~/.config/nvim` is never touched. IntelliJ is the feature reference. Every feature has a priority and a pass/fail number, and the numbers are re-measured by a headless test suite you can run yourself.
 
-Status: **P1 and P2 are built and passing** (P1: completion, diagnostics, imports, code actions, JDK handling). P2: debugging a main class or a JUnit test works and is checked (`40_debug`), running a Spring Boot app with profile and env works and is checked (`41_run`), and the Spring Boot language server runs for Spring Boot projects with `application.properties`/`yml` key completion and hover (`50_spring_ls`), `@Value`/`@Profile` completion (`51_spring_completion`), go to definition from `@Value` and a beans/request-mappings picker (`52_spring_nav`). P3 is in progress: asynchronous import (`63_async_import`), the test runner (`60_tests_runner`) and scaffolding (`61_scaffold`) are built and checked; refactors are not built yet. P4 and P5 are planned, not built. The "Not yet" list below is honest about that.
+Status: **P1 and P2 are built and passing** (P1: completion, diagnostics, imports, code actions, JDK handling). P2: debugging a main class or a JUnit test works and is checked (`40_debug`), running a Spring Boot app with profile and env works and is checked (`41_run`), and the Spring Boot language server runs for Spring Boot projects with `application.properties`/`yml` key completion and hover (`50_spring_ls`), `@Value`/`@Profile` completion (`51_spring_completion`), go to definition from `@Value` and a beans/request-mappings picker (`52_spring_nav`). P3 is in progress: asynchronous import (`63_async_import`), the test runner (`60_tests_runner`) and scaffolding (`61_scaffold`) are built and checked; of the refactors, rename class and rename package are built and checked (`62_refactor`), move, inline, change signature and safe delete are not built yet. P4 and P5 are planned, not built. The "Not yet" list below is honest about that.
 
 ## Priorities
 
@@ -10,7 +10,7 @@ Status: **P1 and P2 are built and passing** (P1: completion, diagnostics, import
 |----------|-------|--------|
 | P1 | Completion speed and ranking, diagnostics, imports, code actions, Java 25 and JDK handling | Done (this README, Capabilities) |
 | P2 | Spring awareness (annotations, attributes, `application.properties`/`yml`), run and debug Spring Boot | Done (Capabilities: Debug, Run Spring Boot, Spring Boot language server, Spring completion and navigation); leftovers in Not yet |
-| P3 | Tests runner polish, scaffolding (package/class creation), refactors beyond what jdt.ls already offers | In progress: async import, test runner and scaffolding done (Capabilities: Tests, Scaffolding); refactors not yet |
+| P3 | Tests runner polish, scaffolding (package/class creation), refactors beyond what jdt.ls already offers | In progress: async import, test runner, scaffolding and rename class/package done (Capabilities: Tests, Scaffolding, Refactors); move, inline, change signature, safe delete not yet |
 | P4 | Gradle, Spring navigation, JPA checks | Spring navigation (beans, request mappings, `@Value` definition) done early with P2 Task 4; Gradle and JPA checks not yet |
 | P5 | Everything else | Not yet |
 
@@ -125,6 +125,22 @@ New Java files as in IntelliJ's New menu: `<leader>jn` asks the kind (class, int
 | Every created file compiles: jdt.ls error state settled, zero errors after a build | slowest file 1.0 to 1.1 s (3 s) | `compiles`, `compiles_all` |
 | Existing file, invalid names, outside `src/*/java`, test of a test: refused with a message, nothing written | rules checked | `exists`, `invalid_name`, `outside_root`, `test_from_test` |
 
+### Refactors (P3)
+
+Rename as in IntelliJ (Shift+F6): `<leader>jr` renames the class under the cursor (or the file's class): the file is renamed, references and imports in every file are updated, the touched files are written and a notification lists them. On the `package` line (or with `<leader>jp`) it renames the package: `package` and `import` lines in every file, the folder moved in `src/main/java` and the same package folder in `src/test/java`, open buffers follow the move. Renaming or moving a `.java` file or a package folder in neo-tree does the same (jdt.ls is asked before the move; LazyVim asked after it and left the old `package` line). A buffer with your unsaved changes is edited in place and left unsaved (a moved file's buffer is written by the move), and the notification says so. Refusals (name exists, package exists, into itself) change nothing and say why; a failure part-way lists what changed; errors left after the rename (for example a reference jdt.ls skipped in a file with a syntax error) come as a warning 3 s later. One `u` per file undoes the text (the file keeps its new name). `<leader>cr` stays LazyVim's rename of any symbol. Code: `nvim/lua/nv4j/refactor.lua`, details in `specs/features/refactors.md` (decision D23). Move, inline, change signature, safe delete: Not yet. Numbers from 3 consecutive runs of `62_refactor` (the rename cases all PASS each run):
+
+| What you get | Measured (budget) | Check |
+|--------------|-------------------|-------|
+| Rename a class: file renamed, imports and references in 5 files, written, summary, build clean | 634 to 1009 ms (2 s) | `62_refactor` `rename_class` |
+| One `u` per touched buffer gives its text back | 3 of 3 open buffers | `rename_class_undo` |
+| Unsaved edits kept (referencing file left unsaved, renamed file written) | 370 to 499 ms | `rename_class_unsaved` |
+| Spring controller renamed, annotations kept, build clean | 60 to 105 ms | `rename_class_boot` |
+| Rename a package: folder moved, `package` line on disk, buffer re-pointed | 1.17 to 1.23 s (2 s; 1.1 s of it is jdt.ls's first answer) | `rename_package` |
+| Package in `src/main/java` and `src/test/java`, imports elsewhere, no same-package imports | 654 to 806 ms | `rename_package_imports`, `rename_package_fallback` |
+| neo-tree rename of a package folder / a class file | 113 to 152 ms / 313 to 351 ms | `neotree_rename_package`, `neotree_rename_file` |
+| Name or package exists, into itself: refused with a message, nothing changed | at once | `rename_class_conflict`, `rename_package_conflict` |
+| A skipped reference (syntax error in that file) is reported | warning names the file | `rename_class_errors`, `rename_class_errors_twin` |
+
 ### Run Spring Boot (P2)
 
 `<leader>rs` runs the `@SpringBootApplication` main class of the project, `<leader>rd` debugs it (the Debug path above), `<leader>rp` asks for a profile (offers the `application-<profile>` files it finds) and runs. The app runs as `java -cp <classpath from jdt.ls> <main class>` on the project's JDK, after the same refresh and build as a debug launch ("Building before run..."). It was measured faster than `mvn spring-boot:run` (2.5 s against 5 to 7 s to "Started", and Maven first had to resolve its plugin over the network), see `specs/features/run.md`. `<leader>rS` runs through the build tool instead (`mvnw`/`mvn spring-boot:run`, or `gradlew`/`gradle bootRun` when there is no `pom.xml`); `vim.g.nv4j_run_tool = "maven"` (or `"gradle"`, Gradle first) makes that the default for `<leader>rs` and `<leader>rp` (debug always goes through jdt.ls). Without jdt.ls for the project (looked up by the project root, so it works from `application.yml` or a module's `pom.xml` too) you get a notice and the build tool is used. The build tool runs in the Spring Boot module (the buffer's module if it is Boot, else the first Boot module found), not at the aggregator, so `spring-boot:run`/`bootRun` does not run the whole reactor; for Maven the sibling modules it depends on must be installed first (`mvn install` once). What `<leader>rs` skips and when to switch: Known limitations. Output goes to a terminal split at the bottom: `<C-c>` (normal mode) stops the app, `q` stops it and closes the split, `<leader>rx` stops every run. Code: `nvim/lua/nv4j/run.lua`. Numbers from 3 consecutive runs of `41_run` (18 of 18 PASS each; 22 of 22 after the review fix round, 3 of 3 runs; 27 of 27 after the final review, 3 of 3 runs) and the three final full runs (22 of 22 each):
@@ -186,7 +202,7 @@ Be aware before you rely on Nv4J for a full workday:
 - **P2 leftovers: run.** Spring Boot run and debug are checked (Capabilities). The build-tool fallback (`spring-boot:run`, `bootRun`, used only without jdt.ls) is checked as a command, not run (Maven could not reach its plugin offline here). No saved run configurations: the profile is asked each time with `<leader>rp`, `<leader>rs` runs without one. `<leader>rj` (plain main class) is checked by hand only.
 - **P3: tests runner leftovers.** The runner is checked (Capabilities: Tests). Not done: TestNG (`<leader>tT`, nvim-jdtls's picker, still runs it), JUnit 4 and multi-module or Gradle projects are not covered by a check, no tree view of every test (`<leader>to` is the quickfix list).
 - **P3: scaffolding leftovers.** Scaffolding is checked (Capabilities: Scaffolding). Not checked: driving neo-tree's UI (its `file_added` handler is), insert mode after the keys (needs a UI), the JUnit 4 template, Gradle. No Exception kind or user templates.
-- **P3: refactors beyond what jdt.ls already offers.** Extract and rename work through jdt.ls. Move, inline, change signature, safe delete are not set up or tested.
+- **P3: refactors beyond what jdt.ls already offers.** Rename class and rename package are built and checked (Capabilities: Refactors); extract works through jdt.ls. Move, inline, change signature (work through `<leader>ca` code actions, measured in `62_refactor`) and safe delete (none in jdt.ls) are not built yet. Rename leftovers: the prompt path, neo-tree moves to another package, Gradle and files outside the project are not checked (`specs/features/refactors.md` open items).
 - **P3: carried follow-ups.** Saved run configurations (profile, env, VM args per project). (Asynchronous import apply and project ranking above frecency shipped with P3 Task 1: Capabilities, Imports and Completion.)
 - **P4: Gradle** (supported by jdt.ls, not tested; the Boot detector, the `bootRun` fallback command and the build-file notification know Gradle files, nothing runs a Gradle build in the checks), JPA checks. Spring beans/request mappings navigation, planned for P4, already shipped with P2 (`<leader>sp`, Capabilities).
 - **P5:** everything else.
@@ -306,6 +322,14 @@ Generate getters, constructors, `toString`, `equals`/`hashCode`: put the cursor 
 | `<leader>jn` | new class / interface / record / enum / annotation / Spring controller, service, repository, entity / package / test (kind, then name; `foo.Bar` creates the package) in the current directory (neo-tree node or current file) |
 | `<leader>jt` | test class of the current class: open it, or create it in `src/test/java` |
 
+**Refactors** (checked by `62_refactor`):
+
+| Key | Does |
+|-----|------|
+| `<leader>jr` | rename the class under the cursor (or the file's class): file, references, imports; on the `package` line: rename the package |
+| `<leader>jp` | rename the current file's package (folders in `src/main/java` and `src/test/java` moved) |
+| neo-tree `r` on a `.java` file or package folder | same rename with the code updated (`m`, move, goes the same way, not checked) |
+
 ### Switch JDK with `sdk use`
 
 The JDK that jdt.ls runs on is chosen when it starts, from `$JAVA_HOME`. Set it before you start Neovim:
@@ -372,6 +396,7 @@ nvim/
     paths.lua              log dirs (/tmp/nv4j) and jdt.ls workspace dirs (~/.cache/nv4j)
     tests.lua              test runner (<leader>tr/tt/tp/tf/tl/td/to)
     scaffold.lua           new class/package/test (<leader>jn/jt), the :e and neo-tree templates
+    refactor.lua           rename class/package (<leader>jr/jp), neo-tree renames through jdt.ls
   lua/util/                profile.lua (:CompletionProfile)
 specs/                     001 architecture, 002 P1 numbers and trial log, features/*.md
 tests/                     run.sh, checks/, fixtures/, lib/
