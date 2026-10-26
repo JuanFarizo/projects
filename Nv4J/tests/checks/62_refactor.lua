@@ -38,6 +38,8 @@
 --  neotree_rename_billing: neo-tree folder rename with a src/test/java namesake: both folders move.
 --  neotree_refused    : a refused neo-tree rename: nothing moves, buffers intact, no success toast.
 --  jr_package_line, prompt_class: <leader>jr on a `package` line; the prompt when no name is given.
+--  follow_up_warning  : the 3 s warning from an error planted on a touched buffer; a newer refactor
+--                       cancels the older one's pending warning.
 --  rename_package_no_type: package-info.java only, jdt.ls null: moved with the package line by text + NOTE.
 --  neotree_placeholder: the refusal placeholder: kept 1 s after the last refusal, VimLeavePre removes it,
 --                       an existing destination folder is never written into.
@@ -945,6 +947,54 @@ case("stale_scan_truncated", function()
   refactor.scan_max_files = keep
   lsp.report(P .. "stale_scan_truncated", full == false and cut == true and note:find("scan stopped after 3 files", 1, true) ~= nil,
     ("default cap truncated=%s; cap 3 truncated=%s; note: %s"):format(tostring(full), tostring(cut), note))
+end)
+
+-- follow_up_warning (deterministic): the warning after a refactor ("applied, but N error(s)") from an
+-- error planted in a check namespace on a touched buffer right after the edit; and a newer refactor
+-- cancels the older one's pending warning. A: GreetingController -> HelloController, error planted in
+-- HelloController; B (started before A's 3 s look): Invoice -> Bill, error planted in Checkout. Only B's
+-- warning may appear, naming Checkout and the planted message.
+case("follow_up_warning", function()
+  if not has("rename_class") then return lsp.report(P .. "follow_up_warning", false, pending_reason("rename_class")) end
+  local GC, HC = main .. "demo/GreetingController.java", main .. "demo/HelloController.java"
+  local ns = vim.api.nvim_create_namespace("nv4j_check_62_follow_up")
+  local function plant(b, msg)
+    vim.diagnostic.set(ns, b, { { lnum = 0, col = 0, message = msg, severity = vim.diagnostic.severity.ERROR } })
+  end
+  lsp.open(CHECKOUT); lsp.open(CALC)
+  local inv, gc = lsp.open(INVOICE), lsp.open(GC)
+  local got, stop = capture()
+  -- A
+  local l, c = pos(gc, "^public class GreetingController", "GreetingController")
+  vim.api.nvim_set_current_buf(gc); vim.api.nvim_win_set_cursor(0, { l + 1, c })
+  local tA = E.now()
+  refactor.rename_class({ name = "HelloController" })
+  local a_ok = until_ms(tA, function() return loaded(HC) ~= nil and find_msg(got, "Renamed class GreetingController -> HelloController: ") ~= nil end)
+  if a_ok then plant(loaded(HC), "planted A error") end
+  -- B, well before A's 3 s look
+  l, c = pos(inv, "^public class Invoice", "Invoice")
+  vim.api.nvim_set_current_buf(inv); vim.api.nvim_win_set_cursor(0, { l + 1, c })
+  local tB = E.now()
+  refactor.rename_class({ name = "Bill" })
+  local b_ok = until_ms(tB, function() return find_msg(got, "Renamed class Invoice -> Bill: ") ~= nil end)
+  local gap = tB - tA
+  if b_ok then plant(loaded(CHECKOUT), "planted B error") end
+  local warn_b
+  vim.wait(6000, function()
+    warn_b = find_msg(got, "Renamed class Invoice -> Bill applied, but", vim.log.levels.WARN)
+    return warn_b ~= nil
+  end, 20)
+  local t_warn = E.now() - tB
+  -- past A's own 3 s look (A's follow-up started when A was applied, before B started)
+  vim.wait(math.max(0, tB + 3600 - E.now()), function() return false end, 50)
+  local warn_a = find_msg(got, "Renamed class GreetingController -> HelloController applied, but")
+  stop()
+  for _, b in ipairs(vim.api.nvim_list_bufs()) do pcall(vim.diagnostic.reset, ns, b) end
+  -- B's warning comes from B's own 3 s look (an earlier one would be a stale follow-up not cancelled)
+  lsp.report(P .. "follow_up_warning", a_ok and b_ok and gap < 3000 and warn_b ~= nil and t_warn >= 2900
+    and warn_b:find("Checkout.java:1 planted B error", 1, true) ~= nil and warn_a == nil,
+    ("B started %.0f ms after A; B's warning after %.0f ms: %s; A's (cancelled) warning: %s"):format(gap, t_warn,
+      tostring(warn_b), tostring(warn_a)))
 end)
 
 --- Inline at (pat, word) in PriceCalculator; `want` must appear in the file afterwards.

@@ -708,8 +708,11 @@ local function block_neotree_move(src, dest)
       local parent = vim.fs.dirname(d)
       d = parent ~= d and parent or nil
     end
-    for _, dir in ipairs(created) do
-      if not vim.uv.fs_mkdir(dir, 493) then return false end
+    for k, dir in ipairs(created) do
+      if not vim.uv.fs_mkdir(dir, 493) then
+        for j = k - 1, 1, -1 do vim.uv.fs_rmdir(created[j]) end -- the parents made so far
+        return false
+      end
     end
     local ok
     if vim.fn.isdirectory(src) == 1 then

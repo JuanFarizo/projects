@@ -121,11 +121,15 @@ Negative controls (product patched for one run, reverted; patches in the Task 4a
 | n62q | (again after round 2) first-root null handled as before round 1 | `rename_package_first_null`, `neotree_refused`, `rename_package_no_type` | `-114615.log` |
 | n62C | stale `import` lines not looked for | `rename_class_errors` (summary misses Checkout.java:3) | `-114856.log` |
 | n62o | (again) `new_errors` returns nothing | `rename_class_errors_twin` | `-114856.log` |
+| n62D | `follow_up` does nothing (fix round 3) | `follow_up_warning` (no warning) | `/tmp/nv4j/logs/test-20261026-120519.log` |
+| n62E | a newer refactor no longer cancels the pending follow-up | `follow_up_warning` (A's warning shown, and a stale Invoice -> Bill warning from an earlier case 451 ms after B started) | `-115853.log` |
 
 Open items (4a):
 - `<leader>jr` is rename; the planned "Refactor This" menu needs another key (4b-4e).
 - neo-tree refusal: neo-tree's own "Could not rename the files" warning follows ours, and a placeholder (empty file or folder at the destination) exists for 1 s; removed at `VimLeavePre`, not after a hard crash.
-- jdt.ls sometimes never publishes the errors of a file it skipped (2 of 11 runs): the follow-up warning then stays silent; the summary still names the stale `import`, but a same-package reference (no import) in such a file is not found.
+- **Open investigation (not explained):** after the rename with a syntax error in Checkout, jdt.ls never published Checkout's new errors in 2 of 11 runs (15 s, `/tmp/nv4j/logs/test-20261026-114229.log`, `-114457.log`). The follow-up warning then stays silent; the summary still names the stale `import`, but a same-package reference (no import) in such a file is not found. Cause unknown (jdt.ls build scheduling? the skipped file being unsaved?).
+- One full `62_refactor` run (`-120005.log`) had jdt.ls stalling: `willRenameFiles` timed out after 3 s (refused, "nothing changed"), a class rename took 19.7 s; not seen in the runs before or the 2 right after (`-121019.log`, `-121124.log`). Not investigated.
+- `follow_up` is asserted by `follow_up_warning` only with errors planted in a check namespace (fix round 3); with jdt.ls's own errors it is shown, not required (`rename_class_errors`).
 - Strings and config naming a renamed class or package (JPQL, `@Qualifier`, class names in `application.yml`/`.properties`/`.xml`) are not rewritten, only listed in a warning (scope ruling). Bean names that only differ by case outside those annotations, and other file types (`.sql`, `.json`, `.kt`), are not scanned. The scan stops after 5000 scannable files (`require("nv4j.refactor").scan_max_files`) and the warning says so.
 - A moved file's buffer with unsaved changes is written by the move (`:saveas`) without asking (named in the summary).
 - Only jdt.ls is asked (`willRenameFiles`); LazyVim's path asked every client (the Spring Boot LS is not told before the move).
