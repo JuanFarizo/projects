@@ -49,6 +49,7 @@
 --  move_new_package_refused: twin, jdt.ls stubbed null: refused, the created folder removed.
 --  move_invalid, move_same_package, move_conflict (main and test root), move_not_top_level (nested
 --                       type, second top-level type): refused with the reason, nothing changed.
+--  move_symbols_timeout: several types, documentSymbol stubbed to time out: refused visibly.
 --  move_prompt, move_key_new_package: vim.ui.select of the project's packages; <leader>jm with "New
 --                       package..." and the name typed.
 --  move_class_boot, move_class_boot_scan: GreetingController to demo.web (annotations kept, build clean)
@@ -995,6 +996,7 @@ case("move_class", function()
   local l, c = pos(inv, "^public class Invoice", "Invoice")
   local got, stop = capture()
   local t0, how, applied, ms = E.now(), nil, false, 0
+  local req0 = has("move") and refactor.symbol_requests or 0
   if has("move") then
     vim.api.nvim_set_current_buf(inv); vim.api.nvim_win_set_cursor(0, { l + 1, c })
     how = "nv4j.refactor.move"; refactor.move({ package = "demo.shop" })
@@ -1024,6 +1026,8 @@ case("move_class", function()
     { "buffer re-pointed", loaded(SHOP_INV) ~= nil and loaded(INVOICE) == nil },
     { "summary lists Invoice (from billing), Checkout, PriceCalculator", sum:find("Invoice.java (from src/main/java/demo/billing/Invoice.java)", 1, true) ~= nil
       and sum:find("Checkout.java", 1, true) ~= nil and sum:find("PriceCalculator.java", 1, true) ~= nil },
+    { ("class found from the text, no documentSymbol request (%d)"):format((refactor.symbol_requests or 0) - req0),
+      has("move") and refactor.symbol_requests == req0 },
   }, ok_clean, why)
   if not has("move") then return end
   local bad = {}
@@ -1184,12 +1188,11 @@ end)
 -- move_not_top_level: a planted Order.java with a nested type Line and a second top-level type Extra:
 -- cursor in Line or in Extra: refused with the reason, nothing changed.
 local ORDER = main .. "demo/billing/Order.java"
-case("move_not_top_level", function()
-  if not has("move") then return lsp.report(P .. "move_not_top_level", false, pending_reason("move")) end
+local function plant_order()
   local f = assert(io.open(ORDER, "w"))
   f:write([[package demo.billing;
 
-// planted by 62_refactor move_not_top_level, removed after the case
+// planted by 62_refactor move_not_top_level / move_symbols_timeout, removed after the case
 public class Order {
     public static class Line {
         int qty;
@@ -1201,6 +1204,11 @@ class Extra {
 }
 ]])
   f:close()
+end
+case("move_not_top_level", function()
+  if not has("move") then return lsp.report(P .. "move_not_top_level", false, pending_reason("move")) end
+  plant_order()
+  local req0 = refactor.symbol_requests
   local b = lsp.open(ORDER)
   vim.wait(1500, function() return (published_at[vim.uri_from_fname(ORDER)] or 0) > 0 end, 20)
   local r = {}
@@ -1215,8 +1223,35 @@ class Extra {
     r[#r + 1] = { ok = ok == false and msg ~= nil, d = ("%s: %s"):format(w[1], tostring(msg)) }
   end
   local same, d = unchanged({ [ORDER] = true })
-  lsp.report(P .. "move_not_top_level", r[1].ok and r[2].ok and same and vim.uv.fs_stat(ORDER) ~= nil,
-    ("%s; %s; disk %s"):format(r[1].d, r[2].d, d))
+  local reqs = refactor.symbol_requests - req0
+  lsp.report(P .. "move_not_top_level", r[1].ok and r[2].ok and same and vim.uv.fs_stat(ORDER) ~= nil and reqs == 2,
+    ("%s; %s; documentSymbol asked %d time(s) (file with several types); disk %s"):format(r[1].d, r[2].d, reqs, d))
+end)
+
+-- move_symbols_timeout: a file with several types (Order: nested Line, second type Extra), jdt.ls's
+-- documentSymbol stubbed to time out, cursor in Line: refused visibly ("did not tell which one"),
+-- nothing moved (before the fix: the whole file moved).
+case("move_symbols_timeout", function()
+  if not has("move") then return lsp.report(P .. "move_symbols_timeout", false, pending_reason("move")) end
+  plant_order()
+  local b = lsp.open(ORDER)
+  local real = client.request_sync
+  local n = 0
+  client.request_sync = function(self, m, params, t, bb)
+    if m == "textDocument/documentSymbol" then n = n + 1; return nil, "timeout" end
+    return real(self, m, params, t, bb)
+  end
+  local l = E.line_of(b, "int qty")
+  vim.api.nvim_set_current_buf(b); vim.api.nvim_win_set_cursor(0, { l + 1, 8 })
+  local got, stop = capture()
+  local ok = refactor.move({ package = "demo.shop" })
+  vim.wait(200)
+  client.request_sync = real
+  stop()
+  local msg = find_msg(got, "did not tell which one the cursor is in", vim.log.levels.WARN)
+  local same, d = unchanged({ [ORDER] = true })
+  lsp.report(P .. "move_symbols_timeout", ok == false and msg ~= nil and n == 1 and same and vim.uv.fs_stat(ORDER) ~= nil,
+    ("returned %s; %d stubbed documentSymbol request(s); message: %s; disk %s"):format(tostring(ok), n, tostring(msg), d))
 end)
 
 --- Answer the next vim.ui.select with the item equal to `want`; returns the table that gets items/prompt.

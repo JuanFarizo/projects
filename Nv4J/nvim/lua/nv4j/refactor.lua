@@ -699,17 +699,41 @@ end
 --- The class to move: the file's own top-level type (named like the file) when the cursor is in it or
 --- outside every type (package/import lines). nil, reason when the cursor is in a nested type, in a second
 --- top-level type, or the file declares no type of its name. jdt.ls moves whole files (compilation units).
+--- Type declarations in the buffer's text (comments, strings and char literals blanked): the names after
+--- `class`/`interface`/`enum`/`record`/`@interface`. Text-only: any extra token makes the file "ambiguous".
+local function declared_types(buf)
+  local src = table.concat(vim.api.nvim_buf_get_lines(buf, 0, -1, false), "\n")
+  src = src:gsub("/%*.-%*/", " "):gsub("//[^\n]*", " "):gsub('"""(.-)"""', '""'):gsub('"[^"\n]*"', '""'):gsub("'[^'\n]*'", "''")
+  local names = {}
+  for name in src:gmatch("%f[%w_$@]@?interface%s+([%a_$][%w_$]*)") do names[#names + 1] = name end
+  for _, kw in ipairs({ "class", "enum", "record" }) do
+    for name in src:gmatch("%f[%w_$]" .. kw .. "%s+([%a_$][%w_$]*)") do names[#names + 1] = name end
+  end
+  return names
+end
+
+M.symbol_requests = 0 -- documentSymbol requests made by move (checks: the common case makes none)
+M.symbols_timeout_ms = 2000
+
 local function movable_type(buf, client, path)
   local own = vim.fn.fnamemodify(path, ":t:r")
+  -- common case, no jdt.ls round trip (it can take over 1 s when jdt.ls is busy): the text declares one
+  -- type, named like the file, so wherever the cursor is, that is the class
+  local decl = declared_types(buf)
+  if #decl == 1 and decl[1] == own then return own end
   local cur = vim.api.nvim_win_get_cursor(0)
   local l, c = cur[1] - 1, cur[2]
-  local res = client:request_sync("textDocument/documentSymbol", { textDocument = { uri = vim.uri_from_bufnr(buf) } }, 2000, buf)
+  M.symbol_requests = M.symbol_requests + 1
+  local res, rerr = client:request_sync("textDocument/documentSymbol", { textDocument = { uri = vim.uri_from_bufnr(buf) } },
+    M.symbols_timeout_ms, buf)
   local syms = res and res.result
   local function plain(n) return (tostring(n):gsub("<.*$", "")) end
   if type(syms) ~= "table" or (syms[1] and not syms[1].range) then
-    -- no (hierarchical) symbols: the file's own type, if the text declares it
-    if declares_own_type(path) then return own end
-    return nil, ("this file declares no top-level type named %s"):format(own)
+    -- the file has nested or several types and jdt.ls did not say where the cursor is: refused (moving the
+    -- whole file could move a type the cursor was not on)
+    return nil, ("this file declares several types (%s) and jdt.ls did not tell which one the cursor is in (%s); try again once jdt.ls is idle"):format(
+      table.concat(decl, ", "), res == nil and ("no answer in %d ms: %s"):format(M.symbols_timeout_ms, tostring(rerr))
+        or (res.err and (res.err.message or "error")) or "no document symbols")
   end
   local top
   for _, s in ipairs(syms) do
