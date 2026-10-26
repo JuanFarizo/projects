@@ -1,6 +1,6 @@
 # Feature: Refactors (rename with file move, move, rename package, inline, change signature, safe delete)
 
-Priority: P3. Status: Task 0 done (research, fixture, failing check `62_refactor`). Task 4 is split in 4a rename class and rename package (**built**, see "Task 4a"), 4b move, 4c inline, 4d change signature, 4e safe delete (not built: their cases still measure today's path or fail). Decision: D23 in `specs/001-architecture.md`. Spec: `specs/005-p3-tests-scaffold-refactor.md`. Check: `tests/checks/62_refactor.lua`. Product (Task 4): `nvim/lua/nv4j/refactor.lua`, keys in `nvim/lua/config/keymaps.lua`.
+Priority: P3. Status: Task 0 done (research, fixture, failing check `62_refactor`). Task 4 is split in 4a rename class and rename package (**built**, see "Task 4a"), 4b move a class to another package (**built**, see "Task 4b"), 4c inline, 4d change signature, 4e safe delete (not built: their cases FAIL "pending" and still show today's path). Decision: D23 in `specs/001-architecture.md`. Spec: `specs/005-p3-tests-scaffold-refactor.md`. Check: `tests/checks/62_refactor.lua`. Product (Task 4): `nvim/lua/nv4j/refactor.lua`, keys in `nvim/lua/config/keymaps.lua`.
 
 ## Budget
 
@@ -137,6 +137,63 @@ Open items (4a):
 - A namesake-root file with a fully qualified reference to a moved type loses that edit (dropped with the import edits): the follow-up warning shows the error.
 - Not checked: neo-tree move (`before_file_move`, same code as rename), nested/non-public types, Gradle, files outside the root (the summary marks them; no fixture case).
 
+## Task 4b: move a class to another package (built)
+
+Product: `require("nv4j.refactor").move({ package })` in `nvim/lua/nv4j/refactor.lua`, key `<leader>jm` ("Refactor: move class to another package") in `nvim/lua/config/keymaps.lua`.
+
+- **Mechanism (deviation from D23's "code action" wording, same jdt.ls engine):** the move goes through `rename_paths`, the package-rename path of 4a, with one file: `workspace/willRenameFiles` for `demo/billing/Invoice.java -> demo/shop/Invoice.java` BEFORE the move. jdt.ls's `FileEventHandler.computeMoveEdit` calls `MoveHandler.move` with the target package, the same call as the "Move 'Invoice'..." code action's `java/move` (measured: identical edits, 206 to 247 ms against 221 to 400 ms, trial t4b-a). The client moves the file, so 4a's buffer handling, summary, strings/config scan, retry/refusal on a null answer and the 3 s follow-up are reused unchanged; `java/move` would also need `java/getMoveDestinations`, which lists only packages that exist.
+- **Which class:** the file's own top-level type (named like the file), when the cursor is inside it or outside every type (package/import lines). Found with `textDocument/documentSymbol` (2 s timeout; without hierarchical symbols, the text decides). Refused with the reason and nothing changed: cursor in a nested type ("only top-level types move"), cursor in a second top-level type of the file (jdt.ls moves whole files), no type named like the file. IntelliJ's F6 on a reference moves the referenced class; here the cursor's enclosing type decides.
+- **Target:** `opts.package`, else `vim.ui.select` of the project's packages (folders with a `.java` file in any `src/*/java`, the current package left out) plus "New package...", which asks with `vim.ui.input`. The file always stays in its own source root (`src/main/java` class -> `src/main/java/<target>`).
+- **Refusals (nothing changed):** invalid package name (each part a Java identifier, no keyword: `demo.1x`, `demo.class`); same package (INFO "already in package X; nothing to do"); a `<target>/<Name>.java` in ANY source root of the project (`src/test/java/demo/shop/Invoice.java` too: two `demo.shop.Invoice` would shadow each other), "nothing overwritten"; jdt.ls gives no edit after 10 tries over 1 s (4a's refusal); cursor rules above.
+- **Missing target package:** the folder (and parents) is created and jdt.ls told with `workspace/didChangeWatchedFiles` (created); the summary says "created package folder ...". If the move is refused or fails, the folders made for it are removed when empty and jdt.ls told (deleted). jdt.ls answers null for a target folder that does not exist (trial t4b-b).
+- **Test class:** jdt.ls moves only the class's file. A `<Name>Test`/`<Name>Tests`/`<Name>IT` in the old package of another source root stays there (jdt.ls adds the import of the moved class to it, like to every other referencing file); the summary says "src/test/java/demo/billing/InvoiceTest.java stays in package demo.billing (only Invoice moves; move it too with <leader>jm ...)". Not moved automatically (IntelliJ does not either, unless asked).
+- **Spring Boot:** annotations stay as they are (moving a controller is a plain file move with the package line changed). A class with a stereotype (`@RestController`, `@Controller`, `@Service`, `@Component`, `@Repository`, `@Configuration`, `@ControllerAdvice`, `@RestControllerAdvice`) moved outside every `@SpringBootApplication` class's package (found in `src/main/java`, scan capped like the strings scan) gets a warning: component scanning will not find it unless `@ComponentScan`/`scanBasePackages` names the target (those are not read).
+- **Strings and config:** only the old fully qualified name is stale after a move (`demo.billing.Invoice` in strings, `.properties`/`.yml`/`.xml`, `import demo.billing.Invoice;` lines left behind); the simple name is still right and is not searched (it was for class renames). neo-tree moves of a file to another folder now use the same patterns (before: the simple-name patterns of a rename, false hits on `"Invoice"`).
+- **Unsaved buffers, undo, files outside the root, errors elsewhere:** as in 4a (rename_paths): a referencing buffer with unsaved edits is edited in place and left unsaved; the moved file's buffer is written by the move with its unsaved edits (named in the summary); one `u` per buffer gives its text back (the file stays in the new folder); files outside the jdt.ls root are marked in the summary; the 3 s/8 s follow-up reports errors in touched files or new ones. With a syntax error in Checkout, jdt.ls still updated its import on a move (unlike a class rename, which skips that file; measured every run); when an import is left (stubbed twin), the summary names it (`Checkout.java:3`).
+- **neo-tree** `m` (move a `.java` file to another folder) already went through `rename_paths` since 4a (label "Moved class X to package Y"); it does not get the 4b-only checks (other-root conflict, test note, Spring warning, created-folder cleanup). Not checked by a case.
+
+Measured, 3 consecutive runs of `62_refactor` after the last code change (each `DONE 62_refactor 44 8`, the 8 FAILs = the pending inline/change signature/safe delete lines), logs `/tmp/nv4j/logs/test-20261026-160629.log`, `-160755.log`, `-160919.log` (60/61 regression after it: `DONE 60_tests_runner 20 0`, `DONE 61_scaffold 27 0`, `-161043.log`):
+
+| Case | Applied (budget 2 s) | Notes |
+|------|----------------------|-------|
+| `move_class` Invoice -> demo.shop (5 files) | 382 to 461 ms | willRenameFiles 134 to 189 ms, edit+write about 200 ms; build clean; `move_class_undo` one `u` per buffer |
+| `move_class_unsaved` | 390 to 457 ms | Checkout left unsaved with its edit, moved file written with its edit |
+| `move_class_new_package` demo.invoicing | 426 to 517 ms | folder created; once 1.5 to 1.7 s in NC runs (jdt.ls busy, open items) |
+| `move_prompt` / `move_key_new_package` | 361 to 505 ms / 456 to 1684 ms | select of packages; `<leader>jm` + "New package..." |
+| `move_class_boot` (demo.web) / `_boot_scan` (web) | 155 to 1184 ms / 94 to 122 ms | annotations kept, build clean; warning outside `demo` |
+| `move_class_test_stays`, `move_class_stale` | 373 to 403 ms, 421 to 497 ms | InvoiceTest stays (import added, summary says so); properties line listed, no simple-name hit |
+| `move_class_errors`, `_skipped_twin` | 315 to 428 ms, 358 to 452 ms | jdt.ls updated Checkout despite the syntax error (3 of 3); twin: warning names Checkout.java:3 |
+| `move_new_package_refused` | refused after 964 to 1003 ms | 10 null answers, created folder removed |
+| `move_invalid`, `move_same_package`, `move_conflict`, `move_not_top_level` | at once | nothing changed, reason shown |
+
+Negative controls (product patched for one run, reverted; patcher with exact-text patches, as in 4a):
+
+| # | Patch | Fails | Log |
+|---|-------|-------|-----|
+| n62F | `move` moves the file without jdt.ls (`vim.lsp.util.rename` only) | `move_class`, `_undo`, `_unsaved`, `_new_package`, `move_new_package_refused`, `move_prompt`, `move_key_new_package`, `move_class_boot`, `_boot_scan`, `_test_stays`, `_stale`, `_errors`, `_skipped_twin` | `/tmp/nv4j/logs/test-20261026-160113.log` |
+| n62U | an extra undo step on the moved buffer after the move | `move_class_undo` (Invoice.java) | `-155915.log` |
+| n62R | buffers with unsaved edits reloaded from disk before the move | `move_class_unsaved`, `move_class_errors` | `-155915.log` |
+| n62V | the target folder not created | `move_class_new_package`, `move_key_new_package`, `move_class_boot`, `move_class_boot_scan` | `-160349.log` |
+| n62P | created folder not removed after a refusal | `move_new_package_refused` (demo/invoicing left behind) | `-155741.log` |
+| n62H | package name not validated | `move_invalid` | `-155741.log` |
+| n62I | same-package check removed | `move_same_package` (the move path's "already exists" error instead of the INFO) | `-155741.log` |
+| n62J | target class not looked for in the source roots | `move_conflict` (the src/test/java sub-case moved Invoice) | `-155741.log` |
+| n62K | cursor rule removed (always the file's type) | `move_not_top_level` (Order moved) | `-155741.log` |
+| n62L | the picked package ignored | `move_prompt` | `-155915.log` |
+| n62M | no Spring component-scan warning | `move_class_boot_scan` | `-155741.log` |
+| n62N | no test-stays note | `move_class_test_stays` | `-155741.log` |
+| n62O | class-rename patterns (simple name) for a move | `move_class_stale` (false hit on InvoiceLabels.java) | `-155915.log` |
+| n62Q | old-name `import` lines not looked for after a move | `move_class_skipped_twin` | `-155741.log` |
+| n62G | jdt.ls not told about the created folder (`didChangeWatchedFiles` skipped) | nothing: `move_class_new_package` still passed with 2 tries instead of 1 (Neovim's own file watcher told jdt.ls); kept for clients without that watcher, n62V is its control | `-155915.log` |
+
+Open items (4b):
+- Moving several classes at once, a whole package into another (jdt.ls: "upstream JDT supports only moving Java files"), moving a nested type to the top level, moving to another module/source root: not supported.
+- The test class is not moved along (said in the summary); the old package folder is left when it becomes empty.
+- Spring warning: `@ComponentScan`/`scanBasePackages`/`@Import` not read (could be a false warning); `@SpringBootApplication` looked for only in `src/main/java`.
+- Single slow moves: `move_key_new_package` 1684 ms (`-160919.log`), `move_class_boot` 1184 ms (`-160629.log`), and `move_class_new_package` once took 1.5 to 1.7 s (jdt.ls's `willRenameFiles` 1163 ms in `-155741.log`, `documentSymbol` 1171 ms in `-155915.log`, both right after the previous case's restore and build); usually about 0.4 s. Within the 2 s budget, close to it when jdt.ls is still busy.
+- Default package: moving out of it is allowed (jdt.ls adds the `package` line; not checked); moving into it is not offered (an empty name cancels).
+- Gradle, multi-module, files outside the root: not checked (the summary marks files outside the root).
+
 ## Trial log
 
 | # | Change | Effect | Kept |
@@ -158,3 +215,7 @@ Open items (4a):
 | t4a-i | fix round 1: first-root null answer | before: folder moved with the old `package` line, no warning | retry, then refused with "nothing changed" |
 | t4a-k | fix round 2: `rename_class_errors` and its twin waited for jdt.ls's errors on Checkout | in 2 of 11 runs jdt.ls never published them (15 s; `-114229.log`, `-114457.log`): the follow-up had nothing to show | the stale `import` is found from the text (summary warning, deterministic); the twin plants the error in a check namespace; the follow-up is reported, not required |
 | t4a-j | fix round 1: neo-tree refusal with `handled` | neo-tree's `complete` re-points and deletes the buffers, logs success (n62u) | not handled + neo-tree's rename made to fail (placeholder folder, 1 s) |
+| t4b-a | `willRenameFiles` (file move) against `java/getMoveDestinations` + `java/move` (scratch check, `/tmp/nv4j/logs/test-20261026-154744.log`) | identical edits (Checkout import dropped, PriceCalculator and the 2 billing tests import `demo.shop.Invoice`, package line); `willRenameFiles` 400/228/221 ms, `java/move` 218/247/206 ms; the first `willRenameFiles` right after jdt.ls was ready took 2175 ms (`-154704.log`) | `willRenameFiles` through `rename_paths` (4a's path reused) |
+| t4b-b | target folder missing / created but jdt.ls not told / created and told (same log) | null at once (2 to 4 ms) / null / edit (362 ms) | create the folder, tell jdt.ls, then ask (retries of rename_paths cover the rest) |
+| t4b-c | `move_class_errors` written like `rename_class_errors` (expecting Checkout's import left) | jdt.ls updated Checkout's import despite the syntax error (`-155335.log`) | the case accepts either honest result; a stubbed twin drops Checkout's edit and asserts the warning |
+| t4b-d | n62G: no `didChangeWatchedFiles` for the created folder | still moved (2 tries): Neovim's watcher tells jdt.ls on macOS | notify kept (cheap; Neovim's watcher is off on some systems), n62V is the control |

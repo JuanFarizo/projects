@@ -324,13 +324,18 @@ end, { desc = "Test for this class (open or create)" })
 -- <leader>jr: rename (the package on a `package` line, else the class: file renamed, references and
 -- imports updated, touched files written and listed). <leader>jp: rename the current file's package
 -- (package/import lines, folders in src/main and src/test moved, buffers re-pointed). <leader>cr stays
--- LazyVim's Rename (any symbol). Move, inline, change signature, safe delete: not built yet.
+-- LazyVim's Rename (any symbol). <leader>jm: move the class at the cursor to another package (picked
+-- from the project's packages or typed; the folder is created when missing). Inline, change signature,
+-- safe delete: not built yet.
 map("n", "<leader>jr", function()
   require("nv4j.refactor").rename()
 end, { desc = "Refactor: rename class (package on a package line)" })
 map("n", "<leader>jp", function()
   require("nv4j.refactor").rename_package()
 end, { desc = "Refactor: rename package" })
+map("n", "<leader>jm", function()
+  require("nv4j.refactor").move()
+end, { desc = "Refactor: move class to another package" })
 pcall(function()
   require("which-key").add({ { "<leader>j", group = "java" } })
 end)

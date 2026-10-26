@@ -5,12 +5,12 @@
 -- edit), and one `u` per touched buffer gives its text back.
 -- Fixture: demo.billing.{Invoice, PriceCalculator}, demo.shop.Checkout (call sites in another package).
 -- API under test (Task 4): require("nv4j.refactor").<fn>(opts) at the cursor, no prompts when opts
--- give the answer: rename_class({ name }), rename_package({ name }) (Task 4a, built), move({ package }),
--- inline(), change_signature({ add = { { type, name, default } } }), safe_delete() (4b-4e). Each case
+-- give the answer: rename_class({ name }), rename_package({ name }) (Task 4a, built), move({ package })
+-- (Task 4b, built), inline(), change_signature({ add = { { type, name, default } } }), safe_delete() (4b-4e). Each case
 -- uses its function when it exists, else measures today's path: vim.lsp.buf.rename (<leader>cr) or
 -- jdt.ls's code action through Neovim/nvim-jdtls (<leader>ca), with nvim-jdtls's prompts answered.
 --  api, keys          : the functions built so far and their keys (<leader>jr rename, <leader>jp rename
---                       package; pending: <leader>jm move, <leader>ji inline, <leader>js change
+--                       package, <leader>jm move; pending: <leader>ji inline, <leader>js change
 --                       signature, <leader>jd safe delete, listed); <leader>cr stays Rename.
 --  rename_class       : Invoice -> Bill from its declaration: Bill.java on disk, Invoice.java gone,
 --                       Checkout imports demo.billing.Bill, no `Invoice` token left, touched files
@@ -22,8 +22,6 @@
 --  rename_class_boot  : GreetingController (@RestController) -> HelloController; build clean.
 --  rename_class_errors: a syntax error in Checkout (jdt.ls then skips its references): the summary
 --                       warning names Checkout.java:3. _twin: refactor.new_errors on a planted error.
---  move_class         : Invoice to package demo.shop: demo/shop/Invoice.java, Checkout's import gone,
---                       PriceCalculator imports demo.shop.Invoice; build clean.
 --  rename_package     : demo.shop -> demo.store from Checkout's package line: demo/store/Checkout.java,
 --                       package line on disk, buffer re-pointed, summary; build clean.
 --  rename_package_imports: demo.billing -> demo.invoicing (src/main and src/test folders), package and
@@ -43,7 +41,23 @@
 --  rename_package_no_type: package-info.java only, jdt.ls null: moved with the package line by text + NOTE.
 --  neotree_placeholder: the refusal placeholder: kept 1 s after the last refusal, VimLeavePre removes it,
 --                       an existing destination folder is never written into.
---  Unbuilt functions (move, inline, change_signature, safe_delete): their cases FAIL "pending" (today's
+--  move_class (+ _undo): Invoice to package demo.shop: demo/shop/Invoice.java, package line, Checkout's
+--                       import gone, PriceCalculator and the billing tests import demo.shop.Invoice,
+--                       written, buffer re-pointed, summary; build clean; one `u` per buffer.
+--  move_class_unsaved : unsaved user edits in Checkout and Invoice survive; Checkout left unsaved.
+--  move_class_new_package: to demo.invoicing (no folder): created, moved, summary says so.
+--  move_new_package_refused: twin, jdt.ls stubbed null: refused, the created folder removed.
+--  move_invalid, move_same_package, move_conflict (main and test root), move_not_top_level (nested
+--                       type, second top-level type): refused with the reason, nothing changed.
+--  move_prompt, move_key_new_package: vim.ui.select of the project's packages; <leader>jm with "New
+--                       package..." and the name typed.
+--  move_class_boot, move_class_boot_scan: GreetingController to demo.web (annotations kept, build clean)
+--                       and to web (outside the @SpringBootApplication package: warning).
+--  move_class_test_stays: a planted InvoiceTest stays in demo.billing (import added); summary says so.
+--  move_class_stale   : the old qualified name in application.properties listed; a "Invoice" string not.
+--  move_class_errors  : a syntax error in Checkout: still updated by jdt.ls (or warned); _skipped_twin:
+--                       Checkout's edit dropped (stub): the summary warns with Checkout.java:3.
+--  Unbuilt functions (inline, change_signature, safe_delete): their cases FAIL "pending" (today's
 --  path shown after it) and `api` adds a pending_<fn> FAIL line each: the check stays red until 4e.
 --  inline_method      : `gross(invoice)` call in total inlined: `invoice.quantity() * invoice.unitPrice()`.
 --  inline_variable    : local `gross` in total inlined: `return gross(invoice);`.
@@ -118,7 +132,7 @@ do
   vim.api.nvim_set_current_buf(buf0)
   local want = {
     { "<leader>jr", "rename_class", "ename" }, { "<leader>jp", "rename_package", "ackage" },
-    { "<leader>jm", "move", "Move" }, { "<leader>ji", "inline", "Inline" }, { "<leader>js", "change_signature", "ignature" },
+    { "<leader>jm", "move", "ove" }, { "<leader>ji", "inline", "Inline" }, { "<leader>js", "change_signature", "ignature" },
     { "<leader>jd", "safe_delete", "elete" },
   }
   local bad, okk, pending = {}, {}, {}
@@ -464,34 +478,6 @@ case("rename_class_errors", function()
   lsp.report(P .. "rename_class_errors_twin", vim.iter(in_chk):any(function(e) return e:find("Invoice cannot be resolved", 1, true) ~= nil end)
     and #other == 0,
     ("Checkout: %s; others: %s"):format(table.concat(in_chk, " | "), #other == 0 and "none" or table.concat(other, " | ")))
-end)
-
--- move_class
-case("move_class", function()
-  local inv = lsp.open(INVOICE)
-  lsp.open(CHECKOUT); lsp.open(CALC)
-  local l, c = pos(inv, "^public class Invoice", "Invoice")
-  local MOVED = main .. "demo/shop/Invoice.java"
-  local t0, how, applied, ms = E.now(), nil, false, 0
-  if has("move") then
-    vim.api.nvim_set_current_buf(inv); vim.api.nvim_win_set_cursor(0, { l + 1, c })
-    how = "nv4j.refactor.move"; refactor.move({ package = "demo.shop" })
-  else
-    local seen = answer_select("demo.shop")
-    local ok, title = code_action(inv, l, c, "^Move")
-    if not ok then return report_apply("move_class", title, false, 0, {}, false, "") end
-    applied = vim.wait(5000, function() return #seen > 0 end, 5)
-    how = ("code action %s (nvim-jdtls destination prompt %s)"):format(title,
-      applied and ("answered 'demo.shop' among: " .. table.concat(seen, " | ")) or "NEVER shown")
-  end
-  applied, ms = until_ms(t0, function() return vim.uv.fs_stat(MOVED) ~= nil and (text_of(CALC) or ""):find("import demo.shop.Invoice;", 1, true) ~= nil end)
-  local ct = text_of(CHECKOUT)
-  local ok_clean, why = clean({ CHECKOUT, CALC, MOVED }, t0)
-  report_apply("move_class", how, applied, ms, {
-    { "billing/Invoice.java gone", vim.uv.fs_stat(INVOICE) == nil },
-    { "Checkout import dropped", ct ~= nil and not ct:find("import demo.billing.Invoice;", 1, true) },
-    { "package line", (text_of(MOVED) or ""):find("package demo.shop;", 1, true) ~= nil },
-  }, ok_clean, why)
 end)
 
 -- rename_package
@@ -995,6 +981,460 @@ case("follow_up_warning", function()
     and warn_b:find("Checkout.java:1 planted B error", 1, true) ~= nil and warn_a == nil,
     ("B started %.0f ms after A; B's warning after %.0f ms: %s; A's (cancelled) warning: %s"):format(gap, t_warn,
       tostring(warn_b), tostring(warn_a)))
+end)
+
+-- move_class (+ undo): Invoice to package demo.shop through nv4j.refactor.move: demo/shop/Invoice.java,
+-- package line, Checkout's import dropped, PriceCalculator and the billing tests import demo.shop.Invoice,
+-- touched files written, buffer re-pointed, summary; one `u` per touched buffer gives its text back.
+local SHOP_INV = main .. "demo/shop/Invoice.java"
+local TEST = fixture .. "/src/test/java/"
+local PCT = TEST .. "demo/billing/PriceCalculatorTest.java"
+case("move_class", function()
+  local inv, chk, calc = lsp.open(INVOICE), lsp.open(CHECKOUT), lsp.open(CALC)
+  local before = { [chk] = E.text(chk), [calc] = E.text(calc), [inv] = E.text(inv) }
+  local l, c = pos(inv, "^public class Invoice", "Invoice")
+  local got, stop = capture()
+  local t0, how, applied, ms = E.now(), nil, false, 0
+  if has("move") then
+    vim.api.nvim_set_current_buf(inv); vim.api.nvim_win_set_cursor(0, { l + 1, c })
+    how = "nv4j.refactor.move"; refactor.move({ package = "demo.shop" })
+  else
+    local seen = answer_select("demo.shop")
+    local ok, title = code_action(inv, l, c, "^Move")
+    if not ok then stop(); return report_apply("move_class", title, false, 0, {}, false, "") end
+    applied = vim.wait(5000, function() return #seen > 0 end, 5)
+    how = ("code action %s (nvim-jdtls destination prompt %s)"):format(title,
+      applied and ("answered 'demo.shop' among: " .. table.concat(seen, " | ")) or "NEVER shown")
+  end
+  applied, ms = until_ms(t0, function() return vim.uv.fs_stat(SHOP_INV) ~= nil and (text_of(CALC) or ""):find("import demo.shop.Invoice;", 1, true) ~= nil end)
+  stop()
+  local ct = text_of(CHECKOUT)
+  local ok_clean, why = clean({ CHECKOUT, CALC, SHOP_INV }, t0)
+  local sum = find_msg(got, "Moved class Invoice to package demo.shop") or ""
+  local st = refactor.last or {}
+  if st.ms then how = how .. (" (willRenameFiles %.0f ms, edit+write %.0f ms, move %.0f ms)"):format(st.ms.will, st.ms.apply, st.ms.move) end
+  report_apply("move_class", how, applied, ms, {
+    { "billing/Invoice.java gone", vim.uv.fs_stat(INVOICE) == nil },
+    { "Checkout import dropped", ct ~= nil and not ct:find("import demo.billing.Invoice;", 1, true) },
+    { "package line", (text_of(SHOP_INV) or ""):find("package demo.shop;", 1, true) ~= nil },
+    { "written to disk", (disk(SHOP_INV) or ""):find("package demo.shop;", 1, true) ~= nil
+      and (disk(CALC) or ""):find("import demo.shop.Invoice;", 1, true) ~= nil
+      and not (disk(CHECKOUT) or ""):find("import demo.billing.Invoice;", 1, true) },
+    { "billing tests import demo.shop.Invoice", (disk(PCT) or ""):find("import demo.shop.Invoice;", 1, true) ~= nil },
+    { "buffer re-pointed", loaded(SHOP_INV) ~= nil and loaded(INVOICE) == nil },
+    { "summary lists Invoice (from billing), Checkout, PriceCalculator", sum:find("Invoice.java (from src/main/java/demo/billing/Invoice.java)", 1, true) ~= nil
+      and sum:find("Checkout.java", 1, true) ~= nil and sum:find("PriceCalculator.java", 1, true) ~= nil },
+  }, ok_clean, why)
+  if not has("move") then return end
+  local bad = {}
+  for b, txt in pairs(before) do
+    local bb = vim.api.nvim_buf_is_valid(b) and b or vim.fn.bufnr(SHOP_INV)
+    if bb ~= -1 and vim.api.nvim_buf_is_valid(bb) then
+      vim.api.nvim_buf_call(bb, function() vim.cmd("silent! undo") end)
+      if E.text(bb) ~= txt then bad[#bad + 1] = vim.fs.basename(vim.api.nvim_buf_get_name(bb)) end
+    else
+      bad[#bad + 1] = "buffer gone"
+    end
+  end
+  lsp.report(P .. "move_class_undo", applied and #bad == 0,
+    applied and (#bad == 0 and "one u restored every touched buffer (Checkout, PriceCalculator, the moved Invoice)"
+      or ("not restored by one u: " .. table.concat(bad, ", "))) or "move not applied, nothing to undo")
+end)
+
+-- move_class_unsaved: unsaved user edits in Checkout and in Invoice itself survive the move; Checkout is
+-- edited in place and left unsaved, the moved Invoice is written by the move with the user's edit.
+case("move_class_unsaved", function()
+  if not has("move") then return lsp.report(P .. "move_class_unsaved", false, pending_reason("move")) end
+  local inv, chk = lsp.open(INVOICE), lsp.open(CHECKOUT)
+  lsp.open(CALC)
+  append_line(chk, "// user edit in Checkout")
+  append_line(inv, "// user edit in Invoice")
+  vim.api.nvim_set_current_buf(inv)
+  local l, c = pos(inv, "^public class Invoice", "Invoice")
+  vim.api.nvim_win_set_cursor(0, { l + 1, c })
+  local got, stop = capture()
+  local t0 = E.now()
+  refactor.move({ package = "demo.shop" })
+  local applied, ms = until_ms(t0, function() return vim.uv.fs_stat(SHOP_INV) ~= nil and loaded(SHOP_INV) ~= nil end)
+  stop()
+  local ok_clean, why = clean({ CHECKOUT, CALC, SHOP_INV }, t0)
+  local ct = text_of(CHECKOUT) or ""
+  local sum = find_msg(got, "Moved class Invoice to package demo.shop") or ""
+  report_apply("move_class_unsaved", "nv4j.refactor.move", applied, ms, {
+    { "Checkout keeps the user edit, import dropped", ct:find("// user edit in Checkout", 1, true) ~= nil
+      and not ct:find("import demo.billing.Invoice;", 1, true) },
+    { "Checkout left unsaved (disk untouched)", loaded(CHECKOUT) ~= nil and vim.bo[loaded(CHECKOUT)].modified
+      and disk(CHECKOUT) == snap.files[CHECKOUT] },
+    { "moved Invoice on disk has the user edit", (disk(SHOP_INV) or ""):find("// user edit in Invoice", 1, true) ~= nil
+      and (disk(SHOP_INV) or ""):find("package demo.shop;", 1, true) ~= nil },
+    { "summary: Checkout left unsaved, Invoice written", sum:find("Checkout.java [left unsaved", 1, true) ~= nil
+      and sum:find("Invoice.java (from src/main/java/demo/billing/Invoice.java) [written with your unsaved changes]", 1, true) ~= nil },
+  }, ok_clean, why)
+end)
+
+-- move_class_new_package: to demo.invoicing (no such folder): the folder is created, jdt.ls told, the
+-- class moved there with its references; the summary says the folder was created.
+local NEWPKG_INV = main .. "demo/invoicing/Invoice.java"
+case("move_class_new_package", function()
+  if not has("move") then return lsp.report(P .. "move_class_new_package", false, pending_reason("move")) end
+  local inv = lsp.open(INVOICE)
+  lsp.open(CHECKOUT); lsp.open(CALC)
+  vim.api.nvim_set_current_buf(inv); vim.api.nvim_win_set_cursor(0, { 5, 14 })
+  local got, stop = capture()
+  local t0 = E.now()
+  refactor.move({ package = "demo.invoicing" })
+  local applied, ms = until_ms(t0, function()
+    return vim.uv.fs_stat(NEWPKG_INV) ~= nil and (text_of(CHECKOUT) or ""):find("import demo.invoicing.Invoice;", 1, true) ~= nil
+  end)
+  stop()
+  local ok_clean, why = clean({ CHECKOUT, CALC, NEWPKG_INV }, t0)
+  local sum = find_msg(got, "Moved class Invoice to package demo.invoicing") or ""
+  local st = refactor.last or {}
+  report_apply("move_class_new_package", ("nv4j.refactor.move (symbols %.0f ms, willRenameFiles %.0f ms, %s tries, edit+write %.0f ms, move %.0f ms)"):format(
+    st.symbols_ms or -1, st.ms and st.ms.will or -1, tostring(st.tries and st.tries[INVOICE]), st.ms and st.ms.apply or -1,
+    st.ms and st.ms.move or -1), applied, ms, {
+    { "package line", (disk(NEWPKG_INV) or ""):find("package demo.invoicing;", 1, true) ~= nil },
+    { "PriceCalculator imports it", (text_of(CALC) or ""):find("import demo.invoicing.Invoice;", 1, true) ~= nil },
+    { "summary says the folder was created", sum:find("created package folder src/main/java/demo/invoicing", 1, true) ~= nil },
+  }, ok_clean, why)
+end)
+
+-- move_new_package_refused (deterministic twin of the folder registration race): jdt.ls stubbed null
+-- for the move: refused, the folder made for it removed, nothing changed.
+case("move_new_package_refused", function()
+  if not has("move") then return lsp.report(P .. "move_new_package_refused", false, pending_reason("move")) end
+  local inv = lsp.open(INVOICE)
+  vim.api.nvim_set_current_buf(inv); vim.api.nvim_win_set_cursor(0, { 5, 14 })
+  local undo, n = null_will_rename("/demo/billing/Invoice.java")
+  local got, stop = capture()
+  local t0 = E.now()
+  local ok = refactor.move({ package = "demo.invoicing" })
+  local ms = E.now() - t0
+  undo(); stop()
+  local msg = find_msg(got, "gave no edit", vim.log.levels.ERROR)
+  local d = F.diff(snap)
+  lsp.report(P .. "move_new_package_refused", ok == false and msg ~= nil and #d.added + #d.changed + #d.missing + #d.dirs == 0
+    and vim.uv.fs_stat(main .. "demo/invoicing") == nil and loaded(INVOICE) ~= nil and not vim.bo[inv].modified,
+    ("returned %s after %.0f ms, %d null answer(s); message: %s; demo/invoicing %s; disk %s, new dirs %d"):format(tostring(ok), ms, n[1],
+      tostring(msg), vim.uv.fs_stat(main .. "demo/invoicing") and "LEFT BEHIND" or "removed", F.fmt(d), #d.dirs))
+end)
+
+--- Runs move({ package = target }) on Invoice and returns ok, the messages, the diff against the snapshot.
+local function move_refused(target)
+  local inv = lsp.open(INVOICE)
+  vim.api.nvim_set_current_buf(inv); vim.api.nvim_win_set_cursor(0, { 5, 14 })
+  local got, stop = capture()
+  local ok = refactor.move({ package = target })
+  vim.wait(300)
+  stop()
+  return ok, got, inv
+end
+
+local function unchanged(planted)
+  local d = F.diff(snap)
+  local added = vim.tbl_filter(function(p) return not planted[p] end, d.added)
+  return #added + #d.changed + #d.missing == 0 and #d.dirs == (planted.dirs or 0), F.fmt(d)
+end
+
+-- move_invalid: an invalid package name ("demo.1x", "demo.class"): refused, nothing changed.
+case("move_invalid", function()
+  if not has("move") then return lsp.report(P .. "move_invalid", false, pending_reason("move")) end
+  local r = {}
+  for _, t in ipairs({ "demo.1x", "demo.class" }) do
+    local ok, got, inv = move_refused(t)
+    local msg = find_msg(got, "not a valid package name", vim.log.levels.ERROR)
+    local same, d = unchanged({})
+    r[#r + 1] = { ok = ok == false and msg ~= nil and same and not vim.bo[inv].modified, d = ("%s: %s, disk %s"):format(t, tostring(msg), d) }
+  end
+  lsp.report(P .. "move_invalid", r[1].ok and r[2].ok, r[1].d .. "; " .. r[2].d)
+end)
+
+-- move_same_package: to its own package: a message, nothing changed.
+case("move_same_package", function()
+  if not has("move") then return lsp.report(P .. "move_same_package", false, pending_reason("move")) end
+  local ok, got, inv = move_refused("demo.billing")
+  local msg = find_msg(got, "is already in package demo.billing; nothing to do", vim.log.levels.INFO)
+  local same, d = unchanged({})
+  lsp.report(P .. "move_same_package", ok == false and msg ~= nil and same and not vim.bo[inv].modified,
+    ("message: %s; disk %s"):format(tostring(msg), d))
+end)
+
+-- move_conflict: demo.shop.Invoice already exists (planted in src/main/java, then in src/test/java):
+-- refused both times, the planted file not overwritten, nothing else changed.
+case("move_conflict", function()
+  if not has("move") then return lsp.report(P .. "move_conflict", false, pending_reason("move")) end
+  local r = {}
+  for _, rootdir in ipairs({ main, TEST }) do
+    local planted = rootdir .. "demo/shop/Invoice.java"
+    vim.fn.mkdir(vim.fs.dirname(planted), "p")
+    local new_dir = rootdir == TEST and 1 or 0
+    local body = "package demo.shop;\n\n// planted by 62_refactor move_conflict\npublic class Invoice {\n}\n"
+    local f = assert(io.open(planted, "w")); f:write(body); f:close()
+    local ok, got, inv = move_refused("demo.shop")
+    local msg = find_msg(got, "demo.shop.Invoice already exists", vim.log.levels.ERROR)
+    local same, d = unchanged({ [planted] = true, dirs = new_dir })
+    r[#r + 1] = { ok = ok == false and msg ~= nil and same and disk(planted) == body and vim.uv.fs_stat(INVOICE) ~= nil and not vim.bo[inv].modified,
+      d = ("%s: %s; disk %s"):format(rel_src(planted), tostring(msg), d) }
+    os.remove(planted)
+    if rootdir == TEST then vim.uv.fs_rmdir(vim.fs.dirname(planted)) end
+  end
+  lsp.report(P .. "move_conflict", r[1].ok and r[2].ok, r[1].d .. " | " .. r[2].d)
+end)
+
+-- move_not_top_level: a planted Order.java with a nested type Line and a second top-level type Extra:
+-- cursor in Line or in Extra: refused with the reason, nothing changed.
+local ORDER = main .. "demo/billing/Order.java"
+case("move_not_top_level", function()
+  if not has("move") then return lsp.report(P .. "move_not_top_level", false, pending_reason("move")) end
+  local f = assert(io.open(ORDER, "w"))
+  f:write([[package demo.billing;
+
+// planted by 62_refactor move_not_top_level, removed after the case
+public class Order {
+    public static class Line {
+        int qty;
+    }
+}
+
+class Extra {
+    int n;
+}
+]])
+  f:close()
+  local b = lsp.open(ORDER)
+  vim.wait(1500, function() return (published_at[vim.uri_from_fname(ORDER)] or 0) > 0 end, 20)
+  local r = {}
+  for _, w in ipairs({ { "int qty", "nested type Line" }, { "int n;", "second top-level type" } }) do
+    local l = E.line_of(b, w[1])
+    vim.api.nvim_set_current_buf(b); vim.api.nvim_win_set_cursor(0, { l + 1, 8 })
+    local got, stop = capture()
+    local ok = refactor.move({ package = "demo.shop" })
+    vim.wait(200)
+    stop()
+    local msg = find_msg(got, w[2], vim.log.levels.WARN)
+    r[#r + 1] = { ok = ok == false and msg ~= nil, d = ("%s: %s"):format(w[1], tostring(msg)) }
+  end
+  local same, d = unchanged({ [ORDER] = true })
+  lsp.report(P .. "move_not_top_level", r[1].ok and r[2].ok and same and vim.uv.fs_stat(ORDER) ~= nil,
+    ("%s; %s; disk %s"):format(r[1].d, r[2].d, d))
+end)
+
+--- Answer the next vim.ui.select with the item equal to `want`; returns the table that gets items/prompt.
+local function answer_select_exact(want)
+  local real, seen = vim.ui.select, {}
+  vim.ui.select = function(items, o, cb)
+    vim.ui.select = real
+    seen.items, seen.prompt = items, o and o.prompt
+    for _, it in ipairs(items) do
+      if it == want then return cb(it) end
+    end
+    cb(nil)
+  end
+  return seen
+end
+
+-- move_prompt: move() with no package from the `package` line (outside any type: the file's class
+-- moves) picks the target with vim.ui.select (the project's packages without the current one, plus "New
+-- package..."); answered demo.shop.
+case("move_prompt", function()
+  if not has("move") then return lsp.report(P .. "move_prompt", false, pending_reason("move")) end
+  local inv = lsp.open(INVOICE)
+  lsp.open(CHECKOUT); lsp.open(CALC)
+  vim.api.nvim_set_current_buf(inv); vim.api.nvim_win_set_cursor(0, { 1, 0 })
+  local seen = answer_select_exact("demo.shop")
+  local t0 = E.now()
+  refactor.move()
+  local applied, ms = until_ms(t0, function() return vim.uv.fs_stat(SHOP_INV) ~= nil and (text_of(CALC) or ""):find("import demo.shop.Invoice;", 1, true) ~= nil end)
+  local items = seen.items or {}
+  local ok_clean, why = clean({ CHECKOUT, CALC, SHOP_INV }, t0)
+  report_apply("move_prompt", ("move() from the package line (select %q: %s)"):format(tostring(seen.prompt), table.concat(items, " | ")),
+    applied, ms, {
+      { "items: demo.shop and New package..., not demo.billing", vim.tbl_contains(items, "demo.shop") and vim.tbl_contains(items, "New package...")
+        and not vim.tbl_contains(items, "demo.billing") },
+    }, ok_clean, why)
+end)
+
+-- move_key_new_package: <leader>jm (the mapping's own function): "New package..." then the name typed
+-- (demo.invoicing): created and moved.
+case("move_key_new_package", function()
+  if not has("move") then return lsp.report(P .. "move_key_new_package", false, pending_reason("move")) end
+  local inv = lsp.open(INVOICE)
+  lsp.open(CHECKOUT); lsp.open(CALC)
+  vim.api.nvim_set_current_buf(inv); vim.api.nvim_win_set_cursor(0, { 5, 14 })
+  local m = vim.fn.maparg("<leader>jm", "n", false, true)
+  if not m.callback then return lsp.report(P .. "move_key_new_package", false, "<leader>jm has no Lua callback: " .. vim.inspect(m.rhs)) end
+  answer_select_exact("New package...")
+  local seen = answer_input("demo.invoicing")
+  local t0 = E.now()
+  m.callback()
+  local applied, ms = until_ms(t0, function() return (disk(NEWPKG_INV) or ""):find("package demo.invoicing;", 1, true) ~= nil end)
+  report_apply("move_key_new_package", ("<leader>jm, New package..., input %q (default %q)"):format(tostring(seen.prompt), tostring(seen.default)),
+    applied, ms, {
+      { "input prompt names Invoice", (seen.prompt or ""):find("Move class Invoice", 1, true) ~= nil },
+      { "buffer re-pointed", loaded(NEWPKG_INV) ~= nil and loaded(INVOICE) == nil },
+    }, clean({ NEWPKG_INV, CHECKOUT, CALC }, t0))
+end)
+
+-- move_class_boot: the Spring controller GreetingController to demo.web (new, under the
+-- @SpringBootApplication package demo): @RestController/@GetMapping kept, build clean, no scan warning.
+-- move_class_boot_scan: to `web` (outside demo): moved, and the summary warns that component scanning
+-- will not find it.
+local GC = main .. "demo/GreetingController.java"
+for _, w in ipairs({ { "move_class_boot", "demo.web", "demo/web" }, { "move_class_boot_scan", "web", "web" } }) do
+  case(w[1], function()
+    if not has("move") then return lsp.report(P .. w[1], false, pending_reason("move")) end
+    local MOVED = main .. w[3] .. "/GreetingController.java"
+    local b = lsp.open(GC)
+    local l, c = pos(b, "^public class GreetingController", "GreetingController")
+    vim.api.nvim_set_current_buf(b); vim.api.nvim_win_set_cursor(0, { l + 1, c })
+    local got, stop = capture()
+    local t0 = E.now()
+    refactor.move({ package = w[2] })
+    local applied, ms = until_ms(t0, function() return (disk(MOVED) or ""):find("package " .. w[2] .. ";", 1, true) ~= nil end)
+    stop()
+    local ok_clean, why = clean({ MOVED }, t0)
+    local ht = disk(MOVED) or ""
+    local scan = find_msg(got, "component scanning will not find it", vim.log.levels.WARN)
+    report_apply(w[1], "nv4j.refactor.move", applied, ms, {
+      { "GreetingController.java gone", vim.uv.fs_stat(GC) == nil and loaded(GC) == nil },
+      { "@RestController and @GetMapping kept", ht:find("@RestController\npublic class GreetingController", 1, true) ~= nil
+        and ht:find('@GetMapping("/hello")', 1, true) ~= nil },
+      w[2] == "web" and { "scan warning: " .. tostring(scan), scan ~= nil and scan:find("outside demo", 1, true) ~= nil }
+        or { "no scan warning", scan == nil },
+    }, ok_clean, why)
+  end)
+end
+
+-- move_class_test_stays: a test of the moved class (InvoiceTest, planted in src/test/java/demo/billing)
+-- stays in its package (jdt.ls moves only Invoice and adds the import there); the summary says so.
+case("move_class_test_stays", function()
+  if not has("move") then return lsp.report(P .. "move_class_test_stays", false, pending_reason("move")) end
+  local IT = TEST .. "demo/billing/InvoiceTest.java"
+  local f = assert(io.open(IT, "w"))
+  f:write([[package demo.billing;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+
+import org.junit.jupiter.api.Test;
+
+// planted by 62_refactor move_class_test_stays, removed after the case
+class InvoiceTest {
+    @Test
+    void quantity() {
+        assertEquals(2, new Invoice(2, 3).quantity());
+    }
+}
+]])
+  f:close()
+  local inv = lsp.open(INVOICE)
+  local itb = lsp.open(IT)
+  lsp.open(CHECKOUT); lsp.open(CALC)
+  vim.wait(1500, function() return (published_at[vim.uri_from_fname(IT)] or 0) > 0 end, 20)
+  vim.api.nvim_set_current_buf(inv); vim.api.nvim_win_set_cursor(0, { 5, 14 })
+  local got, stop = capture()
+  local t0 = E.now()
+  refactor.move({ package = "demo.shop" })
+  local applied, ms = until_ms(t0, function() return vim.uv.fs_stat(SHOP_INV) ~= nil and (disk(IT) or ""):find("import demo.shop.Invoice;", 1, true) ~= nil end)
+  stop()
+  local sum = find_msg(got, "Moved class Invoice to package demo.shop") or ""
+  local ok_clean, why = clean({ IT, SHOP_INV, CALC }, t0)
+  report_apply("move_class_test_stays", "nv4j.refactor.move", applied, ms, {
+    { "InvoiceTest stays in demo.billing", vim.uv.fs_stat(IT) ~= nil and (disk(IT) or ""):find("package demo.billing;", 1, true) ~= nil
+      and loaded(IT) == itb },
+    { "summary says it stays", sum:find("src/test/java/demo/billing/InvoiceTest.java stays in package demo.billing", 1, true) ~= nil },
+  }, ok_clean, why)
+end)
+
+-- move_class_stale: a properties value with the old qualified name demo.billing.Invoice and a Java string
+-- "Invoice" (planted): the warning lists the properties line, not the simple-name string (still right).
+case("move_class_stale", function()
+  if not has("move") then return lsp.report(P .. "move_class_stale", false, pending_reason("move")) end
+  local Q = main .. "demo/shop/InvoiceLabels.java"
+  local PROPS = fixture .. "/src/main/resources/application.properties"
+  local fq = assert(io.open(Q, "w"))
+  fq:write('package demo.shop;\n\n// planted by 62_refactor move_class_stale\npublic class InvoiceLabels {\n    static final String TITLE = "Invoice";\n}\n')
+  fq:close()
+  local fp = assert(io.open(PROPS, "a")); fp:write("demo.refactor.type=demo.billing.Invoice\n"); fp:close()
+  local props_line = #vim.fn.readfile(PROPS)
+  local inv = lsp.open(INVOICE)
+  lsp.open(CHECKOUT); lsp.open(CALC)
+  vim.api.nvim_set_current_buf(inv); vim.api.nvim_win_set_cursor(0, { 5, 14 })
+  local got, stop = capture()
+  local t0 = E.now()
+  refactor.move({ package = "demo.shop" })
+  local applied, ms = until_ms(t0, function() return find_msg(got, "Moved class Invoice to package demo.shop") ~= nil end)
+  stop()
+  local sum = find_msg(got, "Moved class Invoice to package demo.shop", vim.log.levels.WARN) or ""
+  report_apply("move_class_stale", "nv4j.refactor.move", applied, ms, {
+    { "warning lists application.properties:" .. props_line, sum:find("src/main/resources/application.properties:" .. props_line, 1, true) ~= nil },
+    { "no hit on the simple name (InvoiceLabels.java)", not sum:find("InvoiceLabels.java:", 1, true) },
+    { "nothing rewritten", (disk(PROPS) or ""):find("=demo.billing.Invoice", 1, true) ~= nil },
+  }, clean({ CHECKOUT, CALC, SHOP_INV }, t0))
+end)
+
+-- move_class_errors: a syntax error in Checkout (unsaved) before the move. Measured: jdt.ls still updates
+-- Checkout's import on a move (unlike a class rename, which skips that file); either way the result is
+-- honest: the import updated, or the summary warns with Checkout.java:3. The 3 s follow-up (jdt.ls's own
+-- errors) is shown in the detail, not required.
+case("move_class_errors", function()
+  if not has("move") then return lsp.report(P .. "move_class_errors", false, pending_reason("move")) end
+  local inv, chk = lsp.open(INVOICE), lsp.open(CHECKOUT)
+  lsp.open(CALC)
+  local bl = E.line_of(chk, "^public class Checkout")
+  vim.api.nvim_buf_set_lines(chk, bl + 1, bl + 1, false, { "    int broken = ;" })
+  local tset = E.now()
+  vim.wait(CLEAN_MS, function()
+    return (published_at[vim.uri_from_fname(CHECKOUT)] or 0) >= tset and E.count(vim.diagnostic.get(chk), vim.diagnostic.severity.ERROR) > 0
+  end, 20)
+  vim.api.nvim_set_current_buf(inv); vim.api.nvim_win_set_cursor(0, { 5, 14 })
+  local got, stop = capture()
+  local t0 = E.now()
+  refactor.move({ package = "demo.shop" })
+  local applied, ms = until_ms(t0, function() return vim.uv.fs_stat(SHOP_INV) ~= nil and loaded(SHOP_INV) ~= nil end)
+  local sum = find_msg(got, "Moved class Invoice to package demo.shop") or ""
+  local warn
+  vim.wait(4000, function()
+    warn = find_msg(got, "Moved class Invoice to package demo.shop applied, but", vim.log.levels.WARN)
+    return warn ~= nil
+  end, 20)
+  stop()
+  local ct = text_of(CHECKOUT) or ""
+  local updated = not ct:find("import demo.billing.Invoice;", 1, true)
+  local named = sum:find("src/main/java/demo/shop/Checkout.java:3", 1, true) ~= nil
+  lsp.report(P .. "move_class_errors", applied and ms <= APPLY_MS and (updated or named) and ct:find("int broken = ;", 1, true) ~= nil,
+    ("applied %s after %.0f ms; Checkout's import %s by jdt.ls; summary %s; Checkout's syntax error kept; follow-up: %s"):format(
+      applied and "yes" or "NO", ms, updated and "updated" or "NOT updated", named and "names Checkout.java:3" or "does not name Checkout",
+      tostring(warn)))
+end)
+
+-- move_class_skipped_twin (deterministic): jdt.ls's move edit with Checkout's change dropped (what jdt.ls
+-- does to a file it cannot parse on a class rename): the summary warns with Checkout.java:3 (its import
+-- of demo.billing.Invoice, found from the text).
+case("move_class_skipped_twin", function()
+  if not has("move") then return lsp.report(P .. "move_class_skipped_twin", false, pending_reason("move")) end
+  local inv = lsp.open(INVOICE)
+  lsp.open(CHECKOUT); lsp.open(CALC)
+  local real = client.request_sync
+  client.request_sync = function(self, m, params, t, b)
+    local res, err = real(self, m, params, t, b)
+    if m == "workspace/willRenameFiles" and res and res.result and res.result.documentChanges then
+      res.result.documentChanges = vim.tbl_filter(function(ch)
+        return not (ch.textDocument and ch.textDocument.uri:find("/demo/shop/Checkout.java", 1, true))
+      end, res.result.documentChanges)
+    end
+    return res, err
+  end
+  vim.api.nvim_set_current_buf(inv); vim.api.nvim_win_set_cursor(0, { 5, 14 })
+  local got, stop = capture()
+  local t0 = E.now()
+  local ok = refactor.move({ package = "demo.shop" })
+  local ms = E.now() - t0
+  client.request_sync = real
+  stop()
+  local sum = find_msg(got, "Moved class Invoice to package demo.shop", vim.log.levels.WARN) or ""
+  lsp.report(P .. "move_class_skipped_twin", ok == true and sum:find("src/main/java/demo/shop/Checkout.java:3", 1, true) ~= nil
+    and (text_of(CHECKOUT) or ""):find("import demo.billing.Invoice;", 1, true) ~= nil,
+    ("returned %s after %.0f ms; warning: %s"):format(tostring(ok), ms, sum ~= "" and sum or "NONE"))
 end)
 
 --- Inline at (pat, word) in PriceCalculator; `want` must appear in the file afterwards.
