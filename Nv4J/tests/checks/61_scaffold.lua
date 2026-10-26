@@ -16,9 +16,10 @@
 --                 `package demo.p3scaffold.deep;` (IntelliJ: a dotted name creates the packages).
 --  test_for     : kind "test" from demo/shop/Checkout.java creates src/test/java/demo/shop/CheckoutTest.java
 --                 (`package demo.shop;`, `class CheckoutTest`, JUnit 5 `@Test` import).
---  compiles     : jdt.ls reports no error for the new class buffer <= 3 s after creation: the publish that
---                 set its error count last arrives <= 3 s after creation, and after an explicit build it has
---                 zero errors.
+--  compiles     : jdt.ls reports no error for the new class buffer <= 3 s after creation: at creation + 3 s
+--                 (snapshot timer) it has been published and shows zero errors, the publish that set its
+--                 error count last arrives <= 3 s after creation, and after an explicit build (the
+--                 deterministic twin) it has zero errors.
 --  compiles_all : the same for every file created (9 kinds, nested, test, default package, test-dir class).
 -- Review cases (P3 Task 3):
 --  exists       : a second new() of P3Class does not overwrite (disk unchanged), says so, opens it.
@@ -140,9 +141,20 @@ local function lines_of(path)
 end
 
 local created = {} -- { path, t, name } of every file a case created, for compiles_all
+-- at3[path]: the file's error diagnostics as the user sees them at creation + 3 s (the budget mark)
+local at3 = {}
+local function snapshot_at_budget(path, delay)
+  vim.defer_fn(function()
+    local b = vim.fn.bufnr(path)
+    local errs = b ~= -1 and vim.tbl_filter(function(x) return x.severity == vim.diagnostic.severity.ERROR end,
+      vim.diagnostic.get(b)) or {}
+    at3[path] = { errs = errs, published = published_at[vim.uri_from_fname(path)] ~= nil, buf = b ~= -1 }
+  end, math.max(0, delay))
+end
 local function check_file(name, path, pkg, decl, anno, ok, ms, how)
   if ok then
     created[#created + 1] = { path = path, t = E.now() - ms, name = name }
+    snapshot_at_budget(path, COMPILE_MS - ms)
   end
   local on_disk = vim.uv.fs_stat(path) ~= nil
   local lines, b = lines_of(path)
@@ -313,6 +325,11 @@ local ok_all, err = pcall(function()
       return n
     end
     vim.wait(last_t + COMPILE_MS + quiet_ms - E.now(), function() return E.now() - math.max(newest(), last_t) >= quiet_ms end, 20)
+    -- every 3 s snapshot taken (each fires at its file's creation + 3 s)
+    vim.wait(last_t + COMPILE_MS + 1000 - E.now(), function()
+      for _, c in ipairs(created) do if not at3[c.path] then return false end end
+      return true
+    end, 20)
     local before = {}
     for _, c in ipairs(created) do before[c.path] = state_at[vim.uri_from_fname(c.path)] end
     local built = false
@@ -326,9 +343,14 @@ local ok_all, err = pcall(function()
       local b = vim.fn.bufnr(c.path)
       local errs = b ~= -1 and vim.tbl_filter(function(x) return x.severity == vim.diagnostic.severity.ERROR end,
         vim.diagnostic.get(b)) or {}
-      local ok = at ~= nil and at - c.t <= COMPILE_MS and #errs == 0 and b ~= -1 and vim.uv.fs_stat(c.path) ~= nil
-      local d = ("%s %s, %d error(s) after build%s"):format(c.name:gsub("^kind_", ""),
-        at and ("settled %.0f ms"):format(at - c.t) or "NEVER published", #errs, #errs > 0 and (": " .. E.fmt(errs)) or "")
+      local s3 = at3[c.path]
+      local ok3 = s3 ~= nil and s3.buf and s3.published and #s3.errs == 0
+      local ok = ok3 and at ~= nil and at - c.t <= COMPILE_MS and #errs == 0 and b ~= -1 and vim.uv.fs_stat(c.path) ~= nil
+      local d = ("%s %s, at 3 s %s, %d error(s) after build%s"):format(c.name:gsub("^kind_", ""),
+        at and ("settled %.0f ms"):format(at - c.t) or "NEVER published",
+        not s3 and "NO snapshot" or not s3.published and "NOT published" or
+          (#s3.errs == 0 and "0 errors" or ("%d error(s): %s"):format(#s3.errs, E.fmt(s3.errs))),
+        #errs, #errs > 0 and (": " .. E.fmt(errs)) or "")
       if not ok then bad[#bad + 1] = d end
       det[#det + 1] = d
       if c.name == "kind_class" then cls = { ok = ok, d = d } end

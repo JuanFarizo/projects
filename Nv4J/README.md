@@ -297,6 +297,7 @@ Generate getters, constructors, `toString`, `equals`/`hashCode`: put the cursor 
 | `<leader>tf` / `<leader>tl` / `<leader>to` | run the failed tests again / the last run again / open the results (quickfix list) |
 | `<leader>td` | debug the nearest test (breakpoints stop) |
 | `<leader>tT` | pick a test of the file (nvim-jdtls, its own result layer; also runs TestNG) |
+| `<leader>db` / `<leader>dc` / `<leader>dO` / `<leader>di` / `<leader>dB` / `<leader>dt` / `<leader>du` | toggle breakpoint / run or continue / step over / step into / conditional breakpoint / terminate / debug UI |
 
 **New files** (checked by `61_scaffold`):
 
@@ -304,7 +305,6 @@ Generate getters, constructors, `toString`, `equals`/`hashCode`: put the cursor 
 |-----|------|
 | `<leader>jn` | new class / interface / record / enum / annotation / Spring controller, service, repository, entity / package / test (kind, then name; `foo.Bar` creates the package) in the current directory (neo-tree node or current file) |
 | `<leader>jt` | test class of the current class: open it, or create it in `src/test/java` |
-| `<leader>db` / `<leader>dc` / `<leader>dO` / `<leader>di` / `<leader>dB` / `<leader>dt` / `<leader>du` | toggle breakpoint / run or continue / step over / step into / conditional breakpoint / terminate / debug UI |
 
 ### Switch JDK with `sdk use`
 

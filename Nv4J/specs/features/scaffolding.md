@@ -62,8 +62,9 @@ Three consecutive runs 27/0 (`/tmp/nv4j/logs/test-20261026-093126.log`, `-093142
 | n61c+d+f+i+j | test into `src/main/java` (c), stereotype import dropped (d), overwrite allowed (f), `package ;` in the default package (i), test from a test source allowed (j) | `test_for` (c); 4 stereotypes + `compiles_all` "cannot be resolved to a type" (d); `exists` (f); `test_from_test` (j) | `-092235.log`; f and i again with the stronger cases (t3-d): `exists` "disk CHANGED", `default_package` "WRONG: package ;" + `compiles_all` syntax error, `-092326.log` |
 | n61e+k+l | class template missing `}` (e), `<leader>jn` not mapped (k), refusals without a message (l) | `compiles`, `compiles_all` (e); `key` (k); `exists`, `invalid_name`, `outside_root`, `test_from_test` (l) | `-092252.log` |
 | n61p+q+r | prompted name created in cwd (p), BufNewFile template not written (q), neo-tree handler writes nothing (r) | `prompts` (p); `edit_template` "(0 lines)", the Task 0 baseline (q); `neotree_fill` "EMPTY" (r) | `-093227.log` |
+| n61s | fix round 1: a syntax error (`oops` line) added to each new buffer and removed 3.5 s later | `compiles`, `compiles_all` "at 3 s 1 error(s)" while the post-build read is clean (the 3 s leg alone catches it) | `/tmp/nv4j/logs/test-20261026-093933.log` |
 
-Deterministic twin for the race-prone `compiles*`: after the timing wait, `nv4j.debug.refresh_and_build` then 500 ms without a publish; the error count is read after that build, not from whichever publish came first.
+`compiles*` assert the budget at its mark (fix round 1): a timer per file reads its error diagnostics at creation + 3 s, they must be published and zero (`/tmp/nv4j/logs/test-20261026-093908.log`, 27/0). Deterministic twin: after the timing wait, `nv4j.debug.refresh_and_build` then 500 ms without a publish; the error count is read after that build, not from whichever publish came first.
 
 ## Decision D22 (summary; full text in 001)
 
@@ -93,6 +94,7 @@ Negative controls: the baseline itself is the control for "saved": the template 
 | t3-d | n61i passed `default_package` (`"package " .. "" .. ";"` matched the expected line) and n61f passed "disk unchanged" (same template rewritten) | default package = no package line at all; `exists` first appends a user edit on disk | kept |
 | t3-e | `compiles_all` timing on "last publish": 2.0 s in the full run because every new file makes jdt.ls republish the open ones (clean, unchanged) | timing = the publish that last changed the error count: slowest file 1.0 to 1.1 s | kept |
 | t3-f | insert mode via `feedkeys("S")` in headless checks would leave `S` in the typeahead | insert only with a UI (`nvim_list_uis`) | kept |
+| t3-h | review fix round 1: the 3 s budget was not asserted at 3 s (only "settled <= 3 s" and the post-build read) | snapshot of the errors at creation + 3 s, must be zero; n61s FAILs it | kept |
 | t3-g | `prompts`, `edit_template`, `neotree_fill` added (the prompt path, `:e`, neo-tree handler) | pass; n61p/q/r FAIL them | kept |
 
 ## Open items
