@@ -36,6 +36,7 @@ D1 to D6 are confirmed by P1 (nothing was reversed). D7 to D13 are decisions tak
 | D22 | Scaffolding entry: own command `require("nv4j.scaffold").new({ kind, name, dir })` with `vim.ui.select`/`vim.ui.input` for missing answers, global key `<leader>jn`; neo-tree's add and the `:e Foo.java` template call the same templates (one source). The file is written with its content before it is opened. Reason: works without the tree open and from any buffer; a neo-tree-only hook needs the tree and gets the file after neo-tree created it; today's template leaves only the EMPTY file nvim-jdtls writes for new buffers on disk. | P3 Task 0, Claude (user can overturn) | Decided; Task 3 builds it (`61_scaffold`). Details: `specs/features/scaffolding.md`. |
 | D23 | Refactor surface: jdt.ls code actions and nvim-jdtls's command handlers (rename with file rename, move, inline, change signature already work and measured 101 to 761 ms against the 2 s budget), behind thin functions in `nvim/lua/nv4j/refactor.lua` that pick the action by kind (`refactor.move`, `refactor.inline`, `refactor.change.signature`) and take answers as arguments; own code only for what jdt.ls/the clients lack: package rename (`workspace/willRenameFiles` BEFORE the folder moves, edits written, buffers re-pointed; also for neo-tree folder renames, where LazyVim asks after the move and leaves the wrong `package` line), safe delete (references first: usages listed in quickfix, else delete), change signature with arguments (`java/getChangeSignatureInfo` + `java/getRefactorEdit`). Keys `<leader>jm/ji/js/jd/jr` (Java group shared with `<leader>jn`); `<leader>cr` stays Rename (a `<leader>cr` prefix would delay rename by `timeoutlen`). | P3 Task 0, Claude (user can overturn) | Decided; Task 4 builds it (`62_refactor`). Details: `specs/features/refactors.md`. |
 | D24 | Async import on accept: blink's `resolve_timeout_ms` lowered so the text lands <= 100 ms (about 50 ms), and Nv4J applies the import when the item's resolve, which blink keeps running after its timeout (`task:timeout` does not cancel, the provider caches the task), completes: a wrapper around blink's accept function adds the late import once, guarded (buffer valid, imports only, not already imported, accepted text still there, else dropped). Task 1 changes: jdt.ls's import ranges are never applied (they can be stale, and jdt.ls sent a range replacing the existing import line in 22 of 50 measured `HashMap` resolves): only the import statement is taken and Nv4J inserts it at a place computed from the current buffer, by `java.completion.importOrder` group and sorted (also when the resolve came in time: blink no longer applies import-only edits); joined to the accept's undo step when nothing changed since. No second resolve request. Also Task 1: for Java lists with nothing typed, blink's `score` (then only score_offset plus a frecency bonus blink adds even with an empty keyword) is replaced by score_offset, jdt.ls relevance, project usage, then frecency as tie breaker (`java_sort_empty`). Reason: smallest change that meets both halves of the budget; before, the text waited 0.4 to 0.8 s for the javadoc render that carries the import, and 20 accepts of `List` pushed `@` `RestController` to rank 24. | P3 Task 0/1, Claude (user can overturn) | Built in Task 1 (`63_async_import`, 28 cases). Details: `specs/features/async-import.md`. |
+| D25 | Proposed, not built: one jdt.ls per project instead of one per directory. A `.nv4j` file marks the project root (nearest one above the file wins; it may stay empty and later also hold per-project settings), and a fixed `-Xmx` for jdt.ls is set as a safety net. The `-Xmx` value is not decided: it has to be confirmed with the developer. See "Problem: one jdt.ls per loose-file directory". | User (memory report on a project without a build file) | Proposed. No budget, test or code yet. |
 
 ## Budgets and results (P1, P2)
 
@@ -164,9 +165,66 @@ Logs and test output under `/tmp/nv4j/`; the jdt.ls workspace and config copy un
 
 `/tmp` is cleared by macOS on reboot and after a few days. Nothing under `/tmp/nv4j` is needed after a run finishes; the jdt.ls dirs are therefore not there.
 
+## Problem: one jdt.ls per loose-file directory
+
+Status: diagnosed, solution proposed (D25), nothing built.
+
+### Observed
+
+One Neovim session on a single small project (plain `.java` files under `data-structures-and-algorithms/`, no `pom.xml` or `build.gradle`, an old IntelliJ `.iml` that was later deleted) had three jdt.ls processes, all children of the same `nvim` (`ps`, `/proc/<pid>/cmdline`):
+
+| Workspace (`-data`) | RSS | Age |
+|---|---|---|
+| `~/.cache/nv4j/jdtls-data/data-structures-a553159e` | about 2.0 GB | 22 h |
+| `~/.cache/nv4j/jdtls-data/streams-a2a255a0` | about 1.4 GB | 1 h |
+| `~/.cache/nv4j/jdtls-data/scratch-548843c0` | about 1.4 GB | 3 min |
+
+Total about 4.9 GB for jdt.ls, plus about 0.7 GB for Neovim itself. CPU was 0%, so this is resident memory, not load.
+
+### Cause (diagnosed from the code and specs)
+
+1. `nvim/lua/nv4j/root.lua` `M.project`: a file with no build marker above it gets its **own directory** as root (second return value `false`). This was deliberate: the `.git` fallback would give a loose file an unrelated enclosing repo as root and break jdt.ls's invisible-project support.
+2. `nvim/lua/plugins/java.lua` `opts.project_name` = `basename(root_dir) .. "-" .. sha256(root_dir):sub(1, 8)`, and `jdtls_workspace_dir` is `jdtls-data/<project_name>`. A different root therefore means a different workspace, and nvim-jdtls starts one jdt.ls client (one JVM) per root.
+3. In a project without a build file, every directory where a Java file is opened becomes a root, so the number of JVMs grows with the number of directories touched, not with the number of projects. Nothing limits it.
+4. Each JVM has a fixed cost that does not depend on project size: JVM base (JIT, metaspace, about 50 threads), the JDK and library index, and its own on-disk workspace. The `-Xms1G` visible in the command line makes the floor 1 GB per instance. It is not set in the nv4j code (grep of `nvim/` finds no `-Xms`/`-Xmx`); it comes from the jdtls launcher of Mason or LazyVim (not verified).
+5. Gap in the specs: the only RAM budget is for the Spring LS (<= 1 GB, measured 416 to 477 MB). jdt.ls has no RAM budget and no limit of instances, and every check uses one fixture project, so the multi-root case was never measured.
+
+So the one-JVM-per-directory behaviour is a consequence of an intentional root rule; the unbounded memory is an unspecified gap, not a requirement.
+
+### Proposed solution (D25)
+
+1. **`.nv4j` project marker.**
+   - `root.lua` looks for a `.nv4j` file walking up from the buffer. The nearest one is the project root, checked before the build markers and before the loose-file fallback. Every directory below it then resolves to the same root, so the same jdt.ls and the same workspace serve the whole tree (jdt.ls treats the root as an invisible project that includes its subdirectories).
+   - Nothing else changes: with no `.nv4j`, today's rules apply (build marker, then repo root with a build marker, then the file's own directory).
+   - An empty file is enough. The file is also the place for per-project settings later (for example JDK, jdt.ls `-Xmx`, extra source folders, Spring Boot on/off, run profile defaults). The format and the first keys are open: decide when the first setting is needed, not before.
+   - It does not depend on any IDE files (`.idea`, `.iml`), which the developer does not want to keep for Neovim.
+   - Spring Boot LS, run and debug use the same `root.lua`, so they follow the new root.
+2. **Fixed `-Xmx` for jdt.ls as a safety net.** At the limit the JVM does not take more memory: the GC runs almost continuously (completion and diagnostics take seconds), and if it still cannot allocate it throws `OutOfMemoryError` and jdt.ls becomes unusable until `:LspRestart`. Without `-Xmx` the default ceiling is 25% of physical RAM. `-Xms` only sets the initial heap and caps nothing. **The `-Xmx` value (the discussion so far points at 1.5 to 2 GB) and the `-Xms` value must be confirmed with the developer before it is built.**
+3. **Visibility of the problem.** Open question for the same confirmation: warn once when a second jdt.ls would start for a loose file (a root without build marker and without `.nv4j`) while another loose-file jdt.ls is running, instead of starting it silently.
+
+### Alternatives considered
+
+| Option | Why not (for now) |
+|---|---|
+| `.idea` / `.iml` as root marker | The developer does not use them with Neovim and removed them. |
+| The repo's `.git` as root for loose files | Rejected before (see Cause 1); an unrelated repo such as a notes repo would become the root again. |
+| Base directories listed in the Neovim config | Works, but it is a second place to maintain; `.nv4j` travels with the project. |
+| One jdt.ls with several workspace folders | jdt.ls handles invisible projects outside its first root poorly; needs its own trial before it is trusted. |
+| Lower `-Xms` / `-Xmx` only | Does not remove the duplication (one JVM per directory). It only shrinks each one. |
+
+### To do when built
+
+- `root.lua` marker lookup, unit check of the resolution order.
+- New check: open Java files from two or more sibling directories under one `.nv4j` and assert a single jdt.ls client, one workspace under `jdtls-data/`, and the RSS of jdt.ls against the new budget.
+- New budget row for jdt.ls RSS and for the maximum number of jdt.ls processes (values pending the developer).
+- Negative control: remove `.nv4j` and see the check fail with several clients.
+- README: document `.nv4j` in the install and usage notes.
+
 ## Open items
 
 Carried to P3 or later (each also in README Not yet or Known limitations):
+
+- D25 (`.nv4j` project marker and jdt.ls `-Xmx`): proposed, not built; the `-Xmx`/`-Xms` values and the multi-instance warning need the developer's confirmation. Details in "Problem: one jdt.ls per loose-file directory".
 
 - Async import apply on accept (removes the up to 0.8 s wait), and project ranking weighted above blink's frecency (P1 follow-ups): built in P3 Task 1 (D24, `63_async_import`).
 - Saved run configurations (profile, env, VM args per project); `<leader>rp` asks each time.

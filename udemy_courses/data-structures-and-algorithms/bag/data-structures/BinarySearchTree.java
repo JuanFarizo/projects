@@ -23,6 +23,14 @@ class Node {
 
 }
 
+/**
+ * Rules Binary Tree:
+ * <ul>
+ * <li>A Node can have 0, 1 or 2 nodes as child</li>
+ * <li>A child can have only one parent</li>
+ * </ul>
+ **/
+
 class BinaryTree {
     Node root;
 

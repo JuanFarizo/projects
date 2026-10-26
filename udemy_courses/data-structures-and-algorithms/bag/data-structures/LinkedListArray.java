@@ -1,3 +1,6 @@
+import java.util.ArrayList;
+import java.util.List;
+
 void main() {
     test();
 }
@@ -50,15 +53,43 @@ static class Arr<T> {
         }
         return current.value;
     }
+
+    public void reverse() {
+        if (root.next == null) {
+            return;
+        }
+        Node<T> prev = root;
+        Node<T> current = root.next;
+        Node<T> next;
+        while (current.next != null) {
+            next = current.next;
+            current.next = prev;
+            prev = current;
+            current = next;
+        }
+        current.next = prev;
+        root.next = null;
+        root = current;
+    }
+
+    public void print() {
+        List<T> list = new ArrayList<>();
+        Node<T> current = root;
+        while (current != null) {
+            list.add(current.value);
+            current = current.next;
+        }
+        IO.println(list);
+    }
 }
 
 static void test() {
     Arr<Integer> arr = new Arr<>(5);
     arr.add(4);
     arr.add(7);
-    IO.println(arr.get(0));
-    IO.println(arr.get(1));
-    IO.println(arr.get(2));
-    IO.println(arr.pop());
-    assert arr.get(1) == 4 : "Must be for and is: " + arr.get(1);
+    arr.add(8);
+    arr.add(11);
+    arr.print();
+    arr.reverse();
+    arr.print();
 }
