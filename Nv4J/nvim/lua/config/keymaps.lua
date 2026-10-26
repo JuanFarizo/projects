@@ -309,6 +309,20 @@ end, { desc = "Spring symbols (beans, request mappings)" })
 -- `mvn test` itself: <leader>tn opens a terminal.
 require("nv4j.tests").bind()
 
+-- ── Java scaffolding (nv4j/scaffold.lua, decision D22, check 61_scaffold) ───────────────────
+-- <leader>jn: new class/interface/record/enum/annotation/Spring stereotype/package/test (kind, then name;
+-- `foo.Bar` creates the package foo). Directory: neo-tree's node, else the current file's, else cwd.
+-- <leader>jt: test class of the current class (src/test/java, same package), created when missing.
+map("n", "<leader>jn", function()
+  require("nv4j.scaffold").new({ insert = true })
+end, { desc = "New Java file/package (scaffold)" })
+map("n", "<leader>jt", function()
+  require("nv4j.scaffold").test_for_current()
+end, { desc = "Test for this class (open or create)" })
+pcall(function()
+  require("which-key").add({ { "<leader>j", group = "java" } })
+end)
+
 -- ── LSP (additive aliases; LazyVim core already binds gd/gr/gI/gy/K/<leader>ca/<leader>cr) ──
 map("n", "<F2>", vim.lsp.buf.rename, { desc = "Rename symbol" })
 map("n", "<leader>rn", vim.lsp.buf.rename, { desc = "Rename symbol" })

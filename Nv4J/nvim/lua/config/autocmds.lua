@@ -117,13 +117,14 @@ do
   end
 end
 
--- ── Java class/interface/record/enum scaffolding ───────────────────────────
--- Covers `:e NewClass.java` / `gf` style creation. neo-tree's `a` keymap
--- goes through plugins/neo-tree.lua's FILE_ADDED handler instead.
+-- ── Java scaffolding for `:e NewClass.java` / `gf` (nv4j/scaffold.lua, D22) ──
+-- Asks the kind, fills the buffer from the same templates as <leader>jn and writes it (so the file on
+-- disk is not the empty one nvim-jdtls writes on attach). neo-tree's `a` goes through
+-- plugins/neo-tree.lua's file_added handler; <leader>jn (config/keymaps.lua) needs neither.
 vim.api.nvim_create_autocmd("BufNewFile", {
   pattern = "*.java",
   callback = function(args)
-    require("util.java_scaffold").scaffold_buf(args.buf, vim.api.nvim_buf_get_name(args.buf))
+    require("nv4j.scaffold").fill_buf(args.buf, vim.api.nvim_buf_get_name(args.buf))
   end,
 })
 

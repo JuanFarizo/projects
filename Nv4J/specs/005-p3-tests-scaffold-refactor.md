@@ -1,6 +1,6 @@
 # 005 - P3: tests runner, scaffolding, refactors, async import
 
-Status: Task 0 done (research, fixture, decisions D21 to D24, four failing checks). Task 1 done (async import, frecency vs project ranking, dirty-fixture guard; `63_async_import` passes, see "Task 1"). Task 2 done (test runner; `60_tests_runner` passes, see "Task 2"). Tasks 3 to 5 not started. Plan: `docs/superpowers/plans/2026-10-21-nv4j-p3-tests-scaffold-refactor.md`. Does not contradict `001-architecture.md`; decisions D21 and later live in its decisions table.
+Status: Task 0 done (research, fixture, decisions D21 to D24, four failing checks). Task 1 done (async import, frecency vs project ranking, dirty-fixture guard; `63_async_import` passes, see "Task 1"). Task 2 done (test runner; `60_tests_runner` passes, see "Task 2"). Task 3 done (scaffolding; `61_scaffold` passes, see "Task 3"). Tasks 4 and 5 not started. Plan: `docs/superpowers/plans/2026-10-21-nv4j-p3-tests-scaffold-refactor.md`. Does not contradict `001-architecture.md`; decisions D21 and later live in its decisions table.
 
 ## Goal
 
@@ -113,3 +113,12 @@ Full `tests/run.sh` before the Task 2 commit, log `/tmp/nv4j/logs/test-20261022-
 - P1/P2 unchanged, 223 PASS 0 FAIL: `00_boot 11 0`, `01_jdtls_ready 2 0`, `10_completion_latency 17 0`, `11_completion_ranking 26 0`, `12_usage_index 7 0`, `20_java25 10 0`, `30_diagnostics 24 0`, `31_imports 10 0`, `32_code_actions 28 0`, `40_debug 16 0`, `41_run 27 0`, `50_spring_ls 13 0`, `51_spring_completion 20 0`, `52_spring_nav 12 0`.
 - `60_tests_runner 20 0` (nearest warm 912 ms, first 3072 ms, project 1045 ms, debug 1185 ms), `63_async_import 28 0`.
 - Still failing as expected: `61_scaffold 3 14` (same cases as Task 0). `62_refactor 7 6`: the expected 5 plus `change_signature` ("build NOT clean": Checkout.java still reported the old `total(Invoice)` errors after the 3 call sites were rewritten). `62_refactor` alone right after: `8 5`, `change_signature` PASS build clean (`/tmp/nv4j/logs/test-20261022-093834.log`). Task 2 changed nothing in the refactor path (its `nv4j/debug.lua` change is a build-message label); recorded as a flake for Task 4 to look at (the build-clean wait after a change signature).
+
+## Task 3 (scaffolding)
+
+Details, templates, 27 cases, negative controls n61a to n61r and trials t3-a to t3-g: `specs/features/scaffolding.md`. Built as D22: `nvim/lua/nv4j/scaffold.lua` is the one template source (`util/java_scaffold.lua` removed; `:e Foo.java` BufNewFile and neo-tree `file_added` call it and now also leave the template on disk). Keys `<leader>jn` (new) and `<leader>jt` (test of this class), group `<leader>j` "java". `compiles` (Task 0 case) was too weak: it passed with a wrong package line (n61a, trial t3-c); it now waits for an explicit build and reads the error count after it.
+
+Three consecutive `61_scaffold` runs: `DONE 61_scaffold 27 0` each (`/tmp/nv4j/logs/test-20261026-093126.log`, `-093142.log`, `-093158.log`): type kinds 28 to 112 ms (budget 300 ms), other created files 28 to 72 ms, package 1 to 3 ms, slowest file's jdt.ls error state 1.0 to 1.1 s (budget 3 s).
+
+Full `tests/run.sh` before the Task 3 commit, log `/tmp/nv4j/logs/test-20261026-092355.log` (exit 1, only from 62, which Task 4 builds): `00_boot 11 0`, `01_jdtls_ready 2 0`, `10_completion_latency 17 0`, `11_completion_ranking 26 0`, `12_usage_index 7 0`, `20_java25 10 0`, `30_diagnostics 24 0`, `31_imports 10 0`, `32_code_actions 28 0`, `40_debug 16 0`, `41_run 27 0`, `50_spring_ls 13 0`, `51_spring_completion 20 0`, `52_spring_nav 12 0`, `60_tests_runner 20 0`, `61_scaffold 27 0`, `62_refactor 8 5` (the expected Task 0 failures), `63_async_import 28 0`. That run measured `compiles*` with the earlier "last publish" timing (2.0 s, trial t3-e); the check was changed after it and run 3 times alone.
+

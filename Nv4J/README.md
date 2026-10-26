@@ -2,7 +2,7 @@
 
 A fast, lightweight Neovim setup for Java and Spring development. It is built on LazyVim and runs next to your normal Neovim: your own `~/.config/nvim` is never touched. IntelliJ is the feature reference. Every feature has a priority and a pass/fail number, and the numbers are re-measured by a headless test suite you can run yourself.
 
-Status: **P1 and P2 are built and passing** (P1: completion, diagnostics, imports, code actions, JDK handling). P2: debugging a main class or a JUnit test works and is checked (`40_debug`), running a Spring Boot app with profile and env works and is checked (`41_run`), and the Spring Boot language server runs for Spring Boot projects with `application.properties`/`yml` key completion and hover (`50_spring_ls`), `@Value`/`@Profile` completion (`51_spring_completion`), go to definition from `@Value` and a beans/request-mappings picker (`52_spring_nav`). P3 is in progress: asynchronous import (`63_async_import`) and the test runner (`60_tests_runner`) are built and checked; scaffolding and refactors are not built yet. P4 and P5 are planned, not built. The "Not yet" list below is honest about that.
+Status: **P1 and P2 are built and passing** (P1: completion, diagnostics, imports, code actions, JDK handling). P2: debugging a main class or a JUnit test works and is checked (`40_debug`), running a Spring Boot app with profile and env works and is checked (`41_run`), and the Spring Boot language server runs for Spring Boot projects with `application.properties`/`yml` key completion and hover (`50_spring_ls`), `@Value`/`@Profile` completion (`51_spring_completion`), go to definition from `@Value` and a beans/request-mappings picker (`52_spring_nav`). P3 is in progress: asynchronous import (`63_async_import`), the test runner (`60_tests_runner`) and scaffolding (`61_scaffold`) are built and checked; refactors are not built yet. P4 and P5 are planned, not built. The "Not yet" list below is honest about that.
 
 ## Priorities
 
@@ -10,7 +10,7 @@ Status: **P1 and P2 are built and passing** (P1: completion, diagnostics, import
 |----------|-------|--------|
 | P1 | Completion speed and ranking, diagnostics, imports, code actions, Java 25 and JDK handling | Done (this README, Capabilities) |
 | P2 | Spring awareness (annotations, attributes, `application.properties`/`yml`), run and debug Spring Boot | Done (Capabilities: Debug, Run Spring Boot, Spring Boot language server, Spring completion and navigation); leftovers in Not yet |
-| P3 | Tests runner polish, scaffolding (package/class creation), refactors beyond what jdt.ls already offers | In progress: async import and test runner done (Capabilities: Tests); scaffolding and refactors not yet |
+| P3 | Tests runner polish, scaffolding (package/class creation), refactors beyond what jdt.ls already offers | In progress: async import, test runner and scaffolding done (Capabilities: Tests, Scaffolding); refactors not yet |
 | P4 | Gradle, Spring navigation, JPA checks | Spring navigation (beans, request mappings, `@Value` definition) done early with P2 Task 4; Gradle and JPA checks not yet |
 | P5 | Everything else | Not yet |
 
@@ -112,6 +112,19 @@ Run JUnit tests from the editor and see the results in the file, as in IntelliJ:
 | A run never hangs: it stops after 120 s at most (`vim.g.nv4j_test_timeout_ms`) with a message | stopped at 0.33 to 0.36 s with the bound set to 0.3 s | `timeout_bounded` |
 | The keys are Nv4J's, also after which-key created LazyVim's java test keys | 7 of 7 | `keys`, `keys_after_whichkey` |
 
+### Scaffolding (P3)
+
+New Java files as in IntelliJ's New menu: `<leader>jn` asks the kind (class, interface, record, enum, annotation, Spring controller/service/repository/entity, package, test) and the name, and creates the file in the directory you are in (the neo-tree node under the cursor, else the current file's directory). The package comes from the directory under `src/<set>/java`; `deep.Thing` creates the package `deep` too. The file is written with its content, then opened with the cursor in the body (no empty file on disk, nothing unsaved). `<leader>jt` opens the test class of the current class (`src/test/java`, same package, `<Name>Test`), creating it with a JUnit 5 `@Test` method when it does not exist. An existing file is never overwritten (message, opened instead), invalid names and directories outside a source root are refused with a message. `:e Foo.java` and neo-tree's `a` use the same templates (kind picker) and also leave the template on disk. Code: `nvim/lua/nv4j/scaffold.lua`, details in `specs/features/scaffolding.md` (decision D22). Numbers from 3 consecutive runs of `61_scaffold` (27 of 27 PASS each) and the full run before the commit (27 of 27):
+
+| What you get | Measured (budget) | Check |
+|--------------|-------------------|-------|
+| Each of the 9 type kinds: file on disk with the right `package` line, opened, stereotype import and annotation | 28 to 112 ms (300 ms) | `61_scaffold` `kind_*` |
+| Kind and name asked, dotted name, test class for the current class, default package, class in `src/test/java` | 28 to 72 ms (300 ms) | `prompts`, `nested_name`, `test_for`, `default_package`, `test_dir_class` |
+| New package (directory) | 1 to 6 ms | `package` |
+| `:e Foo.java` and neo-tree `a`: template on disk | 52 to 79 ms, 6 to 9 ms | `edit_template`, `neotree_fill` |
+| Every created file compiles: jdt.ls error state settled, zero errors after a build | slowest file 1.0 to 1.1 s (3 s) | `compiles`, `compiles_all` |
+| Existing file, invalid names, outside `src/*/java`, test of a test: refused with a message, nothing written | rules checked | `exists`, `invalid_name`, `outside_root`, `test_from_test` |
+
 ### Run Spring Boot (P2)
 
 `<leader>rs` runs the `@SpringBootApplication` main class of the project, `<leader>rd` debugs it (the Debug path above), `<leader>rp` asks for a profile (offers the `application-<profile>` files it finds) and runs. The app runs as `java -cp <classpath from jdt.ls> <main class>` on the project's JDK, after the same refresh and build as a debug launch ("Building before run..."). It was measured faster than `mvn spring-boot:run` (2.5 s against 5 to 7 s to "Started", and Maven first had to resolve its plugin over the network), see `specs/features/run.md`. `<leader>rS` runs through the build tool instead (`mvnw`/`mvn spring-boot:run`, or `gradlew`/`gradle bootRun` when there is no `pom.xml`); `vim.g.nv4j_run_tool = "maven"` (or `"gradle"`, Gradle first) makes that the default for `<leader>rs` and `<leader>rp` (debug always goes through jdt.ls). Without jdt.ls for the project (looked up by the project root, so it works from `application.yml` or a module's `pom.xml` too) you get a notice and the build tool is used. The build tool runs in the Spring Boot module (the buffer's module if it is Boot, else the first Boot module found), not at the aggregator, so `spring-boot:run`/`bootRun` does not run the whole reactor; for Maven the sibling modules it depends on must be installed first (`mvn install` once). What `<leader>rs` skips and when to switch: Known limitations. Output goes to a terminal split at the bottom: `<C-c>` (normal mode) stops the app, `q` stops it and closes the split, `<leader>rx` stops every run. Code: `nvim/lua/nv4j/run.lua`. Numbers from 3 consecutive runs of `41_run` (18 of 18 PASS each; 22 of 22 after the review fix round, 3 of 3 runs; 27 of 27 after the final review, 3 of 3 runs) and the three final full runs (22 of 22 each):
@@ -163,7 +176,7 @@ Code: `nvim/lua/nv4j/completion.lua` (server order kept for Spring items, snippe
 
 ### Also available (from LazyVim, not covered by the checks)
 
-Telescope, neo-tree, git signs, `lemminx` for XML (`pom.xml` formatting and validation), and a basic Java file template when you create a new `.java` file (class, package, and a Spring annotation for controller/service/repository/entity). They are here because the base config had them, they are not part of P1's measured work.
+Telescope, neo-tree, git signs, `lemminx` for XML (`pom.xml` formatting and validation). They are here because the base config had them, they are not part of P1's measured work.
 
 ## Not yet
 
@@ -172,7 +185,7 @@ Be aware before you rely on Nv4J for a full workday:
 - **P2 leftovers: Spring awareness.** Properties/yml completion and hover, `@Value`/`@Profile` completion, `@Value` go to definition, beans and request mappings are checked (Capabilities). Not checked yet: annotation attribute checks beyond jdt.ls (`@Table(`/`@Column(` lists come from jdt.ls only), the Spring server's own diagnostics (unknown keys, bad values), `:SpringBoot` (the plugin's command; `<leader>sp` is the checked path).
 - **P2 leftovers: run.** Spring Boot run and debug are checked (Capabilities). The build-tool fallback (`spring-boot:run`, `bootRun`, used only without jdt.ls) is checked as a command, not run (Maven could not reach its plugin offline here). No saved run configurations: the profile is asked each time with `<leader>rp`, `<leader>rs` runs without one. `<leader>rj` (plain main class) is checked by hand only.
 - **P3: tests runner leftovers.** The runner is checked (Capabilities: Tests). Not done: TestNG (`<leader>tT`, nvim-jdtls's picker, still runs it), JUnit 4 and multi-module or Gradle projects are not covered by a check, no tree view of every test (`<leader>to` is the quickfix list).
-- **P3: scaffolding** (create package, class, with a wizard). Only the basic new-file template above exists.
+- **P3: scaffolding leftovers.** Scaffolding is checked (Capabilities: Scaffolding). Not checked: driving neo-tree's UI (its `file_added` handler is), insert mode after the keys (needs a UI), the JUnit 4 template, Gradle. No Exception kind or user templates.
 - **P3: refactors beyond what jdt.ls already offers.** Extract and rename work through jdt.ls. Move, inline, change signature, safe delete are not set up or tested.
 - **P3: carried follow-ups.** Saved run configurations (profile, env, VM args per project). (Asynchronous import apply and project ranking above frecency shipped with P3 Task 1: Capabilities, Imports and Completion.)
 - **P4: Gradle** (supported by jdt.ls, not tested; the Boot detector, the `bootRun` fallback command and the build-file notification know Gradle files, nothing runs a Gradle build in the checks), JPA checks. Spring beans/request mappings navigation, planned for P4, already shipped with P2 (`<leader>sp`, Capabilities).
@@ -284,6 +297,13 @@ Generate getters, constructors, `toString`, `equals`/`hashCode`: put the cursor 
 | `<leader>tf` / `<leader>tl` / `<leader>to` | run the failed tests again / the last run again / open the results (quickfix list) |
 | `<leader>td` | debug the nearest test (breakpoints stop) |
 | `<leader>tT` | pick a test of the file (nvim-jdtls, its own result layer; also runs TestNG) |
+
+**New files** (checked by `61_scaffold`):
+
+| Key | Does |
+|-----|------|
+| `<leader>jn` | new class / interface / record / enum / annotation / Spring controller, service, repository, entity / package / test (kind, then name; `foo.Bar` creates the package) in the current directory (neo-tree node or current file) |
+| `<leader>jt` | test class of the current class: open it, or create it in `src/test/java` |
 | `<leader>db` / `<leader>dc` / `<leader>dO` / `<leader>di` / `<leader>dB` / `<leader>dt` / `<leader>du` | toggle breakpoint / run or continue / step over / step into / conditional breakpoint / terminate / debug UI |
 
 ### Switch JDK with `sdk use`
@@ -350,7 +370,9 @@ nvim/
     spring.lua             Spring Boot LS: Boot-only gating, JDK, jars, jdt.ls bundles (vim.g.nv4j_spring)
     root.lua               project root shared by jdt.ls and the Spring Boot LS
     paths.lua              log dirs (/tmp/nv4j) and jdt.ls workspace dirs (~/.cache/nv4j)
-  lua/util/                profile.lua (:CompletionProfile), java_scaffold.lua (new file template)
+    tests.lua              test runner (<leader>tr/tt/tp/tf/tl/td/to)
+    scaffold.lua           new class/package/test (<leader>jn/jt), the :e and neo-tree templates
+  lua/util/                profile.lua (:CompletionProfile)
 specs/                     001 architecture, 002 P1 numbers and trial log, features/*.md
 tests/                     run.sh, checks/, fixtures/, lib/
 ```
@@ -385,8 +407,9 @@ The checks (each file lists its cases at the top):
 | `51_spring_completion` | Spring completion in blink: properties, yml, `@Value`, `@Profile`, broken files, latency, `@` regression |
 | `52_spring_nav` | Spring hover, `@Value` go to definition, beans and request mappings, `<leader>sp` picker |
 | `60_tests_runner` | test runner: nearest/class/file/project/failed/last, counts with parameterized, nested, `@Disabled`, failure in quickfix and diagnostics, debug, non-compiling class, no JUnit, bounded time, keys (20 cases) |
+| `61_scaffold` | scaffolding: 9 type kinds, package, dotted name, test class, prompts, default package, test dir, `:e` and neo-tree templates on disk, refusals (existing file, invalid name, outside a source root, test of a test), every created file compiles, keys (27 cases) |
 
-Budgets: warm completion p95 at most 150 ms per case; first completion after ready at most 400 ms; expected item in the top 5 plus a relative rule per case; diagnostics at most 3 s from edit to screen; import accept at most 1.5 s (P3: item text in at most 100 ms after the accept, its import at most 1.5 s, `63_async_import`; nearest test result at most 10 s warm, `60_tests_runner`); one code action round trip at most 1 s. P2: breakpoint hit at most 20 s from launch, no JVM 10 s after terminate, Spring LS initialized at most 10 s after jdt.ls is ready, `application.properties`/yml/`@Value` first completion at most 400 ms and warm p95 at most 150 ms, Spring hover and go to definition at most 500 ms, Spring LS memory at most 1 GB (hard limit 1.5 GB). `NV4J_SPRING=0 tests/run.sh` starts every check with the Spring LS off (A/B timing). The fixture is `tests/fixtures/demo`, planted broken sources are in `tests/fixtures/planted/*.java.txt` and are loaded into a buffer in memory only, never written to disk.
+Budgets: warm completion p95 at most 150 ms per case; first completion after ready at most 400 ms; expected item in the top 5 plus a relative rule per case; diagnostics at most 3 s from edit to screen; import accept at most 1.5 s (P3: item text in at most 100 ms after the accept, its import at most 1.5 s, `63_async_import`; nearest test result at most 10 s warm, `60_tests_runner`; new file on disk and opened at most 300 ms, no jdt.ls error within 3 s, `61_scaffold`); one code action round trip at most 1 s. P2: breakpoint hit at most 20 s from launch, no JVM 10 s after terminate, Spring LS initialized at most 10 s after jdt.ls is ready, `application.properties`/yml/`@Value` first completion at most 400 ms and warm p95 at most 150 ms, Spring hover and go to definition at most 500 ms, Spring LS memory at most 1 GB (hard limit 1.5 GB). `NV4J_SPRING=0 tests/run.sh` starts every check with the Spring LS off (A/B timing). The fixture is `tests/fixtures/demo`, planted broken sources are in `tests/fixtures/planted/*.java.txt` and are loaded into a buffer in memory only, never written to disk.
 
 ### What is measured and what you must judge
 

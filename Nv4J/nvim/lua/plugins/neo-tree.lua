@@ -14,13 +14,14 @@ return {
       -- buffer switch (open or close). Use <leader>ef to reveal on demand.
       follow_current_file = { enabled = false },
     },
-    -- neo-tree creates files on disk directly (no BufNewFile) — scaffold here instead.
+    -- neo-tree creates files on disk directly (no BufNewFile): fill the new empty file from the
+    -- nv4j/scaffold.lua templates here. <leader>jn on a tree node creates in that node's directory.
     event_handlers = {
       {
         event = "file_added", -- neo-tree.events.FILE_ADDED
         handler = function(destination)
           if destination:match("%.java$") then
-            require("util.java_scaffold").scaffold_file(destination)
+            require("nv4j.scaffold").fill_file(destination)
           end
         end,
       },
