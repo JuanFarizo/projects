@@ -43,6 +43,16 @@ local function notify(msg, level)
   vim.notify(msg, level or vim.log.levels.INFO, { title = TITLE })
 end
 
+--- A refactor waiting for jdt.ls (change signature's edit request, 2.6-3.9 s for a method with
+--- implementations, asynchronous on the prompt path): { label } until it ends; every refactor refuses to
+--- start meanwhile (its edit would be computed on a state the pending one is about to change).
+local busy = nil
+function M._busy() return busy end -- checks
+
+local function busy_msg()
+  return ("a refactor is in progress (%s); try again when it finishes"):format(busy.label)
+end
+
 local function root_of(client)
   return client.root_dir or (client.config and client.config.root_dir)
 end
@@ -334,6 +344,10 @@ function M.rename_class(opts)
     if opts.on_done then opts.on_done(ok) end
     return ok
   end
+  if busy then
+    notify("Rename class: " .. busy_msg() .. "; nothing changed", vim.log.levels.WARN)
+    return done(false)
+  end
   if not client or #vim.lsp.get_clients({ bufnr = buf, name = "jdtls" }) == 0 then
     notify("Rename class: jdt.ls is not attached to this buffer", vim.log.levels.WARN)
     return done(false)
@@ -484,6 +498,7 @@ function M.rename_paths(moves, label, client, opts)
     notify(msg, level or vim.log.levels.ERROR)
     return false, msg
   end
+  if busy then return fail(busy_msg(), vim.log.levels.WARN) end
   for _, m in ipairs(moves) do
     m[1], m[2] = vim.fs.normalize(m[1]):gsub("/+$", ""), vim.fs.normalize(m[2]):gsub("/+$", "")
     if not vim.uv.fs_stat(m[1]) then return fail(m[1] .. " does not exist") end
@@ -854,6 +869,7 @@ function M.move(opts)
     notify("Move class: " .. msg, level or vim.log.levels.WARN)
     return done(false)
   end
+  if busy then return refuse(busy_msg() .. "; nothing changed") end
   local client = jdtls_for(path)
   if not client or #vim.lsp.get_clients({ bufnr = buf, name = "jdtls" }) == 0 then
     return refuse("jdt.ls is not attached to this buffer")
@@ -1098,6 +1114,7 @@ function M.inline(opts)
     notify("Inline: " .. msg, level or vim.log.levels.WARN)
     return done(false)
   end
+  if busy then return refuse(busy_msg() .. "; nothing changed") end
   local client = jdtls_for(path)
   if not client or #vim.lsp.get_clients({ bufnr = buf, name = "jdtls" }) == 0 then
     return refuse("jdt.ls is not attached to this buffer")
@@ -1561,26 +1578,46 @@ local function unchanged(spec, info)
   return true
 end
 
+--- window/showMessage capture, shared per client: one wrapper is installed while at least one request
+--- captures (each gets its own message list); the client's own handler is put back when the last ends.
+local captures = {} -- client id -> { own, lists = { [list] = true }, n }
+
+local function capture_start(client)
+  local key = "window/showMessage"
+  local c = captures[client.id]
+  if not c then
+    c = { own = rawget(client.handlers, key), lists = {}, n = 0 }
+    captures[client.id] = c
+    client.handlers[key] = function(err, result, ctx, cfg)
+      if c.n > 0 and result and (result.type == 1 or result.type == 2) then
+        for list in pairs(c.lists) do list[#list + 1] = result.message end
+        return vim.NIL
+      end
+      local h = c.own or vim.lsp.handlers[key]
+      return h and h(err, result, ctx, cfg)
+    end
+  end
+  local msgs = {}
+  c.lists[msgs], c.n = true, c.n + 1
+  return msgs, function()
+    if c.lists[msgs] then c.lists[msgs], c.n = nil, c.n - 1 end
+    if c.n == 0 and captures[client.id] == c then
+      client.handlers[key], captures[client.id] = c.own, nil
+    end
+  end
+end
+
 --- Asynchronous jdt.ls request with its window/showMessage errors/warnings captured until the answer
 --- (jdt.ls reports a refused change signature that way and answers null): cb(res, rerr, messages) once,
 --- res = { err?, result? }, or res = nil and rerr on a timeout after `ms`. Other messages go to the usual
 --- handler.
 local function request_capturing(client, method, params, ms, buf, cb)
-  local key = "window/showMessage"
-  local own = rawget(client.handlers, key)
-  local msgs, finished = {}, false
-  client.handlers[key] = function(err, result, ctx, cfg)
-    if not finished and result and (result.type == 1 or result.type == 2) then
-      msgs[#msgs + 1] = result.message
-      return vim.NIL
-    end
-    local h = own or vim.lsp.handlers[key]
-    return h and h(err, result, ctx, cfg)
-  end
+  local msgs, stop = capture_start(client)
+  local finished = false
   local function finish(res, rerr)
     if finished then return end
     finished = true
-    if client.handlers[key] ~= own then client.handlers[key] = own end
+    stop()
     cb(res, rerr, msgs)
   end
   local ok, sent, id = pcall(client.request, client, method, params, function(err, result)
@@ -1662,7 +1699,9 @@ function M.change_signature(opts)
   opts = opts or {}
   local buf = vim.api.nvim_get_current_buf()
   local path = vim.api.nvim_buf_get_name(buf)
+  local mine = false -- this call set `busy`: only it clears it
   local function done(ok)
+    if mine then busy, mine = nil, false end
     if opts.on_done then opts.on_done(ok) end
     return ok
   end
@@ -1671,6 +1710,7 @@ function M.change_signature(opts)
     notify("Change signature: " .. msg, level or vim.log.levels.WARN)
     return done(false)
   end
+  if busy then return refuse(busy_msg() .. "; nothing changed") end
   local client = jdtls_for(path)
   if not client or #vim.lsp.get_clients({ bufnr = buf, name = "jdtls" }) == 0 then
     return refuse("jdt.ls is not attached to this buffer")
@@ -1759,6 +1799,7 @@ function M.change_signature(opts)
       { textDocument = { uri = decl.uri }, position = { line = decl.l, character = decl.c } }, buf) or nil
     local t_req = vim.uv.hrtime()
     local finished, outcome = false, nil
+    local ticks = {} -- path -> changedtick of every loaded buffer when the edit is asked for (filled below)
     local function finish(res, rerr, msgs)
       lap("edit")
       local said = #msgs > 0 and (": " .. table.concat(msgs, "; ")) or ""
@@ -1775,6 +1816,21 @@ function M.change_signature(opts)
       end
       if n == 0 then
         return refuse(("jdt.ls gave no edit%s; nothing changed"):format(#msgs > 0 and (" and said" .. said) or ""), vim.log.levels.ERROR)
+      end
+      -- the edit was computed on the buffers as they were when it was asked for: a buffer it touches that
+      -- changed since (typed into while jdt.ls worked) would get it at stale positions (Neovim skips a
+      -- versioned edit for a newer buffer, with only a message): refused whole, nothing applied
+      local moved = {}
+      for _, f in ipairs(edit_files(edit)) do
+        local p = f.from or f.path
+        local b = vim.fn.bufnr(p)
+        if b ~= -1 and vim.api.nvim_buf_is_loaded(b) then
+          local was = ticks[p]
+          if (was and vim.api.nvim_buf_get_changedtick(b) ~= was) or (not was and vim.bo[b].modified) then moved[#moved + 1] = rel(p, root) end
+        end
+      end
+      if #moved > 0 then
+        return refuse(("%s changed while jdt.ls computed the edit; nothing changed (run it again)"):format(table.concat(moved, ", ")), vim.log.levels.WARN)
       end
       local edit_ms = (vim.uv.hrtime() - t_req) / 1e6
       local refs = {}
@@ -1856,6 +1912,10 @@ function M.change_signature(opts)
       follow_up(label, before, paths)
       return done(true)
     end
+    for _, b in ipairs(vim.api.nvim_list_bufs()) do
+      if vim.api.nvim_buf_is_loaded(b) then ticks[vim.api.nvim_buf_get_name(b)] = vim.api.nvim_buf_get_changedtick(b) end
+    end
+    busy, mine = { label = ("change signature of %s"):format(name) }, true
     if async then
       notify(("Changing signature of %s... (jdt.ls is computing it; a method with implementations takes a few seconds)"):format(name))
     end
@@ -1865,7 +1925,15 @@ function M.change_signature(opts)
       commandArguments = { info.methodIdentifier, false, spec.name, spec.visibility == "package" and "" or spec.visibility,
         spec.returns, params, info.exceptions or {}, false },
     }, M.signature_ms, buf, function(res, rerr, msgs)
-      outcome, finished = finish(res, rerr, msgs), true
+      -- whatever goes wrong after the answer, the caller hears of it (on_done) and `busy` is cleared
+      local ok, out = pcall(finish, res, rerr, msgs)
+      if not ok then
+        M.last = { label = "Change signature", files = {}, ok = false, err = tostring(out) }
+        notify(("Change signature of %s FAILED after jdt.ls answered (%s); the files in an earlier summary line, if any, may be changed: undo with `u` there"):format(
+          name, tostring(out)), vim.log.levels.ERROR)
+        out = done(false)
+      end
+      outcome, finished = out, true
     end)
     if async then return nil end -- opts.on_done(ok) reports the outcome
     vim.wait(M.signature_ms + 1000, function() return finished end, 5)

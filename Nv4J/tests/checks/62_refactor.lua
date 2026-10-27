@@ -91,6 +91,9 @@
 --                       type/name, no default, duplicate, removed-but-used, clash, reorder, constructor
 --                       name, unknown option, no change, jdt.ls's invalid default, library method/interface).
 --  change_signature_no_edit (stub): jdt.ls null + showMessage, empty edit: refused, its message once.
+--  change_signature_stale, _busy, _finish_error (stubs): a buffer typed into while jdt.ls works: refused
+--                       whole; a second refactor while one is pending: refused; an error after the answer:
+--                       reported, on_done(false), busy cleared.
 --  change_signature_constructor: Invoice(...) + discount: every `new Invoice(` passes 0 (declaration, call).
 --  change_signature_interface_budget: the first interface change of the session within 2 s (FAILs while over).
 --  change_signature_interface: from Rule.apply: Half.apply changed too (noted); from Half.apply refused.
@@ -2212,6 +2215,113 @@ case("change_signature_no_edit", function()
   lsp.report(P .. "change_signature_no_edit", r1.ret == false and m1 ~= nil and n1 == 1 and r2.ret == false and m2 ~= nil and untouched(before),
     ("null + showMessage: returned %s, message %s (shown %dx); empty edit: returned %s, message %s; file %s"):format(tostring(r1.ret), tostring(m1), n1,
       tostring(r2.ret), tostring(m2), untouched(before) and "unchanged" or "CHANGED"))
+end)
+
+--- Delays jdt.ls's getRefactorEdit answer by `ms` (the real answer, handed over later): the window in which
+--- an asynchronous change signature is pending. Returns the undo.
+local function delay_edit(ms)
+  local real = client.request
+  client.request = function(self, m, params, handler, b)
+    if m ~= "java/getRefactorEdit" then return real(self, m, params, handler, b) end
+    return real(self, m, params, function(err, result, ctx) vim.defer_fn(function() handler(err, result, ctx) end, ms) end, b)
+  end
+  return function() client.request = real end
+end
+
+--- refactor.change_signature with opts.async at (pat, word) of `buf`; returns { ret, returned, got, outcome = function }.
+local function cs_async(buf, pat, word, opts)
+  local res = {}
+  opts = vim.tbl_extend("force", opts, { async = true, on_done = function(ok) res.done = ok end })
+  local r = cs_at(buf, pat, word, opts)
+  res.ret, res.returned, res.got = r.ret, r.ms, r.got
+  return res
+end
+
+-- change_signature_stale (deterministic: the answer delayed 400 ms by a stub): Checkout is typed into while
+-- jdt.ls computes the edit: refused whole ("changed while jdt.ls computed the edit"), nothing applied
+-- (PriceCalculator untouched too), the user's line kept, disk unchanged.
+case("change_signature_stale", function()
+  if not has("change_signature") then return lsp.report(P .. "change_signature_stale", false, pending_reason("change_signature")) end
+  local calc, chk = lsp.open(CALC), lsp.open(CHECKOUT)
+  local before_calc = E.text(calc)
+  local undo = delay_edit(400)
+  local ok, err = pcall(function()
+    local got, stop = capture()
+    local a = cs_async(calc, "public int total%(Invoice invoice%)", "total", ADD_DISCOUNT)
+    append_line(chk, "// typed while jdt.ls works")
+    local typed = E.text(chk)
+    vim.wait(refactor.signature_ms + 1000, function() return a.done ~= nil end, 5)
+    stop()
+    local msg = find_msg(got, "src/main/java/demo/shop/Checkout.java changed while jdt.ls computed the edit; nothing changed", vim.log.levels.WARN)
+    local d = F.diff(snap)
+    local good = a.ret == nil and a.done == false and msg ~= nil and E.text(calc) == before_calc and E.text(chk) == typed
+      and #d.added + #d.changed + #d.missing == 0 and refactor._busy() == nil
+    lsp.report(P .. "change_signature_stale", good, ("returned %s, on_done %s; message %s; PriceCalculator %s, Checkout %s; disk %s; busy %s"):format(
+      tostring(a.ret), tostring(a.done), tostring(msg), E.text(calc) == before_calc and "untouched" or "CHANGED",
+      E.text(chk) == typed and "only the typed line" or "EDITED", #d.changed == 0 and "unchanged" or F.fmt(d), vim.inspect(refactor._busy())))
+  end)
+  undo()
+  if not ok then error(err) end
+end)
+
+-- change_signature_busy (deterministic: answer delayed 600 ms): while a change signature is pending, a second
+-- one, an inline and a rename are refused ("a refactor is in progress"); the first one then completes;
+-- `busy` is cleared and jdt.ls's showMessage handler is the client's own again.
+case("change_signature_busy", function()
+  if not has("change_signature") then return lsp.report(P .. "change_signature_busy", false, pending_reason("change_signature")) end
+  local calc, inv = lsp.open(CALC), lsp.open(INVOICE)
+  lsp.open(CHECKOUT)
+  local own = rawget(client.handlers, "window/showMessage")
+  local undo = delay_edit(600)
+  local ok, err = pcall(function()
+    local a = cs_async(calc, "public int total%(Invoice invoice%)", "total", ADD_DISCOUNT)
+    local b = cs_at(calc, "public int legacyTotal%(", "legacyTotal", { name = "oldTotal" })
+    local c = inline_at(calc, "int gross = gross%(invoice%);", "gross(")
+    vim.api.nvim_set_current_buf(inv); vim.api.nvim_win_set_cursor(0, { E.line_of(inv, "^public class Invoice") + 1, 14 })
+    local got, stop = capture()
+    local d = refactor.rename_class({ name = "Bill" })
+    stop()
+    local want = "a refactor is in progress (change signature of total)"
+    local refused = b.ret == false and find_msg(b.got, want) ~= nil and c.ret == false and find_msg(c.got, want) ~= nil
+      and d == false and find_msg(got, want) ~= nil and vim.uv.fs_stat(INVOICE) ~= nil
+    vim.wait(refactor.signature_ms + 1000, function() return a.done ~= nil end, 5)
+    local after = a.done == true and select(2, calls(text_of(CHECKOUT), "total", "0")) == 3 and refactor._busy() == nil
+      and rawget(client.handlers, "window/showMessage") == own
+    lsp.report(P .. "change_signature_busy", refused and after, ("while pending: change signature %s, inline %s, rename %s; first one: on_done %s, busy after %s, showMessage handler %s"):format(
+      tostring(b.ret), tostring(c.ret), tostring(d), tostring(a.done), vim.inspect(refactor._busy()),
+      rawget(client.handlers, "window/showMessage") == own and "restored" or "LEFT WRAPPED"))
+  end)
+  undo()
+  if not ok then error(err) end
+end)
+
+-- change_signature_finish_error: an error after jdt.ls answered (injected in refactor.revalidate): synchronous
+-- call returns false at once with an ERROR naming it, asynchronous call reports on_done(false); busy cleared.
+case("change_signature_finish_error", function()
+  if not has("change_signature") then return lsp.report(P .. "change_signature_finish_error", false, pending_reason("change_signature")) end
+  local calc = lsp.open(CALC)
+  lsp.open(CHECKOUT)
+  local real = refactor.revalidate
+  refactor.revalidate = function() error("injected finish error") end
+  local ok, err = pcall(function()
+    local done1
+    local r = cs_at(calc, "public int total%(Invoice invoice%)", "total", vim.tbl_extend("force", ADD_DISCOUNT, { on_done = function(x) done1 = x end }))
+    local m1 = find_msg(r.got, "injected finish error", vim.log.levels.ERROR)
+    local busy1 = refactor._busy()
+    F.restore(snap, client)
+    calc = lsp.open(CALC)
+    local got, stop = capture()
+    local a = cs_async(calc, "public int total%(Invoice invoice%)", "total", ADD_DISCOUNT)
+    vim.wait(refactor.signature_ms + 1000, function() return a.done ~= nil end, 5)
+    stop()
+    local m2 = find_msg(got, "injected finish error", vim.log.levels.ERROR)
+    lsp.report(P .. "change_signature_finish_error", r.ret == false and done1 == false and m1 ~= nil and r.ms <= APPLY_MS and busy1 == nil
+      and a.done == false and m2 ~= nil and refactor._busy() == nil,
+      ("sync: returned %s after %.0f ms, on_done %s, message %s; async: on_done %s, message %s; busy %s"):format(tostring(r.ret), r.ms, tostring(done1),
+        m1 and "yes" or "NONE", tostring(a.done), m2 and "yes" or "NONE", vim.inspect(refactor._busy())))
+  end)
+  refactor.revalidate = real
+  if not ok then error(err) end
 end)
 
 -- change_signature_constructor: Invoice's constructor gets `int discount = 0`: every `new Invoice(...)` in
