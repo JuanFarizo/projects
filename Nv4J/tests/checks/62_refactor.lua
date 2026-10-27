@@ -6,11 +6,12 @@
 -- Fixture: demo.billing.{Invoice, PriceCalculator}, demo.shop.Checkout (call sites in another package).
 -- API under test (Task 4): require("nv4j.refactor").<fn>(opts) at the cursor, no prompts when opts
 -- give the answer: rename_class({ name }), rename_package({ name }) (Task 4a, built), move({ package })
--- (Task 4b, built), inline(), change_signature({ add = { { type, name, default } } }), safe_delete() (4b-4e). Each case
+-- (Task 4b, built), inline({ all? }) (Task 4c, built), change_signature({ add = { { type, name, default } } }),
+-- safe_delete() (4d-4e). Each case
 -- uses its function when it exists, else measures today's path: vim.lsp.buf.rename (<leader>cr) or
 -- jdt.ls's code action through Neovim/nvim-jdtls (<leader>ca), with nvim-jdtls's prompts answered.
 --  api, keys          : the functions built so far and their keys (<leader>jr rename, <leader>jp rename
---                       package, <leader>jm move; pending: <leader>ji inline, <leader>js change
+--                       package, <leader>jm move, <leader>ji inline; pending: <leader>js change
 --                       signature, <leader>jd safe delete, listed); <leader>cr stays Rename.
 --  rename_class       : Invoice -> Bill from its declaration: Bill.java on disk, Invoice.java gone,
 --                       Checkout imports demo.billing.Bill, no `Invoice` token left, touched files
@@ -58,10 +59,24 @@
 --  move_class_stale   : the old qualified name in application.properties listed; a "Invoice" string not.
 --  move_class_errors  : a syntax error in Checkout: still updated by jdt.ls (or warned); _skipped_twin:
 --                       Checkout's edit dropped (stub): the summary warns with Checkout.java:3.
---  Unbuilt functions (inline, change_signature, safe_delete): their cases FAIL "pending" (today's
---  path shown after it) and `api` adds a pending_<fn> FAIL line each: the check stays red until 4e.
---  inline_method      : `gross(invoice)` call in total inlined: `invoice.quantity() * invoice.unitPrice()`.
---  inline_variable    : local `gross` in total inlined: `return gross(invoice);`.
+--  Unbuilt functions (change_signature, safe_delete): their cases FAIL "pending" (today's path shown
+--  after it) and `api` adds a pending_<fn> FAIL line each: the check stays red until 4e.
+--  inline_method (+ _undo): `gross(invoice)` call in total inlined: `invoice.quantity() * invoice.unitPrice()`,
+--                       declaration kept, written, summary; one `u` gives the text back.
+--  inline_variable (+ _undo): local `gross` in total inlined: `return gross(invoice);`.
+--  inline_method_all, inline_method_declaration: opts.all on the call / the cursor on the declaration:
+--                       every call, declaration removed, not "Make Static".
+--  inline_constant    : <leader>ji on a planted constant's reference in Checkout: that reference only.
+--  inline_constant_all (+ _undo), inline_unsaved: opts.all from Checkout: Invoice and Checkout inlined,
+--                       declaration removed; with unsaved user edits both are left unsaved, edits kept.
+--  inline_refused, inline_recursive, inline_resolve_error (stub): no inline at the cursor (@Value field,
+--                       keyword, all on a JDK method), jdt.ls gives no edit (recursion), resolve error:
+--                       refused with the reason, nothing changed.
+--  inline_two_actions (stub): two inline actions at one place: the user picks; opts.all takes "all".
+--  inline_bean_call, inline_bean_declaration: @Bean devBanner inlined at a call / everywhere: Spring warning.
+--  inline_value_constant: a constant used as @Value key inlined from its declaration: build clean.
+--  inline_errors (+ _twin, stub): a syntax error in Checkout: inlined there by jdt.ls or its reference
+--                       named in the warning; twin: Checkout's edit dropped, warning names its line.
 --  change_signature   : total gets `int discount` with default 0: the 3 call sites in Checkout pass 0.
 --  safe_delete_blocked: on `total` (3 usages): nothing deleted, the usages listed (quickfix).
 --  safe_delete_free   : on `legacyTotal` (no usages): the method is gone, build clean.
@@ -133,7 +148,7 @@ do
   vim.api.nvim_set_current_buf(buf0)
   local want = {
     { "<leader>jr", "rename_class", "ename" }, { "<leader>jp", "rename_package", "ackage" },
-    { "<leader>jm", "move", "ove" }, { "<leader>ji", "inline", "Inline" }, { "<leader>js", "change_signature", "ignature" },
+    { "<leader>jm", "move", "ove" }, { "<leader>ji", "inline", "nline" }, { "<leader>js", "change_signature", "ignature" },
     { "<leader>jd", "safe_delete", "elete" },
   }
   local bad, okk, pending = {}, {}, {}
@@ -1472,31 +1487,383 @@ case("move_class_skipped_twin", function()
     ("returned %s after %.0f ms; warning: %s"):format(tostring(ok), ms, sum ~= "" and sum or "NONE"))
 end)
 
---- Inline at (pat, word) in PriceCalculator; `want` must appear in the file afterwards.
-local function inline_case(name, pat, word, title, want, gone)
+-- ── inline (Task 4c): nv4j.refactor.inline over jdt.ls's inline code actions ────────────────────────
+
+--- Inline at (pat, word) in PriceCalculator; `want` must appear in the file afterwards, `gone` not; the
+--- summary must start with `label` (and name PriceCalculator.java only); written to disk; then one `u`
+--- gives the text back (<name>_undo). `opts` for refactor.inline; `checks(text)` extra checks.
+local function inline_case(name, pat, word, title, want, gone, label, opts, checks)
   case(name, function()
     local calc = lsp.open(CALC)
     lsp.open(CHECKOUT)
     local l, c = pos(calc, pat, word)
     local before = E.text(calc)
     local t0, how = E.now(), nil
+    local got, stop = capture()
     if has("inline") then
       vim.api.nvim_set_current_buf(calc); vim.api.nvim_win_set_cursor(0, { l + 1, c })
-      how = "nv4j.refactor.inline"; refactor.inline()
+      how = "nv4j.refactor.inline(" .. (opts and vim.inspect(opts, { newline = "", indent = "" }) or "") .. ")"; refactor.inline(opts)
     else
       local ok, t = code_action(calc, l, c, title)
       how = "code action " .. tostring(t)
-      if not ok then return report_apply(name, how, false, 0, {}, false, "") end
+      if not ok then stop(); return report_apply(name, how, false, 0, {}, false, "") end
     end
     local applied, ms = until_ms(t0, function() return E.text(calc) ~= before and E.text(calc):find(want, 1, true) ~= nil end)
+    stop()
     local ok_clean, why = clean({ CALC }, t0)
-    report_apply(name, how, applied, ms, { { "`" .. gone .. "` gone", not E.text(calc):find(gone, 1, true) } }, ok_clean, why)
+    local txt = E.text(calc)
+    local sum = find_msg(got, label) or ""
+    local list = {
+      { "`" .. gone .. "` gone", not txt:find(gone, 1, true) },
+      { "written to disk", (disk(CALC) or ""):find(want, 1, true) ~= nil and not vim.bo[calc].modified },
+      { "summary: " .. label .. ", 1 file PriceCalculator.java", sum:find(label .. ": 1 file(s): src/main/java/demo/billing/PriceCalculator.java", 1, true) == 1 },
+    }
+    for _, x in ipairs(checks and checks(txt) or {}) do list[#list + 1] = x end
+    report_apply(name, how, applied, ms, list, ok_clean, why)
+    vim.api.nvim_buf_call(calc, function() vim.cmd("silent! undo") end)
+    lsp.report(P .. name .. "_undo", applied and E.text(calc) == before,
+      applied and (E.text(calc) == before and "one u restored PriceCalculator" or "NOT restored by one u") or "inline not applied, nothing to undo")
   end)
 end
 inline_case("inline_method", "int gross = gross%(invoice%);", "gross(", "^Inline [Mm]ethod",
-  "int gross = invoice.quantity() * invoice.unitPrice();", "= gross(invoice)")
-inline_case("inline_variable", "^%s+return gross;", "gross", "^Inline local variable", "return gross(invoice);", "int gross =")
+  "int gross = invoice.quantity() * invoice.unitPrice();", "= gross(invoice)", "Inlined method gross (this call only; declaration kept)", nil,
+  function(txt) return { { "declaration kept (jdt.ls: a call inlines that call)", txt:find("private int gross(Invoice invoice)", 1, true) ~= nil } } end)
+inline_case("inline_variable", "^%s+return gross;", "gross", "^Inline local variable", "return gross(invoice);", "int gross =",
+  "Inlined local variable gross (every use; declaration removed)")
 
+-- inline_method_all: opts.all on the call: jdt.ls asked at the declaration (every call, declaration removed).
+-- inline_method_declaration: the cursor on the declaration without opts: the same (jdt.ls's own choice);
+-- "Make Static" (also kind refactor.inline, offered first there) is not taken.
+local function gross_removed(txt)
+  return {
+    { "declaration removed", not txt:find("gross(Invoice", 1, true) },
+    { "not made static", not txt:find("static", 1, true) },
+  }
+end
+inline_case("inline_method_all", "int gross = gross%(invoice%);", "gross(", "^Inline [Mm]ethod",
+  "int gross = invoice.quantity() * invoice.unitPrice();", "private int gross(", "Inlined method gross (every call; declaration removed)",
+  { all = true }, gross_removed)
+inline_case("inline_method_declaration", "private int gross%(", "gross", "^Inline [Mm]ethod",
+  "int gross = invoice.quantity() * invoice.unitPrice();", "private int gross(", "Inlined method gross (every call; declaration removed)",
+  nil, gross_removed)
+
+local GCTRL = main .. "demo/GreetingController.java"
+local GCFG = main .. "demo/GreetingConfig.java"
+
+--- Writes `path` as its snapshot content with each { from, to } replaced once (plain text).
+local function plant(path, subs)
+  local s = assert(snap.files[path], "not in the snapshot: " .. path)
+  for _, sub in ipairs(subs) do
+    local i, j = s:find(sub[1], 1, true)
+    assert(i, ("plant: '%s' not in %s"):format(sub[1], path))
+    s = s:sub(1, i - 1) .. sub[2] .. s:sub(j + 1)
+  end
+  local f = assert(io.open(path, "wb")); f:write(s); f:close()
+end
+
+--- Opens `paths` and waits for jdt.ls to publish each (it has their planted content).
+local function open_fresh(paths)
+  local t, bufs = E.now(), {}
+  for _, p in ipairs(paths) do bufs[#bufs + 1] = lsp.open(p) end
+  vim.wait(CLEAN_MS + 2000, function()
+    for _, p in ipairs(paths) do
+      if (published_at[vim.uri_from_fname(p)] or 0) < t then return false end
+    end
+    return true
+  end, 20)
+  return unpack(bufs)
+end
+
+--- refactor.inline(opts) (or `fn`) with the cursor on `word` in the first line of `buf` matching `pat`.
+--- Returns { ret, ms, got } (inline is synchronous unless it prompts).
+local function inline_at(buf, pat, word, opts, fn)
+  local l, c = pos(buf, pat, word)
+  vim.api.nvim_set_current_buf(buf); vim.api.nvim_win_set_cursor(0, { l + 1, c })
+  local got, stop = capture()
+  local t0 = E.now()
+  local ret = (fn or refactor.inline)(opts)
+  local ms = E.now() - t0
+  stop()
+  return { ret = ret, ms = ms, got = got }
+end
+
+-- A public constant in Invoice used in Invoice and in Checkout (another package, two files).
+local function plant_constant()
+  plant(INVOICE, { { "public class Invoice {\n", "public class Invoice {\n    public static final int MAX_QUANTITY = 99;\n\n" },
+    { "    public int quantity() {", "    public boolean tooMany() {\n        return quantity > MAX_QUANTITY;\n    }\n\n    public int quantity() {" } })
+  plant(CHECKOUT, { { "    public int payTwice(", "    public int cap() {\n        return Invoice.MAX_QUANTITY - 1;\n    }\n\n    public int payTwice(" } })
+  return open_fresh({ INVOICE, CHECKOUT })
+end
+
+-- inline_constant: <leader>ji (the mapping's own function) on Checkout's reference: that reference only.
+case("inline_constant", function()
+  if not has("inline") then return lsp.report(P .. "inline_constant", false, pending_reason("inline")) end
+  local inv, chk = plant_constant()
+  local m = vim.fn.maparg("<leader>ji", "n", false, true)
+  if not m.callback then return lsp.report(P .. "inline_constant", false, "<leader>ji has no Lua callback: " .. vim.inspect(m.rhs)) end
+  local planted_inv = E.text(inv)
+  local r = inline_at(chk, "return Invoice%.MAX_QUANTITY", "MAX_QUANTITY", nil, function() return m.callback() end)
+  local label = "Inlined constant MAX_QUANTITY (this reference only; declaration kept)"
+  local sum = find_msg(r.got, label) or ""
+  report_apply("inline_constant", "<leader>ji", (text_of(CHECKOUT) or ""):find("return 99 - 1;", 1, true) ~= nil, r.ms, {
+    { "Invoice unchanged (declaration and its use kept)", E.text(inv) == planted_inv },
+    { "Checkout written", (disk(CHECKOUT) or ""):find("return 99 - 1;", 1, true) ~= nil },
+    { "summary: 1 file Checkout.java", sum:find(label .. ": 1 file(s): src/main/java/demo/shop/Checkout.java", 1, true) == 1 },
+  }, clean({ CHECKOUT, INVOICE }, E.now() - r.ms))
+end)
+
+-- inline_constant_all: opts.all on Checkout's reference: every reference in both files, declaration removed.
+case("inline_constant_all", function()
+  if not has("inline") then return lsp.report(P .. "inline_constant_all", false, pending_reason("inline")) end
+  local inv, chk = plant_constant()
+  local before = { [inv] = E.text(inv), [chk] = E.text(chk) }
+  local r = inline_at(chk, "return Invoice%.MAX_QUANTITY", "MAX_QUANTITY", { all = true })
+  local label = "Inlined constant MAX_QUANTITY (every reference; declaration removed)"
+  local sum = find_msg(r.got, label) or ""
+  local it, ct = E.text(inv), E.text(chk)
+  report_apply("inline_constant_all", "nv4j.refactor.inline({ all = true })", r.ret == true and ct:find("return 99 - 1;", 1, true) ~= nil, r.ms, {
+    { "Invoice's use inlined", it:find("return quantity > 99;", 1, true) ~= nil },
+    { "declaration removed", not it:find("MAX_QUANTITY", 1, true) },
+    { "both written", (disk(INVOICE) or ""):find("quantity > 99", 1, true) ~= nil and (disk(CHECKOUT) or ""):find("return 99 - 1;", 1, true) ~= nil },
+    { "summary lists both files", sum:find(label .. ": 2 file(s)", 1, true) == 1 and sum:find("demo/billing/Invoice.java", 1, true) ~= nil
+      and sum:find("demo/shop/Checkout.java", 1, true) ~= nil },
+  }, clean({ CHECKOUT, INVOICE }, E.now() - r.ms))
+  local bad = {}
+  for b, txt in pairs(before) do
+    vim.api.nvim_buf_call(b, function() vim.cmd("silent! undo") end)
+    if E.text(b) ~= txt then bad[#bad + 1] = vim.fs.basename(vim.api.nvim_buf_get_name(b)) end
+  end
+  lsp.report(P .. "inline_constant_all_undo", r.ret == true and #bad == 0, r.ret == true and (#bad == 0 and "one u restored Invoice and Checkout"
+    or ("not restored by one u: " .. table.concat(bad, ", "))) or "inline not applied, nothing to undo")
+end)
+
+-- inline_unsaved: the same with unsaved user edits in Invoice and Checkout: both edited in place, the user
+-- edits kept, both left unsaved (disk = planted content), the summary says so.
+case("inline_unsaved", function()
+  if not has("inline") then return lsp.report(P .. "inline_unsaved", false, pending_reason("inline")) end
+  local inv, chk = plant_constant()
+  local d_inv, d_chk = disk(INVOICE), disk(CHECKOUT)
+  append_line(inv, "// user edit in Invoice")
+  append_line(chk, "// user edit in Checkout")
+  local r = inline_at(chk, "return Invoice%.MAX_QUANTITY", "MAX_QUANTITY", { all = true })
+  local label = "Inlined constant MAX_QUANTITY (every reference; declaration removed)"
+  local sum = find_msg(r.got, label) or ""
+  local it, ct = E.text(inv), E.text(chk)
+  report_apply("inline_unsaved", "nv4j.refactor.inline({ all = true })", r.ret == true and ct:find("return 99 - 1;", 1, true) ~= nil, r.ms, {
+    { "user edits kept", it:find("// user edit in Invoice", 1, true) ~= nil and ct:find("// user edit in Checkout", 1, true) ~= nil },
+    { "Invoice inlined in the buffer", it:find("return quantity > 99;", 1, true) ~= nil and not it:find("MAX_QUANTITY", 1, true) },
+    { "both left unsaved (disk untouched)", vim.bo[inv].modified and vim.bo[chk].modified and disk(INVOICE) == d_inv and disk(CHECKOUT) == d_chk },
+    { "summary: both [left unsaved", select(2, sum:gsub("%[left unsaved", "")) == 2 },
+  }, clean({ CHECKOUT, INVOICE }, E.now() - r.ms))
+end)
+
+--- Nothing changed: every listed buffer's text as before and not modified, disk as planted.
+local function untouched(bufs)
+  for b, txt in pairs(bufs) do
+    if E.text(b) ~= txt or vim.bo[b].modified then return false end
+  end
+  return true
+end
+
+-- inline_refused: nothing to inline at the cursor (the @Value field `text` in GreetingController, the
+-- `return` keyword), and opts.all on a JDK method (its declaration is not in the project): refused with
+-- the reason, nothing changed.
+case("inline_refused", function()
+  if not has("inline") then return lsp.report(P .. "inline_refused", false, pending_reason("inline")) end
+  plant(CALC, { { "    public int legacyTotal(", "    public int atLeastOne(int a) {\n        return Math.max(a, 1);\n    }\n\n    public int legacyTotal(" } })
+  local gc, calc = open_fresh({ GCTRL, CALC })
+  local before = { [gc] = E.text(gc), [calc] = E.text(calc) }
+  local a = inline_at(gc, "return text;", "text")
+  local b = inline_at(calc, "^%s+return gross;", "return")
+  local c = inline_at(calc, "Math%.max", "max", { all = true })
+  local ma = find_msg(a.got, "Inline: nothing to inline at `text`", vim.log.levels.WARN)
+  local mb = find_msg(b.got, "Inline: nothing to inline at `return`", vim.log.levels.WARN)
+  local mc = find_msg(c.got, "its declaration is not in this project", vim.log.levels.WARN)
+  lsp.report(P .. "inline_refused", a.ret == false and b.ret == false and c.ret == false and ma and mb and mc and untouched(before) or false,
+    ("@Value field: %s (%.0f ms); keyword: %s; all on Math.max: %s; files %s"):format(tostring(ma), a.ms, tostring(mb), tostring(mc),
+      untouched(before) and "unchanged" or "CHANGED"))
+end)
+
+-- inline_recursive: a recursive method: jdt.ls offers Inline Method at the recursive call but gives no edit:
+-- refused, nothing changed.
+case("inline_recursive", function()
+  if not has("inline") then return lsp.report(P .. "inline_recursive", false, pending_reason("inline")) end
+  plant(CALC, { { "    public int legacyTotal(", "    int fact(int n) {\n        return n <= 1 ? 1 : n * fact(n - 1);\n    }\n\n    public int legacyTotal(" } })
+  local calc = open_fresh({ CALC })
+  local before = { [calc] = E.text(calc) }
+  local r = inline_at(calc, "n %* fact%(", "fact")
+  local msg = find_msg(r.got, "Inline: jdt.ls offered Inline Method at `fact` but gave no edit", vim.log.levels.WARN)
+  lsp.report(P .. "inline_recursive", r.ret == false and msg ~= nil and untouched(before),
+    ("returned %s after %.0f ms; message: %s; file %s"):format(tostring(r.ret), r.ms, tostring(msg), untouched(before) and "unchanged" or "CHANGED"))
+end)
+
+-- inline_resolve_error (twin, stubbed): jdt.ls answers codeAction/resolve with an error: shown, nothing changed.
+case("inline_resolve_error", function()
+  if not has("inline") then return lsp.report(P .. "inline_resolve_error", false, pending_reason("inline")) end
+  local calc = lsp.open(CALC)
+  local before = { [calc] = E.text(calc) }
+  local real = client.request_sync
+  client.request_sync = function(self, m, params, t, b)
+    if m == "codeAction/resolve" then return { err = { code = -32603, message = "stubbed resolve failure" } } end
+    return real(self, m, params, t, b)
+  end
+  local ok, r = pcall(inline_at, calc, "int gross = gross%(invoice%);", "gross(")
+  client.request_sync = real
+  if not ok then error(r) end
+  local msg = find_msg(r.got, "stubbed resolve failure", vim.log.levels.ERROR)
+  lsp.report(P .. "inline_resolve_error", r.ret == false and msg ~= nil and untouched(before),
+    ("returned %s; message: %s; file %s"):format(tostring(r.ret), tostring(msg), untouched(before) and "unchanged" or "CHANGED"))
+end)
+
+-- inline_two_actions (twin, stubbed): jdt.ls offering two inline actions at one place ("... (this
+-- invocation)" and "... (all invocations)", same edit): without opts the user picks (vim.ui.select with both
+-- titles); with opts.all the "all" one is taken without a prompt.
+case("inline_two_actions", function()
+  if not has("inline") then return lsp.report(P .. "inline_two_actions", false, pending_reason("inline")) end
+  local real = client.request_sync
+  client.request_sync = function(self, m, params, t, b)
+    local res, err = real(self, m, params, t, b)
+    if m == "textDocument/codeAction" and res and type(res.result) == "table" then
+      local out = {}
+      for _, a in ipairs(res.result) do
+        if a.title == "Inline Method" then
+          out[#out + 1] = vim.tbl_extend("force", a, { title = "Inline Method (this invocation)" })
+          out[#out + 1] = vim.tbl_extend("force", a, { title = "Inline Method (all invocations)" })
+        else
+          out[#out + 1] = a
+        end
+      end
+      res.result = out
+    end
+    return res, err
+  end
+  local orig_sel = vim.ui.select
+  local ok, err = pcall(function()
+    local calc = lsp.open(CALC)
+    local items
+    vim.ui.select = function(its, o, cb)
+      vim.ui.select = orig_sel
+      items = vim.tbl_map(function(x) return o.format_item(x) end, its)
+      for _, it in ipairs(its) do
+        if o.format_item(it):find("(this invocation)", 1, true) then return cb(it) end
+      end
+      cb(nil)
+    end
+    inline_at(calc, "int gross = gross%(invoice%);", "gross(")
+    vim.ui.select = orig_sel
+    local first = refactor.last and refactor.last.title
+    local applied_a = E.text(calc):find("int gross = invoice.quantity() * invoice.unitPrice();", 1, true) ~= nil
+    F.restore(snap, client)
+    calc = lsp.open(CALC)
+    local prompted = false
+    vim.ui.select = function(_, _, cb) prompted = true; vim.ui.select = orig_sel; cb(nil) end
+    local b = inline_at(calc, "int gross = gross%(invoice%);", "gross(", { all = true })
+    vim.ui.select = orig_sel
+    local second = refactor.last and refactor.last.title
+    lsp.report(P .. "inline_two_actions", applied_a and first == "Inline Method (this invocation)" and b.ret == true
+      and second == "Inline Method (all invocations)" and not prompted and items ~= nil and #items >= 2,
+      ("no opts: prompt items %s, picked %s, applied %s; all=true: prompted %s, took %s, returned %s"):format(
+        items and table.concat(items, " | ") or "NONE", tostring(first), tostring(applied_a), tostring(prompted), tostring(second), tostring(b.ret)))
+  end)
+  vim.ui.select = orig_sel
+  client.request_sync = real
+  if not ok then error(err) end
+end)
+
+-- inline_bean_call: GreetingConfig with a @Bean greeter calling the @Bean devBanner (planted): the call
+-- inlined, devBanner kept, and a warning (the call returned the container's bean, the inlined code
+-- builds a new one). inline_bean_declaration: on devBanner's declaration: inlined, devBanner gone, warning
+-- (the bean is no longer defined).
+local function plant_beans()
+  plant(GCFG, { { "        return \"dev: \" + properties.text();\n    }\n", "        return \"dev: \" + properties.text();\n    }\n\n    @Bean\n    public String greeter(GreetingProperties properties) {\n        return devBanner(properties) + \"!\";\n    }\n" } })
+  return open_fresh({ GCFG })
+end
+case("inline_bean_call", function()
+  if not has("inline") then return lsp.report(P .. "inline_bean_call", false, pending_reason("inline")) end
+  local cfg = plant_beans()
+  local r = inline_at(cfg, "return devBanner%(properties%)", "devBanner")
+  local t = E.text(cfg)
+  local warn = find_msg(r.got, "Spring: devBanner is a @Bean method: the inlined call returned the container's bean", vim.log.levels.WARN)
+  report_apply("inline_bean_call", "nv4j.refactor.inline()", r.ret == true, r.ms, {
+    { "call inlined", t:find('return "dev: " + properties.text() + "!";', 1, true) ~= nil },
+    { "devBanner kept", t:find("public String devBanner(", 1, true) ~= nil },
+    { "Spring warning", warn ~= nil },
+  }, clean({ GCFG }, E.now() - r.ms))
+end)
+case("inline_bean_declaration", function()
+  if not has("inline") then return lsp.report(P .. "inline_bean_declaration", false, pending_reason("inline")) end
+  local cfg = plant_beans()
+  local r = inline_at(cfg, "public String devBanner%(", "devBanner")
+  local t = E.text(cfg)
+  local warn = find_msg(r.got, "the bean `devBanner` is no longer defined", vim.log.levels.WARN)
+  report_apply("inline_bean_declaration", "nv4j.refactor.inline()", r.ret == true, r.ms, {
+    { "call inlined", t:find('return "dev: " + properties.text() + "!";', 1, true) ~= nil },
+    { "devBanner gone", not t:find("devBanner", 1, true) },
+    { "summary says declaration removed", find_msg(r.got, "Inlined method devBanner (every call; declaration removed)") ~= nil },
+    { "Spring warning", warn ~= nil },
+  }, clean({ GCFG }, E.now() - r.ms))
+end)
+
+-- inline_value_constant: a constant used as the @Value key in GreetingController (planted), inlined from its
+-- declaration: `@Value("${demo.greeting.text:Hello}")` again, constant gone, no Spring warning, build clean.
+case("inline_value_constant", function()
+  if not has("inline") then return lsp.report(P .. "inline_value_constant", false, pending_reason("inline")) end
+  plant(GCTRL, { { '    @Value("${demo.greeting.text:Hello}")', '    static final String TEXT_KEY = "${demo.greeting.text:Hello}";\n\n    @Value(TEXT_KEY)' } })
+  local gc = open_fresh({ GCTRL })
+  local r = inline_at(gc, "static final String TEXT_KEY", "TEXT_KEY")
+  local t = E.text(gc)
+  report_apply("inline_value_constant", "nv4j.refactor.inline()", r.ret == true, r.ms, {
+    { "@Value literal back", t:find('@Value("${demo.greeting.text:Hello}")', 1, true) ~= nil },
+    { "constant gone", not t:find("TEXT_KEY", 1, true) },
+    { "no warning", find_msg(r.got, "Inlined constant TEXT_KEY (every reference; declaration removed)", vim.log.levels.INFO) ~= nil },
+  }, clean({ GCTRL }, E.now() - r.ms))
+end)
+
+-- inline_errors: a syntax error in Checkout (unsaved), then the constant inlined everywhere from Invoice's
+-- declaration: either jdt.ls also inlines Checkout's reference, or the summary names Checkout's line
+-- (jdt.ls's own references); Checkout keeps its syntax error. _twin (deterministic): Checkout's edit
+-- dropped from jdt.ls's answer (stub): the warning names Checkout.java's reference line.
+case("inline_errors", function()
+  if not has("inline") then return lsp.report(P .. "inline_errors", false, pending_reason("inline")) end
+  local inv, chk = plant_constant()
+  local bl = E.line_of(chk, "^public class Checkout")
+  vim.api.nvim_buf_set_lines(chk, bl + 1, bl + 1, false, { "    int broken = ;" })
+  local tset = E.now()
+  vim.wait(CLEAN_MS, function()
+    return (published_at[vim.uri_from_fname(CHECKOUT)] or 0) >= tset and E.count(vim.diagnostic.get(chk), vim.diagnostic.severity.ERROR) > 0
+  end, 20)
+  local ref_line = E.line_of(chk, "return Invoice%.MAX_QUANTITY") + 1
+  local r = inline_at(inv, "public static final int MAX_QUANTITY", "MAX_QUANTITY")
+  local ct = E.text(chk)
+  local updated = ct:find("return 99 - 1;", 1, true) ~= nil
+  local named = find_msg(r.got, "src/main/java/demo/shop/Checkout.java:" .. ref_line, vim.log.levels.WARN) ~= nil
+  lsp.report(P .. "inline_errors", r.ms <= APPLY_MS and (r.ret == true and (updated or named) or r.ret == false) and ct:find("int broken = ;", 1, true) ~= nil,
+    ("returned %s after %.0f ms; Checkout's reference %s by jdt.ls; warning %s; Checkout's syntax error kept; messages: %s"):format(tostring(r.ret), r.ms,
+      updated and "inlined" or "NOT inlined", named and ("names Checkout.java:" .. ref_line) or "does not name Checkout",
+      table.concat(vim.tbl_map(function(m) return m.msg end, r.got), " || ")))
+end)
+case("inline_errors_twin", function()
+  if not has("inline") then return lsp.report(P .. "inline_errors_twin", false, pending_reason("inline")) end
+  local inv, chk = plant_constant()
+  local ref_line = E.line_of(chk, "return Invoice%.MAX_QUANTITY") + 1
+  local real = client.request_sync
+  client.request_sync = function(self, m, params, t, b)
+    local res, err = real(self, m, params, t, b)
+    if m == "codeAction/resolve" and res and res.result and res.result.edit and res.result.edit.documentChanges then
+      res.result.edit.documentChanges = vim.tbl_filter(function(ch)
+        return not (ch.textDocument and ch.textDocument.uri:find("/demo/shop/Checkout.java", 1, true))
+      end, res.result.edit.documentChanges)
+    end
+    return res, err
+  end
+  local ok, r = pcall(inline_at, inv, "public static final int MAX_QUANTITY", "MAX_QUANTITY")
+  client.request_sync = real
+  if not ok then error(r) end
+  local warn = find_msg(r.got, "NOT inlined by jdt.ls", vim.log.levels.WARN) or ""
+  lsp.report(P .. "inline_errors_twin", r.ret == true and warn:find("src/main/java/demo/shop/Checkout.java:" .. ref_line, 1, true) ~= nil
+    and warn:find("whose declaration is gone", 1, true) ~= nil and E.text(chk):find("Invoice.MAX_QUANTITY", 1, true) ~= nil,
+    ("returned %s after %.0f ms; warning: %s"):format(tostring(r.ret), r.ms, warn ~= "" and warn or "NONE"))
+end)
 -- change_signature
 case("change_signature", function()
   local calc = lsp.open(CALC)

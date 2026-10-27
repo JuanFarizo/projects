@@ -1,6 +1,7 @@
 -- Refactors (decision D23, specs/features/refactors.md, check 62_refactor). P3 Task 4a: rename class and
--- rename package; Task 4b: move a class to another package. Inline, change signature and safe delete
--- come in later sub-tasks.
+-- rename package; Task 4b: move a class to another package; Task 4c: inline a method call, local variable
+-- or constant (jdt.ls's inline code actions, see M.inline). Change signature and safe delete come in
+-- later sub-tasks.
 --
 -- move: the class's file moved to the target package's folder through the same path as a package rename
 -- (rename_paths): `workspace/willRenameFiles` for the file move (jdt.ls's computeMoveEdit runs the same
@@ -947,6 +948,246 @@ function M.move(opts)
       run(choice)
     end
   end)
+end
+
+-- ── inline a method call, local variable or constant (Task 4c) ──────────────────────────────────
+--
+-- jdt.ls's own code actions (RefactorProcessor.getInlineProposal, kind `refactor.inline`): "Inline
+-- Method", "Inline local variable", "Inline Constant". "Make Static" has the same kind (filtered out by
+-- title). The edit comes from `codeAction/resolve`; it is applied through apply() like a rename (touched
+-- buffers written unless they had unsaved changes, summary, 3 s follow-up). What gets inlined is
+-- jdt.ls's choice by cursor position (measured, trial t4c-a): on a call or a constant reference, that
+-- occurrence only (the declaration stays); on the method/constant declaration, every occurrence and the
+-- declaration removed; a local variable, every use and its declaration (from the declaration or a use).
+-- opts.all = true on a call/reference asks jdt.ls at the declaration instead (textDocument/definition):
+-- all occurrences, declaration removed. jdt.ls offers one inline action per position; if it ever offers
+-- several (e.g. "Inline all"/"Inline this"), opts.all picks by title, else the user picks.
+
+--- "method" / "variable" / "constant" for an inline action's title ("Inline Method", "Inline local
+--- variable", "Inline Constant"; any "Inline ..." naming one of them), else nil ("Make Static").
+local function inline_kind(title)
+  local t = (title or ""):lower()
+  if not t:match("^inline%f[^%a]") then return nil end
+  if t:find("local variable", 1, true) or t:find("variable", 1, true) then return "variable" end
+  if t:find("method", 1, true) then return "method" end
+  if t:find("constant", 1, true) then return "constant" end
+end
+M.inline_ms = REQUEST_MS -- per jdt.ls request (code actions, definition, resolve)
+
+local function cursor_diags(buf, l)
+  return vim.lsp.diagnostic.from(vim.tbl_filter(function(d) return d.lnum <= l and d.end_lnum >= l end, vim.diagnostic.get(buf)))
+end
+
+--- Inline actions jdt.ls offers at (uri, l, c): list, or nil, reason.
+local function inline_actions(client, buf, uri, l, c)
+  local res, rerr = client:request_sync("textDocument/codeAction", {
+    textDocument = { uri = uri },
+    range = { start = { line = l, character = c }, ["end"] = { line = l, character = c } },
+    context = { diagnostics = uri == vim.uri_from_bufnr(buf) and cursor_diags(buf, l) or {}, only = { "refactor.inline" }, triggerKind = 1 },
+  }, M.inline_ms, buf)
+  if not res then return nil, ("jdt.ls did not answer the code action request in %d ms (%s)"):format(M.inline_ms, tostring(rerr)) end
+  if res.err then return nil, ("jdt.ls refused the code action request (%s)"):format(res.err.message or vim.inspect(res.err)) end
+  local out = {}
+  for _, a in ipairs(res.result or {}) do
+    -- jdt.ls ignores `only` for some kinds (extract, move...): kind and title both checked
+    if a.kind == "refactor.inline" and inline_kind(a.title) then out[#out + 1] = a end
+  end
+  return out
+end
+
+--- The edit of an inline action: edit, or false (jdt.ls gave none), or nil, reason (error/timeout).
+local function inline_edit(client, buf, a)
+  local edit = a.edit
+  if not edit then
+    if not a.data then
+      return nil, a.command and ("jdt.ls answered with a command (%s), not an edit"):format(tostring(a.command.command))
+        or "jdt.ls's action has neither an edit nor data to resolve"
+    end
+    local res, rerr = client:request_sync("codeAction/resolve", a, M.inline_ms, buf)
+    if not res then return nil, ("jdt.ls did not resolve %s in %d ms (%s)"):format(a.title, M.inline_ms, tostring(rerr)) end
+    if res.err then return nil, ("jdt.ls refused (%s)"):format(res.err.message or vim.inspect(res.err)) end
+    edit = res.result and res.result.edit
+  end
+  if type(edit) ~= "table" then return false end
+  local n = #(edit.documentChanges or {})
+  for _, e in pairs(edit.changes or {}) do n = n + #e end
+  return n > 0 and edit or false
+end
+
+--- Declaration of the symbol at (l, c): { uri, path, l, c, range }, or nil, reason.
+local function declaration(client, buf, l, c)
+  local res, rerr = client:request_sync("textDocument/definition",
+    { textDocument = { uri = vim.uri_from_bufnr(buf) }, position = { line = l, character = c } }, M.inline_ms, buf)
+  if not res then return nil, ("jdt.ls did not answer the definition request in %d ms (%s)"):format(M.inline_ms, tostring(rerr)) end
+  if res.err then return nil, ("jdt.ls refused the definition request (%s)"):format(res.err.message or vim.inspect(res.err)) end
+  local loc = res.result
+  if type(loc) == "table" and not loc.uri and not loc.targetUri then loc = loc[1] end
+  if type(loc) ~= "table" then return nil, "jdt.ls found no declaration" end
+  local uri, range = loc.uri or loc.targetUri, loc.targetSelectionRange or loc.range
+  return { uri = uri, path = uri:match("^file:") and vim.uri_to_fname(uri) or nil, l = range.start.line, c = range.start.character,
+    range = range }
+end
+
+--- `@Bean` on the method declared at 0-based line `l` of `lines` (annotation lines above it, or the same line).
+local function is_bean(lines, l)
+  local function bean(s) return s:find("@Bean%f[^%w_]") ~= nil end
+  if bean(lines[l + 1] or "") then return true end
+  for i = l, math.max(1, l - 8), -1 do
+    local s = lines[i] or ""
+    if bean(s) then return true end
+    if not (s:match("^%s*@") or s:match("^%s*$") or s:match("^%s*//") or s:match("^%s*%*") or s:match("^%s*/%*")) then return false end
+  end
+  return false
+end
+
+--- A declaration of method/constant `name` is still written in `lines` (after an inline: kept or removed).
+local function still_declared(lines, name, kind)
+  for _, s in ipairs(lines) do
+    local pre = s:match("^(%s*[%w_$<>%[%],.?@%s]-)%f[%w_$]" .. vim.pesc(name) .. "%s*" .. (kind == "method" and "%(" or "="))
+    if pre and pre:match("%S") and not pre:match("%f[%w]return%f[^%w]") and not pre:match("%.%s*$")
+        and (kind == "method" or pre:match("%f[%w]final%f[^%w]")) then
+      return true
+    end
+  end
+  return false
+end
+
+--- Inlines the method call, local variable or constant at the cursor through jdt.ls (see above).
+--- opts.all = true: every occurrence from a call/reference too. opts.on_done(ok) afterwards. Returns ok
+--- (nil while the user picks between several inline actions).
+function M.inline(opts)
+  opts = opts or {}
+  local buf = vim.api.nvim_get_current_buf()
+  local path = vim.api.nvim_buf_get_name(buf)
+  local function done(ok)
+    if opts.on_done then opts.on_done(ok) end
+    return ok
+  end
+  local function refuse(msg, level)
+    M.last = { label = "Inline", files = {}, ok = false, err = msg }
+    notify("Inline: " .. msg, level or vim.log.levels.WARN)
+    return done(false)
+  end
+  local client = jdtls_for(path)
+  if not client or #vim.lsp.get_clients({ bufnr = buf, name = "jdtls" }) == 0 then
+    return refuse("jdt.ls is not attached to this buffer")
+  end
+  local root = root_of(client)
+  local cur = vim.api.nvim_win_get_cursor(0)
+  local l, c = cur[1] - 1, cur[2]
+  local name = vim.fn.expand("<cword>")
+  local ms, t = {}, vim.uv.hrtime()
+  local function lap(k)
+    local n = vim.uv.hrtime()
+    ms[k], t = (ms[k] or 0) + (n - t) / 1e6, n
+  end
+  local acts, aerr = inline_actions(client, buf, vim.uri_from_bufnr(buf), l, c)
+  lap("actions")
+  if not acts then return refuse(aerr .. "; nothing changed", vim.log.levels.ERROR) end
+  if #acts == 0 then
+    return refuse(("nothing to inline at `%s`: jdt.ls inlines a method (at a call or its declaration), a local variable, or a static final constant; not a parameter, a plain field (e.g. an @Value field), a type or a keyword; nothing changed"):format(name))
+  end
+  -- explicit: the action's own title says all/this (several inline actions offered): no retargeting
+  local function run(a, explicit)
+    if not a then return done(false) end -- cancelled
+    local kind = inline_kind(a.title)
+    local mode, decl, derr = "all", nil, nil
+    if kind ~= "variable" then
+      decl, derr = declaration(client, buf, l, c)
+      lap("definition")
+      local here = decl and decl.uri == vim.uri_from_bufnr(buf) and contains(decl.range, l, c)
+      mode = here and "all" or (decl and "this" or "?")
+      local t = a.title:lower()
+      if explicit and (t:find("%f[%a]all%f[^%a]") or t:find("%f[%a]this%f[^%a]")) then
+        mode = t:find("%f[%a]all%f[^%a]") and "all" or "this"
+      elseif opts.all and not here then
+        if not decl then return refuse(("cannot inline every occurrence of `%s`: %s; nothing changed"):format(name, derr), vim.log.levels.ERROR) end
+        if not decl.path or not (root and under(decl.path, root)) then
+          return refuse(("cannot inline every occurrence of `%s`: its declaration is not in this project (%s); jdt.ls inlines all occurrences only from a declaration it can edit; nothing changed"):format(
+            name, decl.path or decl.uri))
+        end
+        local at, err2 = inline_actions(client, buf, decl.uri, decl.l, decl.c)
+        lap("actions")
+        if not at then return refuse(err2 .. "; nothing changed", vim.log.levels.ERROR) end
+        local same = vim.iter(at):find(function(x) return inline_kind(x.title) == kind end)
+        if not same then
+          return refuse(("jdt.ls offers no %s at the declaration of `%s` (%s); nothing changed"):format(a.title, name, rel(decl.path, root)))
+        end
+        a, mode = same, "all"
+      end
+    end
+    local edit, eerr = inline_edit(client, buf, a)
+    lap("resolve")
+    if edit == nil then return refuse(("%s at `%s`: %s; nothing changed"):format(a.title, name, eerr), vim.log.levels.ERROR) end
+    if edit == false then
+      return refuse(("jdt.ls offered %s at `%s` but gave no edit: it does that when this inline is not possible (a recursive method, a body using members not visible at the call, a syntax error in the file); nothing changed"):format(
+        a.title, name))
+    end
+    -- every occurrence: jdt.ls's own references, to name any it did not inline (a file it skipped)
+    local refs = {}
+    if mode == "all" and decl and kind ~= "variable" then
+      local res = client:request_sync("textDocument/references", { textDocument = { uri = decl.uri },
+        position = { line = decl.l, character = decl.c }, context = { includeDeclaration = false } }, M.inline_ms, buf)
+      for _, r in ipairs(res and type(res.result) == "table" and res.result or {}) do
+        if r.uri and r.uri:match("^file:") then refs[#refs + 1] = { path = vim.uri_to_fname(r.uri), l = r.range.start.line } end
+      end
+      lap("references")
+    end
+    -- Spring: a @Bean method is called through the @Configuration proxy (the container's bean, created once)
+    local decl_lines = decl and decl.path and lines_of(decl.path)
+    local bean = kind == "method" and decl_lines and is_bean(decl_lines, decl.l)
+    local before = M.error_counts()
+    local ok, files, why = apply(client, edit, dirty_buffers())
+    lap("apply")
+    local what = kind == "variable" and "local variable" or kind
+    local label = ("Inlined %s %s"):format(what, name)
+    if not ok then
+      failed_part_way(label, why, files, root)
+      return done(false)
+    end
+    local removed
+    if kind == "variable" then
+      label = label .. " (every use; declaration removed)"
+    elseif mode == "all" then
+      removed = not (decl and decl.path and still_declared(lines_of(decl.path), name, kind))
+      label = label .. (" (every %s; declaration %s)"):format(kind == "method" and "call" or "reference", removed and "removed" or "kept")
+    elseif mode == "this" then
+      label = label .. (" (this %s only; declaration kept)"):format(kind == "method" and "call" or "reference")
+    end
+    local warn = {}
+    local touched = {}
+    for _, f in ipairs(files) do touched[f.path] = true end
+    local left = {}
+    for _, r in ipairs(refs) do
+      if not touched[r.path] then left[#left + 1] = ("%s:%d"):format(rel(r.path, root), r.l + 1) end
+    end
+    if #left > 0 then
+      warn[#warn + 1] = ("NOT inlined by jdt.ls (it skips a file it cannot parse), still naming `%s`%s: %s"):format(name,
+        removed and ", whose declaration is gone" or "", table.concat(left, ", "))
+    end
+    if bean then
+      if mode == "all" and removed then
+        warn[#warn + 1] = ("Spring: %s was a @Bean method and its declaration is gone: the bean `%s` is no longer defined; whatever injects it (by type or by name) fails at startup"):format(name, name)
+      else
+        warn[#warn + 1] = ("Spring: %s is a @Bean method: the inlined call returned the container's bean (one shared instance through the @Configuration proxy); the inlined code builds a new one each time"):format(name)
+      end
+    end
+    M.last = { label = label, files = files, ok = true, kind = kind, mode = mode, title = a.title, removed = removed, bean = bean,
+      left = left, ms = ms, warn = warn }
+    notify(summary(label, files, root) .. (#warn > 0 and (". WARNING: " .. table.concat(warn, "; ")) or ""),
+      #warn > 0 and vim.log.levels.WARN or nil)
+    follow_up(label, before, vim.tbl_map(function(f) return f.path end, files))
+    return done(true)
+  end
+  if #acts == 1 then return run(acts[1]) end
+  -- several inline actions at one place (not seen with jdt.ls 1.62): opts.all picks by title, else the user
+  if opts.all ~= nil then
+    local want = opts.all and "all" or "this"
+    local pick = vim.iter(acts):find(function(x) return x.title:lower():find("%f[%a]" .. want .. "%f[^%a]") ~= nil end)
+    if pick then return run(pick, true) end
+  end
+  vim.ui.select(acts, { prompt = ("Inline `%s`:"):format(name), format_item = function(x) return x.title end },
+    function(x) run(x, true) end)
 end
 
 -- ── neo-tree (plugins/neo-tree.lua) ──────────────────────────────────────────────────────────────

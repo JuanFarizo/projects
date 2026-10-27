@@ -1,6 +1,6 @@
 # Feature: Refactors (rename with file move, move, rename package, inline, change signature, safe delete)
 
-Priority: P3. Status: Task 0 done (research, fixture, failing check `62_refactor`). Task 4 is split in 4a rename class and rename package (**built**, see "Task 4a"), 4b move a class to another package (**built**, see "Task 4b"), 4c inline, 4d change signature, 4e safe delete (not built: their cases FAIL "pending" and still show today's path). Decision: D23 in `specs/001-architecture.md`. Spec: `specs/005-p3-tests-scaffold-refactor.md`. Check: `tests/checks/62_refactor.lua`. Product (Task 4): `nvim/lua/nv4j/refactor.lua`, keys in `nvim/lua/config/keymaps.lua`.
+Priority: P3. Status: Task 0 done (research, fixture, failing check `62_refactor`). Task 4 is split in 4a rename class and rename package (**built**, see "Task 4a"), 4b move a class to another package (**built**, see "Task 4b"), 4c inline (**built**, see "Task 4c"), 4d change signature, 4e safe delete (not built: their cases FAIL "pending" and still show today's path). Decision: D23 in `specs/001-architecture.md`. Spec: `specs/005-p3-tests-scaffold-refactor.md`. Check: `tests/checks/62_refactor.lua`. Product (Task 4): `nvim/lua/nv4j/refactor.lua`, keys in `nvim/lua/config/keymaps.lua`.
 
 ## Budget
 
@@ -197,6 +197,57 @@ Open items (4b):
 - Default package: moving out of it is allowed (jdt.ls adds the `package` line; not checked); moving into it is not offered (an empty name cancels).
 - Gradle, multi-module, files outside the root: not checked (the summary marks files outside the root).
 
+## Task 4c: inline a method call, local variable or constant (built)
+
+Product: `require("nv4j.refactor").inline({ all? })` in `nvim/lua/nv4j/refactor.lua`, key `<leader>ji` ("Refactor: inline method / variable / constant") in `nvim/lua/config/keymaps.lua`.
+
+- **Mechanism (as D23 decided):** `textDocument/codeAction` at the cursor (`only = { "refactor.inline" }`), then `codeAction/resolve` for the edit (jdt.ls returns the inline actions with `data`, no edit, trial t4c-a). jdt.ls ignores `only` for some kinds (extract, move, introduce parameter come back too) and also files "Make Static" under kind `refactor.inline` (first at a method declaration), so the action is picked by kind AND title: "Inline Method", "Inline local variable", "Inline Constant" (any title starting with "Inline" and naming a method, variable or constant). The edit goes through 4a's `apply` (touched buffers written unless they had unsaved changes, those edited in place and left unsaved), one summary notification, the 3 s/8 s follow-up and `M.last`; nothing of the rename/move code is duplicated.
+- **All or this occurrence (jdt.ls's choice, measured in t4c-a, the engine is JDT's `InlineMethodRefactoring`/`InlineConstantRefactoring`/`InlineTempRefactoring`):** on a method call or a constant reference, that occurrence only, declaration kept ("Inlined method gross (this call only; declaration kept)"); on the method's or constant's declaration, every occurrence in every file and the declaration removed ("(every call; declaration removed)"); a local variable, every use and its declaration, from the declaration or a use. jdt.ls offers exactly one inline action per position (never both "Inline all"/"Inline this"). `opts.all = true` on a call/reference asks jdt.ls at the declaration (`textDocument/definition`, then the same kind of inline action there): IntelliJ's "inline all and remove". Not available (jdt.ls has no mode for them): inline only this occurrence of a local variable, inline all but keep the declaration. Whether the declaration is really gone is read from the text afterwards and said in the summary. If jdt.ls ever offers several inline actions at one place, `opts.all` picks the one titled "all"/"this", else `vim.ui.select` asks (stubbed twin `inline_two_actions`).
+- **Refusals (nothing changed, reason shown):** no inline action at the cursor ("nothing to inline at `text`": a parameter, a plain field such as an `@Value` field, a type, a keyword); jdt.ls offers the action but `codeAction/resolve` gives no edit (it does this for a recursive method, a body that uses members not visible at the call site, e.g. inlining `total` into Checkout where `total` calls private `gross`, and a syntax error in the file: trial t4c-b); resolve error or timeout (3 s per request, ERROR with jdt.ls's message); `opts.all` when the declaration is not a file of the project (a JDK method: `jdt://` uri, "its declaration is not in this project").
+- **Occurrences jdt.ls did not inline:** for an "all" inline, `textDocument/references` at the declaration (jdt.ls's own search) is taken before the edit; any reference in a file the edit does not touch is named in a WARNING ("NOT inlined by jdt.ls ..., still naming `MAX_QUANTITY`, whose declaration is gone: src/main/java/demo/shop/Checkout.java:16"). Measured: with an unsaved syntax error in Checkout jdt.ls still inlined Checkout's reference (`inline_errors`); the twin drops Checkout's edit (stub) and asserts the warning.
+- **Spring:** a `@Bean` method (annotation found above its declaration, also in another file) gets a WARNING: inlined at a call, "the inlined call returned the container's bean (one shared instance through the @Configuration proxy); the inlined code builds a new one each time"; inlined from its declaration (declaration removed), "the bean `devBanner` is no longer defined; whatever injects it fails at startup". A constant used as an `@Value` key inlines like any constant (`@Value("${demo.greeting.text:Hello}")` again, build clean). An `@Value` field is not a constant: no action, refused.
+- **Unsaved buffers, undo, files outside the root:** as in 4a: a touched buffer with unsaved changes is edited in place and left unsaved (named in the summary), others are written; one `u` per buffer gives its text back (checked for 1 and 2 files); files outside the jdt.ls root are marked by the shared summary (no fixture case: an inline edit only touches files that reference the symbol, all in the project).
+
+Measured (applied, budget 2 s), logs below:
+
+| Case | Applied | Notes |
+|------|---------|-------|
+| `inline_method` (call of `gross`, this call) | 742 to 1296 ms | the first inline code action of the jdt.ls session (about 0.8 s of it in `textDocument/codeAction`, t4c-a); build clean, written, one `u` |
+| `inline_variable` (local `gross`) | 143 to 240 ms | every use, declaration removed |
+| `inline_method_all` (opts.all on the call) / `inline_method_declaration` | 228 to 287 ms / 176 to 217 ms | definition + actions at the declaration + references; "Make Static" not taken |
+| `inline_constant` (`<leader>ji`, this reference) / `inline_constant_all` (2 files) | 96 to 100 ms / 185 to 263 ms | `_all_undo`: one `u` per buffer (2 files) |
+| `inline_unsaved` | 151 to 170 ms | both buffers edited in place, left unsaved, user edits kept |
+| `inline_bean_call` / `inline_bean_declaration` | 46 to 52 ms / 164 to 229 ms | Spring warning each |
+| `inline_value_constant` | 108 to 121 ms | `@Value` literal back, build clean |
+| `inline_errors` / `_twin` | 137 to 307 ms / 112 to 180 ms | jdt.ls inlined Checkout despite its syntax error (3 of 3); twin warns with Checkout.java:16 |
+| `inline_refused`, `inline_recursive`, `inline_resolve_error`, `inline_two_actions` | refused in 6 to 96 ms | nothing changed, reason shown |
+
+Runs: `99_inline_only` `/tmp/nv4j/logs/test-20261027-140115.log` (25 PASS, the 2 pending lines), then `62_refactor` with the final code twice: `DONE 62_refactor 66 5` in `-140830.log` and `-141009.log` (the 5 FAILs: `pending_change_signature`, `pending_safe_delete`, `change_signature`, `safe_delete_blocked`, `safe_delete_free`). Regression `6[01]_*`: `DONE 60_tests_runner 20 0`, `DONE 61_scaffold 27 0` (`-141348.log`).
+
+Negative controls (product patched for one run, reverted; scratch patcher with exact-text patches, as in 4a/4b). Run on a temporary copy of `62_refactor` holding only its header and the inline cases (`99_inline_only`, same code, deleted afterwards) to keep each run short; the required control n62W was also run on `62_refactor` itself:
+
+| # | Patch | Fails | Log |
+|---|-------|-------|-----|
+| n62W | the edit dropped (nothing applied) | `inline_method`, `inline_variable` (required control: both), every applied inline case and its `_undo`, `inline_constant`, `inline_constant_all`, `inline_unsaved`, `inline_two_actions`, `inline_bean_*`, `inline_value_constant`, `inline_errors_twin` | `/tmp/nv4j/logs/test-20261027-140242.log`; on `62_refactor`: `-141143.log` (`DONE 62_refactor 50 21`: the 16 inline lines above plus the 5 pending ones; every rename/move case still PASS) |
+| n62X | no title filter (any `refactor.inline` action) | `inline_method_declaration` and `inline_bean_declaration` ("Make Static" taken first) | `-140333.log` |
+| n62Y | `opts.all` ignored | `inline_method_all`, `inline_constant_all`, `inline_unsaved`, `inline_refused` (all on Math.max) | `-140406.log` |
+| n62Z | no Spring `@Bean` warning | `inline_bean_call`, `inline_bean_declaration` | `-140433.log` |
+| n62AA | refusals not notified | `inline_refused`, `inline_recursive`, `inline_resolve_error` | `-140458.log` |
+| n62AB | buffers with unsaved edits reloaded from disk before the edit | `inline_unsaved` (user edits lost), `inline_errors` | `-140525.log` |
+| n62AC | an extra undo step after the edit | every `inline_*_undo`, `inline_constant_all_undo` (and "written to disk": the extra step leaves the buffers modified) | `-140550.log` |
+| n62AD | jdt.ls's references not compared after an "all" inline | `inline_errors_twin` | `-140617.log` |
+| n62AE | several inline actions: the first one taken, no prompt | `inline_two_actions` | `-140645.log` |
+| n62AF | `<leader>ji` with a wrong description and a callback doing nothing | `keys`, `inline_constant` | `-140711.log` |
+| n62AH | declaration outside the project not refused | `inline_refused` (a Lua error on the `jdt://` declaration instead of the message) | `-140741.log` |
+
+Open items (4c):
+- No "this occurrence only" for a local variable and no "all, keep the declaration" for a method/constant: jdt.ls's refactorings are created with fixed modes (`RefactorProcessor.getInlineProposal`); IntelliJ offers both.
+- The refusal "gave no edit" cannot say which reason applies: jdt.ls turns a failed condition check into an empty change (`NullChange`) and drops the status message.
+- jdt.ls inlines library methods it has source for (`Math.max` -> `(a >= 1) ? a : 1`, trial t4c-b); only our file is edited, but it is rarely wanted. Not refused.
+- `<leader>ji` follows jdt.ls's choice without asking (IntelliJ asks "all or this" on a call with several calls); "all" from a call is `inline({ all = true })`, no key.
+- The `@Bean` check reads the annotation lines above the declaration (text); a meta-annotation that implies `@Bean` is not seen. Inlining into a non-`@Configuration` (lite mode) class has no proxy, the warning says it anyway.
+- Not checked: a method inlined across files with a body that needs imports (jdt.ls adds them in its edit), Gradle, files outside the root.
+
 ## Trial log
 
 | # | Change | Effect | Kept |
@@ -223,3 +274,5 @@ Open items (4b):
 | t4b-c | `move_class_errors` written like `rename_class_errors` (expecting Checkout's import left) | jdt.ls updated Checkout's import despite the syntax error (`-155335.log`) | the case accepts either honest result; a stubbed twin drops Checkout's edit and asserts the warning |
 | t4b-e | fix round 1: class at the cursor from the text before asking jdt.ls | `move_class` and the other one-type files: 0 documentSymbol requests; Order.java (3 types): 2 requests for 2 moves; a stubbed timeout refuses (`move_symbols_timeout`) | kept |
 | t4b-d | n62G: no `didChangeWatchedFiles` for the created folder | still moved (2 tries): Neovim's watcher tells jdt.ls on macOS | notify kept (cheap; Neovim's watcher is off on some systems), n62V is the control |
+| t4c-a | probe of jdt.ls's inline actions at the fixture's call, local, declaration, a planted constant, a recursive method (`/tmp/nv4j/logs/test-20261027-135253.log`, output `/tmp/nv4j/logs/probe-inline.out`) | actions come with `data`, edit via `codeAction/resolve` (5 to 86 ms; first code action of the session 821 ms); `only` not honoured (extract/move/introduce parameter too); "Make Static" is kind `refactor.inline`; call: that call, declaration: all + removed, constant reference: that one, constant declaration: all + removed, local: all; recursive: resolve gives no edit | pick by kind and title, resolve, jdt.ls's modes + `opts.all` via the declaration |
+| t4c-b | Boot and edge cases (`-135403.log`) | `@Bean` call and declaration inline fine (declaration removes the bean); `@Value` field: no inline action; call of `total` from Checkout (body uses private `gross`) and any call in a file with a syntax error: resolve gives no edit; `Math.max` inlined from the JDK source | refusal message for "no edit", Spring warning, no special case for library methods |

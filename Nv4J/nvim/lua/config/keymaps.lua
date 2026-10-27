@@ -325,8 +325,10 @@ end, { desc = "Test for this class (open or create)" })
 -- imports updated, touched files written and listed). <leader>jp: rename the current file's package
 -- (package/import lines, folders in src/main and src/test moved, buffers re-pointed). <leader>cr stays
 -- LazyVim's Rename (any symbol). <leader>jm: move the class at the cursor to another package (picked
--- from the project's packages or typed; the folder is created when missing). Inline, change signature,
--- safe delete: not built yet.
+-- from the project's packages or typed; the folder is created when missing). <leader>ji: inline the
+-- method call, local variable or constant at the cursor (jdt.ls's choice: a call/reference inlines that
+-- occurrence, the declaration inlines every one and removes it; a local variable every use). Change
+-- signature, safe delete: not built yet.
 map("n", "<leader>jr", function()
   require("nv4j.refactor").rename()
 end, { desc = "Refactor: rename class (package on a package line)" })
@@ -336,6 +338,9 @@ end, { desc = "Refactor: rename package" })
 map("n", "<leader>jm", function()
   require("nv4j.refactor").move()
 end, { desc = "Refactor: move class to another package" })
+map("n", "<leader>ji", function()
+  require("nv4j.refactor").inline()
+end, { desc = "Refactor: inline method / variable / constant" })
 pcall(function()
   require("which-key").add({ { "<leader>j", group = "java" } })
 end)
