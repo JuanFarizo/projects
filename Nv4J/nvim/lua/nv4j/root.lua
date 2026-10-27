@@ -13,25 +13,66 @@ M.build_markers = {
   "build.xml",
 }
 
---- Nearest build-marker dir, or the repo's .git root when that root has a build marker itself
---- (multi-module Maven: prefer the repo root over a submodule's own pom.xml). A loose file (no
---- marker above it) gets its own dir, never an unrelated enclosing git repo: that would break
---- jdt.ls's invisible-project support. Second value: false for that loose-file fallback.
----@return string root, boolean has_marker
+--- Project marker file (D25): the nearest directory above a file holding a `.nv4j` file is the
+--- project root, before any build marker. Empty is enough (no format yet).
+M.project_marker = ".nv4j"
+
+--- Project root of `path`, first rule that applies:
+---  1. the nearest dir with a `.nv4j` file (D25), so every directory below it shares one jdt.ls;
+---  2. the nearest build-marker dir, or the repo's .git root when that root has a build marker itself
+---     (multi-module Maven: prefer the repo root over a submodule's own pom.xml);
+---  3. a loose file (nothing above it) gets its own dir, never an unrelated enclosing git repo: that
+---     would break jdt.ls's invisible-project support.
+--- Second value has_marker: whether the root holds a build file (rule 2; rule 1 only when the `.nv4j`
+--- dir has a build marker of its own), i.e. whether build-tool features (Spring Boot, mvn/gradle run)
+--- apply. Third value: "nv4j", "build" or "loose".
+---@return string root, boolean has_marker, "nv4j"|"build"|"loose" kind
 function M.project(path)
+  local nv4j_root = vim.fs.root(path, { M.project_marker })
+  if nv4j_root then
+    for _, marker in ipairs(M.build_markers) do
+      if vim.uv.fs_stat(nv4j_root .. "/" .. marker) then return nv4j_root, true, "nv4j" end
+    end
+    return nv4j_root, false, "nv4j"
+  end
   local marker_root = vim.fs.root(path, M.build_markers)
   if not marker_root then
-    return vim.fs.dirname(path), false
+    return vim.fs.dirname(path), false, "loose"
   end
   local git_root = vim.fs.root(path, { ".git" })
   if git_root then
     for _, marker in ipairs(M.build_markers) do
       if vim.uv.fs_stat(git_root .. "/" .. marker) then
-        return git_root, true
+        return git_root, true, "build"
       end
     end
   end
-  return marker_root, true
+  return marker_root, true, "build"
+end
+
+local warned_loose = {}
+--- D25 visibility: once per root, a WARN when a jdt.ls is about to start for a loose-file root (no
+--- build marker, no `.nv4j`) while a jdt.ls for another loose-file root is running. Never blocks the
+--- start. Called by plugins/java.lua's opts.jdtls (each Java buffer attach); `clients` defaults to the
+--- live jdtls clients (tests pass stubs). Returns the message when it warned.
+function M.warn_loose(root, clients)
+  if not root or warned_loose[root] then return nil end
+  clients = clients or vim.lsp.get_clients({ name = "jdtls" })
+  local other
+  for _, c in ipairs(clients) do
+    local r = c.config and c.config.root_dir
+    if r == root then return nil end -- attaching to a running client, nothing starts
+    if r and not other and select(3, M.project(r .. "/x.java")) == "loose" then other = r end
+  end
+  if not other or select(3, M.project(root .. "/x.java")) ~= "loose" then return nil end
+  warned_loose[root] = true
+  local parent = root
+  while parent ~= "/" and other:sub(1, #parent + 1) ~= parent .. "/" do parent = vim.fs.dirname(parent) end
+  local msg = ("Starting a second jdt.ls (about 1 GB or more) for loose Java files in %s while one runs for %s. "
+    .. "To use one jdt.ls for both, create an empty .nv4j file in their common parent (%s) and restart Neovim.")
+    :format(root, other, parent)
+  vim.notify(msg, vim.log.levels.WARN, { title = "Nv4J" })
+  return msg
 end
 
 local function read(path)

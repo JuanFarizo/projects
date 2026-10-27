@@ -9,8 +9,9 @@ return {
       -- Multi-module Maven: prefer the repo's .git root over a submodule's
       -- own pom.xml, but only when that repo actually has a build marker —
       -- otherwise a loose file in an unrelated git repo (e.g. a notes repo)
-      -- would wrongly get that whole repo as its root again. Shared with the
-      -- Spring Boot LS (nv4j/root.lua).
+      -- would wrongly get that whole repo as its root again. A `.nv4j` file
+      -- above the file wins over all of that (D25: one jdt.ls per project,
+      -- not per loose-file directory). Shared with the Spring Boot LS (nv4j/root.lua).
       opts.root_dir = function(path)
         return (require("nv4j.root").project(path))
       end
@@ -121,6 +122,8 @@ return {
       -- LazyVim calls this with the config it built (root_dir known) and uses the return value.
       opts.jdtls = function(config)
         config = vim.tbl_deep_extend("force", config, static_jdtls)
+        -- D25: a second loose-file jdt.ls is about to start (no build file, no .nv4j): warn once, start anyway.
+        require("nv4j.root").warn_loose(config.root_dir)
         -- On Started/ServiceReady, one throw-away completion takes jdt.ls's one-time index cost off
         -- the user's first completion (nv4j/warmup.lua). nvim-jdtls wraps this handler and calls it
         -- without ctx, so the root_dir tells warmup which client (project) sent the status.

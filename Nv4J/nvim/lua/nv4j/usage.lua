@@ -29,9 +29,10 @@ end
 -- A project root has one of these. A loose .java file gets its own folder as root (plugins/java.lua),
 -- which can be $HOME or Downloads: counting there would make rg read everything below it.
 M.MARKERS = { "pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts",
-  "mvnw", "gradlew", "build.xml", ".git" }
+  "mvnw", "gradlew", "build.xml", ".git", ".nv4j" }
 
---- true when `root` holds a build marker (or .git), i.e. it is a project worth counting.
+--- true when `root` holds a build marker (or .git, or a `.nv4j` project marker, D25), i.e. it is a
+--- project worth counting.
 function M.is_project(root)
   for _, m in ipairs(M.MARKERS) do
     if vim.uv.fs_stat(root .. "/" .. m) then return true end
