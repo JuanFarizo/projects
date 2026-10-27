@@ -327,8 +327,10 @@ end, { desc = "Test for this class (open or create)" })
 -- LazyVim's Rename (any symbol). <leader>jm: move the class at the cursor to another package (picked
 -- from the project's packages or typed; the folder is created when missing). <leader>ji: inline the
 -- method call, local variable or constant at the cursor (jdt.ls's choice: a call/reference inlines that
--- occurrence, the declaration inlines every one and removes it; a local variable every use). Change
--- signature, safe delete: not built yet.
+-- occurrence, the declaration inlines every one and removes it; a local variable every use).
+-- <leader>js: change the signature of the method at the cursor (on its declaration or a call): the
+-- signature is asked as text, e.g. `public int total(Invoice invoice, int discount = 0)` (a new
+-- parameter's default is what the call sites pass). Safe delete: not built yet.
 map("n", "<leader>jr", function()
   require("nv4j.refactor").rename()
 end, { desc = "Refactor: rename class (package on a package line)" })
@@ -341,6 +343,9 @@ end, { desc = "Refactor: move class to another package" })
 map("n", "<leader>ji", function()
   require("nv4j.refactor").inline()
 end, { desc = "Refactor: inline method / variable / constant" })
+map("n", "<leader>js", function()
+  require("nv4j.refactor").change_signature()
+end, { desc = "Refactor: change method signature" })
 pcall(function()
   require("which-key").add({ { "<leader>j", group = "java" } })
 end)

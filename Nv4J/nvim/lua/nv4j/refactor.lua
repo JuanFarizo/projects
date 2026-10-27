@@ -1,7 +1,8 @@
 -- Refactors (decision D23, specs/features/refactors.md, check 62_refactor). P3 Task 4a: rename class and
 -- rename package; Task 4b: move a class to another package; Task 4c: inline a method call, local variable
--- or constant (jdt.ls's inline code actions, see M.inline). Change signature and safe delete come in
--- later sub-tasks.
+-- or constant (jdt.ls's inline code actions, see M.inline); Task 4d: change a method's signature with
+-- arguments (java/getChangeSignatureInfo + java/getRefactorEdit, see M.change_signature). Safe delete
+-- comes in a later sub-task.
 --
 -- move: the class's file moved to the target package's folder through the same path as a package rename
 -- (rename_paths): `workspace/willRenameFiles` for the file move (jdt.ls's computeMoveEdit runs the same
@@ -1028,16 +1029,45 @@ local function declaration(client, buf, l, c)
     range = range }
 end
 
---- `@Bean` on the method declared at 0-based line `l` of `lines` (annotation lines above it, or the same line).
-local function is_bean(lines, l)
-  local function bean(s) return s:find("@Bean%f[^%w_]") ~= nil end
-  if bean(lines[l + 1] or "") then return true end
+--- The first annotation matching Lua pattern `pat` (e.g. "@Bean%f[^%w_]") on the method declared at 0-based
+--- line `l` of `lines` (annotation lines above it, or the same line); nil when there is none.
+local function annotated(lines, l, pat)
+  local hit = (lines[l + 1] or ""):match(pat)
+  if hit then return hit end
   for i = l, math.max(1, l - 8), -1 do
     local s = lines[i] or ""
-    if bean(s) then return true end
-    if not (s:match("^%s*@") or s:match("^%s*$") or s:match("^%s*//") or s:match("^%s*%*") or s:match("^%s*/%*")) then return false end
+    hit = s:match(pat)
+    if hit then return hit end
+    if not (s:match("^%s*@") or s:match("^%s*$") or s:match("^%s*//") or s:match("^%s*%*") or s:match("^%s*/%*")) then return nil end
   end
-  return false
+end
+
+--- `@Bean` on the method declared at 0-based line `l` of `lines`.
+local function is_bean(lines, l)
+  return annotated(lines, l, "@Bean%f[^%w_]") ~= nil
+end
+
+--- jdt.ls's references to the symbol declared at (uri, l, c) in project files: { { path, l } }.
+local function references(client, buf, uri, l, c)
+  local res = client:request_sync("textDocument/references", { textDocument = { uri = uri },
+    position = { line = l, character = c }, context = { includeDeclaration = false } }, M.inline_ms, buf)
+  local refs = {}
+  for _, r in ipairs(res and type(res.result) == "table" and res.result or {}) do
+    if r.uri and r.uri:match("^file:") then refs[#refs + 1] = { path = vim.uri_to_fname(r.uri), l = r.range.start.line } end
+  end
+  return refs
+end
+
+--- "file:line" of the references in files the edit did not touch (`files`: apply()'s list): occurrences
+--- jdt.ls did not update (it skips a file it cannot parse).
+local function untouched_refs(refs, files, root)
+  local touched, left, seen = {}, {}, {}
+  for _, f in ipairs(files) do touched[f.path] = true end
+  for _, r in ipairs(refs) do
+    local at = ("%s:%d"):format(rel(r.path, root), r.l + 1)
+    if not touched[r.path] and not seen[at] then left[#left + 1], seen[at] = at, true end -- one per line
+  end
+  return left
 end
 
 --- A declaration of method/constant `name` is still written in `lines` (after an inline: kept or removed).
@@ -1126,11 +1156,7 @@ function M.inline(opts)
     -- every occurrence: jdt.ls's own references, to name any it did not inline (a file it skipped)
     local refs = {}
     if mode == "all" and decl and kind ~= "variable" then
-      local res = client:request_sync("textDocument/references", { textDocument = { uri = decl.uri },
-        position = { line = decl.l, character = decl.c }, context = { includeDeclaration = false } }, M.inline_ms, buf)
-      for _, r in ipairs(res and type(res.result) == "table" and res.result or {}) do
-        if r.uri and r.uri:match("^file:") then refs[#refs + 1] = { path = vim.uri_to_fname(r.uri), l = r.range.start.line } end
-      end
+      refs = references(client, buf, decl.uri, decl.l, decl.c)
       lap("references")
     end
     -- Spring: a @Bean method is called through the @Configuration proxy (the container's bean, created once)
@@ -1155,12 +1181,7 @@ function M.inline(opts)
       label = label .. (" (this %s only; declaration kept)"):format(kind == "method" and "call" or "reference")
     end
     local warn = {}
-    local touched = {}
-    for _, f in ipairs(files) do touched[f.path] = true end
-    local left = {}
-    for _, r in ipairs(refs) do
-      if not touched[r.path] then left[#left + 1] = ("%s:%d"):format(rel(r.path, root), r.l + 1) end
-    end
+    local left = untouched_refs(refs, files, root)
     if #left > 0 then
       warn[#warn + 1] = ("NOT inlined by jdt.ls (it skips a file it cannot parse), still naming `%s`%s: %s"):format(name,
         removed and ", whose declaration is gone" or "", table.concat(left, ", "))
@@ -1188,6 +1209,632 @@ function M.inline(opts)
   end
   vim.ui.select(acts, { prompt = ("Inline `%s`:"):format(name), format_item = function(x) return x.title end },
     function(x) run(x, true) end)
+end
+
+-- ── change a method's signature (Task 4d) ────────────────────────────────────────────────────────
+--
+-- jdt.ls's own engine (Eclipse's ChangeSignatureProcessor) without nvim-jdtls's float: the method's
+-- signature from `java/getChangeSignatureInfo` (asked at the declaration: jdt.ls answers only on the
+-- declaration header, so on a call the declaration is found first with textDocument/definition), the new
+-- one built here from opts (or from a typed signature), the edit from `java/getRefactorEdit` command
+-- "changeSignature", applied through apply() like every refactor here (touched files written unless they
+-- had unsaved changes, summary, follow-up). Supported (all that jdt.ls's request takes, except two):
+-- parameters added (with the default value the call sites pass), removed, renamed, retyped, reordered;
+-- the method's name, return type and visibility. Not exposed: the exceptions (`throws` is kept as it is)
+-- and the "keep the old signature as a deprecated delegate" switch. Refused before jdt.ls is asked (own
+-- checks, nothing changed): cursor not on a method declaration or call, invalid name/type, missing
+-- default, duplicate parameter name, a removed parameter still used in the body, a new name already used
+-- in the body (local, field: it would clash or shadow), varargs not last, a constructor renamed or given
+-- a return type. jdt.ls's own refusals (an implementation of an interface/superclass method: change it
+-- at the declaration it implements; a method of a library type; an invalid default expression) are shown
+-- with its message. A method that others implement/override: jdt.ls changes all of them (named in the
+-- summary). After the edit the touched open files are revalidated (`java/validateDocument`): jdt.ls
+-- otherwise keeps a dependent file's diagnostics from before the declaration changed.
+
+M.signature_ms = 10000 -- getRefactorEdit: about 0.4 s; a method with implementations takes jdt.ls 3-5 s (hierarchy search)
+
+local PRIMITIVES = { boolean = true, byte = true, char = true, short = true, int = true, long = true, float = true, double = true }
+local VISIBILITY = { public = true, protected = true, private = true, package = true }
+local VIS_RANK = { private = 0, package = 1, protected = 2, public = 3 }
+local OPT_KEYS = { add = true, remove = true, rename = true, retype = true, reorder = true, name = true, returns = true,
+  visibility = true, signature = true, on_done = true }
+
+--- `src` with string/char literal contents and comments replaced by spaces (same length, newlines kept).
+local function blank(src)
+  local function sp(s) return (s:gsub("[^\n]", " ")) end
+  return (src:gsub('"""(.-)"""', function(x) return '"""' .. sp(x) .. '"""' end)
+    :gsub('"[^"\n]*"', function(x) return '"' .. sp(x:sub(2, -2)) .. '"' end)
+    :gsub("'[^'\n]*'", function(x) return "'" .. sp(x:sub(2, -2)) .. "'" end)
+    :gsub("/%*.-%*/", sp):gsub("//[^\n]*", sp))
+end
+
+--- A Java type as written in a parameter or return type: dotted names, generics (`? extends`/`? super`),
+--- arrays, varargs (`...` when `varargs`), primitives (`void` when `void_ok`). No annotations.
+local function valid_type(t, varargs, void_ok)
+  t = vim.trim(t or "")
+  if t == "" or t:find("@", 1, true) then return false end
+  if void_ok and t == "void" then return true end
+  if varargs then t = t:gsub("%s*%.%.%.$", "") end
+  local s = t:gsub("%?%s+extends%s+", "?+"):gsub("%?%s+super%s+", "?-"):gsub("%s*([<>,%[%]?])%s*", "%1")
+  if s:find("%s") or not s:match("^[%a_$]") or not s:match("^[%w_$.<>,%[%]?+%-]+$") then return false end
+  if s:find("%.%.") or s:find("%.$") or s:find("%.[^%a_$]") then return false end
+  local depth = 0
+  for ch in s:gmatch("[<>]") do
+    depth = depth + (ch == "<" and 1 or -1)
+    if depth < 0 then return false end
+  end
+  if depth ~= 0 or s:find("%[[^%]]") or s:find("%[$") or s:find("[^%[]%]") or s:find("%]%a") then return false end
+  for seg in s:gmatch("[%w_$]+") do
+    if not (valid_identifier(seg) or PRIMITIVES[seg]) then return false end
+  end
+  return true
+end
+
+--- Splits `s` at top-level commas (outside () [] {} <> and quotes; `<`/`>` count only before a piece's
+--- `=`, so a default like `a < b` does not open a generic).
+local function split_params(s)
+  local out, cur, depth, angle, q, eq, esc = {}, {}, 0, 0, nil, false, false
+  for ch in s:gmatch(".") do
+    local cut = false
+    if q then
+      if esc then esc = false elseif ch == "\\" then esc = true elseif ch == q then q = nil end
+    elseif ch == '"' or ch == "'" then q = ch
+    elseif ch:match("[%(%[{]") then depth = depth + 1
+    elseif ch:match("[%)%]}]") then depth = depth - 1
+    elseif ch == "<" and not eq then angle = angle + 1
+    elseif ch == ">" and not eq then angle = angle - 1
+    elseif ch == "=" and depth == 0 and angle == 0 then eq = true
+    elseif ch == "," and depth == 0 and angle == 0 then cut = true
+    end
+    if cut then
+      out[#out + 1] = table.concat(cur)
+      cur, eq = {}, false
+    else
+      cur[#cur + 1] = ch
+    end
+  end
+  out[#out + 1] = table.concat(cur)
+  if #out == 1 and vim.trim(out[1]) == "" then return {} end
+  return out
+end
+
+--- `Type name` or `Type name = default`: { type, name, default? }, or nil, reason.
+local function parse_param(piece)
+  piece = vim.trim(piece)
+  local left, right = piece, nil
+  local depth, angle = 0, 0
+  for i = 1, #piece do
+    local ch = piece:sub(i, i)
+    if ch:match("[%(%[{]") then depth = depth + 1
+    elseif ch:match("[%)%]}]") then depth = depth - 1
+    elseif ch == "<" then angle = angle + 1
+    elseif ch == ">" then angle = angle - 1
+    elseif ch == "=" and depth == 0 and angle == 0 then
+      left, right = vim.trim(piece:sub(1, i - 1)), vim.trim(piece:sub(i + 1))
+      break
+    end
+  end
+  if piece == "" then return nil, "an empty parameter (two commas in a row?)" end
+  local name = left:match("([%a_$][%w_$]*)$")
+  local typ = name and vim.trim(left:sub(1, #left - #name)) or ""
+  if not name or typ == "" then return nil, ("`%s` is not `Type name` or `Type name = default`"):format(piece) end
+  if right == "" then return nil, ("`%s`: the default value after `=` is empty"):format(piece) end
+  return { type = typ, name = name, default = right }
+end
+
+local function vis_of(info)
+  return (info.modifier == nil or info.modifier == "") and "package" or info.modifier
+end
+
+local function param_text(p) return p.type .. " " .. p.name end
+
+--- `name(Type a, Type b)` (with ` = default` for added parameters when `defaults`).
+local function sig_text(name, params, defaults)
+  return name .. "(" .. table.concat(vim.tbl_map(function(p)
+    return param_text(p) .. ((defaults and p.orig == nil and p.default) and (" = " .. p.default) or "")
+  end, params), ", ") .. ")"
+end
+
+--- The signature as the prompt shows it: `public int total(Invoice invoice)` (no return type for a constructor).
+local function sig_form(info, ctor)
+  local vis = vis_of(info)
+  return (vis ~= "package" and (vis .. " ") or "") .. (ctor and "" or (info.returnType .. " "))
+    .. sig_text(info.methodName, vim.tbl_map(function(p) return { type = p.type, name = p.name } end, info.parameters))
+end
+
+--- The new signature from a typed form (`[visibility] [return type] name(Type a, Type b = default)`):
+--- parameters match the old ones by name (a different type retypes it); a new name with `= default` is
+--- added; a new name without a default takes the place of the old parameter at the same position whose
+--- name is gone (a rename). Returns spec, or nil, reason.
+local function spec_from_form(info, s, ctor)
+  s = vim.trim(s or "")
+  local open = s:find("(", 1, true)
+  local close = s:match(".*()%)")
+  if not open or not close or close < open then
+    return nil, "write it as `[visibility] [return type] name(Type name, Type name = default)`"
+  end
+  if vim.trim(s:sub(close + 1)) ~= "" then return nil, ("`%s` after `)`: only the part up to `)` can change (throws is kept)"):format(vim.trim(s:sub(close + 1))) end
+  local head = vim.trim(s:sub(1, open - 1))
+  local name = head:match("([%a_$][%w_$]*)$")
+  if not name then return nil, "no method name before `(`" end
+  local rest = vim.trim(head:sub(1, #head - #name))
+  local vis = "package"
+  local first = rest:match("^(%a+)%f[^%w_$]")
+  if first and VISIBILITY[first] then vis, rest = first, vim.trim(rest:sub(#first + 1)) end
+  local other = rest:match("^(%a+)%f[^%w_$]")
+  if other and (other == "static" or other == "final" or other == "abstract" or other == "synchronized" or other == "default" or other == "native") then
+    return nil, ("`%s` cannot be changed here (only visibility, return type, name and parameters); leave it out"):format(other)
+  end
+  local spec = { name = name, visibility = vis, returns = ctor and info.returnType or rest, params = {} }
+  if ctor and rest ~= "" then return nil, ("a constructor has no return type (`%s`)"):format(rest) end
+  local by_name, used = {}, {}
+  for _, p in ipairs(info.parameters) do by_name[p.name] = p end
+  local parsed = {}
+  for _, piece in ipairs(split_params(s:sub(open + 1, close - 1))) do
+    local p, err = parse_param(piece)
+    if not p then return nil, err end
+    parsed[#parsed + 1] = p
+    if by_name[p.name] and not p.default then used[p.name] = true end
+  end
+  for i, p in ipairs(parsed) do
+    local old = (not p.default) and by_name[p.name]
+    if not old and not p.default then
+      -- a rename: the old parameter at this position, if its name is gone from the form
+      local at = info.parameters[i]
+      if at and not used[at.name] then
+        old, used[at.name] = at, true
+      else
+        return nil, ("new parameter `%s` needs a default value for the call sites: `%s %s = value`"):format(p.name, p.type, p.name)
+      end
+    end
+    spec.params[i] = { type = p.type, name = p.name, default = old and nil or p.default, orig = old and old.originalIndex or nil }
+  end
+  return spec
+end
+
+local function field(x, k, i)
+  if type(x) ~= "table" then return nil end
+  local v = x[k]
+  if v == nil then v = x[i] end
+  return v ~= nil and tostring(v) or nil
+end
+
+--- The new signature from opts (add/remove/rename/retype/reorder/name/returns/visibility). spec or nil, reason.
+local function spec_from_opts(info, opts)
+  for k in pairs(opts) do
+    if not OPT_KEYS[k] then return nil, ("unknown option `%s` (known: add, remove, rename, retype, reorder, name, returns, visibility, signature)"):format(tostring(k)) end
+  end
+  local params = {}
+  for _, p in ipairs(info.parameters) do params[#params + 1] = { type = p.type, name = p.name, orig = p.originalIndex } end
+  local function find(name)
+    for i, p in ipairs(params) do
+      if p.name == name then return i end
+    end
+  end
+  -- remove: names or 1-based positions in the method's current parameter list
+  local drop = {}
+  for _, r in ipairs(opts.remove or {}) do
+    local i = type(r) == "number" and r or nil
+    if i then
+      if not info.parameters[i] then return nil, ("remove: there is no parameter %d (the method has %d)"):format(i, #info.parameters) end
+      drop[info.parameters[i].name] = true
+    elseif type(r) == "string" and find(r) then
+      drop[r] = true
+    else
+      return nil, ("remove: no parameter `%s`"):format(tostring(r))
+    end
+  end
+  params = vim.tbl_filter(function(p) return not drop[p.name] end, params)
+  for old, t in pairs(opts.retype or {}) do
+    local i = find(old)
+    if not i then return nil, ("retype: no parameter `%s`"):format(tostring(old)) end
+    params[i].type = tostring(t)
+  end
+  local renamed = {}
+  for old, new in pairs(opts.rename or {}) do
+    local i = find(old)
+    if not i then return nil, ("rename: no parameter `%s`"):format(tostring(old)) end
+    renamed[i] = tostring(new)
+  end
+  for i, new in pairs(renamed) do params[i].name = new end
+  for _, a in ipairs(opts.add or {}) do
+    local p = { type = field(a, "type", 1), name = field(a, "name", 2), default = field(a, "default", 3) }
+    if not p.type or not p.name then return nil, "add: each new parameter needs a type and a name: { type = \"int\", name = \"discount\", default = \"0\" }" end
+    local at = tonumber(field(a, "at", 4))
+    if at then
+      if at < 1 or at > #params + 1 then return nil, ("add: position %d is outside 1..%d"):format(at, #params + 1) end
+      table.insert(params, at, p)
+    elseif #params > 0 and params[#params].type:match("%.%.%.$") then
+      table.insert(params, #params, p) -- before a trailing varargs parameter (Java allows nothing after it)
+    else
+      params[#params + 1] = p
+    end
+  end
+  if opts.reorder then
+    local order, seen = {}, {}
+    for _, n in ipairs(opts.reorder) do
+      local i = find(n)
+      if not i or seen[n] then
+        return nil, ("reorder: `%s` is not a parameter of the new signature (or named twice); list every one: %s"):format(tostring(n),
+          table.concat(vim.tbl_map(function(p) return p.name end, params), ", "))
+      end
+      seen[n] = true
+      order[#order + 1] = params[i]
+    end
+    if #order ~= #params then
+      return nil, ("reorder: list every parameter of the new signature once (%s)"):format(table.concat(vim.tbl_map(function(p) return p.name end, params), ", "))
+    end
+    params = order
+  end
+  return { name = opts.name or info.methodName, visibility = opts.visibility or vis_of(info), returns = opts.returns or info.returnType, params = params }
+end
+
+M._spec_from_form, M._spec_from_opts, M._valid_type, M._split_params = spec_from_form, spec_from_opts, valid_type, split_params -- checks
+
+--- Identifiers used in the body of the method declared at 0-based line `l` (not after a `.`), from the
+--- text; {} for a method without a body (abstract, interface).
+local function body_identifiers(lines, l, name)
+  local src = blank(table.concat(lines, "\n"))
+  local off = 1
+  for _ = 1, l do off = (src:find("\n", off, true) or #src) + 1 end
+  local s = src:find("%f[%w_$]" .. vim.pesc(name) .. "%s*%(", off)
+  if not s then return {} end
+  local i, depth = src:find("(", s, true), 0
+  while i and i <= #src do
+    local ch = src:sub(i, i)
+    if ch == "(" then depth = depth + 1 elseif ch == ")" then depth = depth - 1 end
+    if depth == 0 then break end
+    i = i + 1
+  end
+  if not i then return {} end
+  local b = src:find("[{;]", i)
+  if not b or src:sub(b, b) == ";" then return {} end
+  local e = b
+  depth = 0
+  while e <= #src do
+    local ch = src:sub(e, e)
+    if ch == "{" then depth = depth + 1 elseif ch == "}" then depth = depth - 1 end
+    if depth == 0 then break end
+    e = e + 1
+  end
+  local out = {}
+  local body = src:sub(b, e):gsub("%f[%w_$]%d[%w_$.]*", " ") -- number literals (10L, 1.5f)
+  for pre, id in body:gmatch("([^%w_$]?)([%a_$][%w_$]*)") do
+    if pre ~= "." then out[id] = true end
+  end
+  return out
+end
+
+--- Checks the new signature: nil when fine, else the reason.
+local function check_spec(spec, info, ctor, body)
+  if not valid_identifier(spec.name) then return ("`%s` is not a valid method name"):format(spec.name) end
+  if ctor and spec.name ~= info.methodName then
+    return ("a constructor keeps its class's name (%s); rename the class with <leader>jr"):format(info.methodName)
+  end
+  if not VISIBILITY[spec.visibility] then return ("visibility `%s`: use public, protected, private or package"):format(tostring(spec.visibility)) end
+  if ctor and spec.returns ~= info.returnType then return "a constructor has no return type" end
+  if not ctor and not valid_type(spec.returns, false, true) then return ("`%s` is not a valid return type"):format(spec.returns) end
+  local seen = {}
+  for i, p in ipairs(spec.params) do
+    if not valid_identifier(p.name) then return ("`%s` is not a valid parameter name"):format(p.name) end
+    if not valid_type(p.type, i == #spec.params, false) then
+      return p.type:match("%.%.%.$") and ("`%s %s`: a varargs parameter must be the last one"):format(p.type, p.name)
+        or ("`%s` is not a valid parameter type (annotations cannot be added here)"):format(p.type)
+    end
+    if seen[p.name] then return ("duplicate parameter name `%s`"):format(p.name) end
+    seen[p.name] = true
+    if p.orig == nil and (p.default == nil or vim.trim(p.default) == "") then
+      return ("new parameter `%s %s` needs a default value: the call sites pass it"):format(p.type, p.name)
+    end
+  end
+  local kept = {}
+  for _, p in ipairs(spec.params) do
+    if p.orig then kept[p.orig] = p end
+  end
+  for _, old in ipairs(info.parameters) do
+    local now = kept[old.originalIndex]
+    if not now and body[old.name] then
+      return ("parameter `%s` is still used in the body of %s: removing it would not compile; remove its uses first"):format(old.name, info.methodName)
+    end
+  end
+  for _, p in ipairs(spec.params) do
+    local old = p.orig and info.parameters[p.orig + 1]
+    if (not old or old.name ~= p.name) and body[p.name] then
+      return ("`%s` is already used in the body of %s (a local variable or a field): the parameter would clash with it or hide it; pick another name"):format(
+        p.name, info.methodName)
+    end
+  end
+end
+
+--- Changes nothing? (same name, visibility, return type, parameters in order with the same type/name).
+local function unchanged(spec, info)
+  if spec.name ~= info.methodName or spec.visibility ~= vis_of(info) or spec.returns ~= info.returnType then return false end
+  if #spec.params ~= #info.parameters then return false end
+  for i, p in ipairs(spec.params) do
+    local o = info.parameters[i]
+    if p.orig ~= o.originalIndex or p.type ~= o.type or p.name ~= o.name then return false end
+  end
+  return true
+end
+
+--- jdt.ls request with its window/showMessage errors/warnings captured (jdt.ls reports a refused change
+--- signature that way and answers null): res, rerr, messages. Other messages go to the usual handler.
+local function request_capturing(client, method, params, ms, buf)
+  local key = "window/showMessage"
+  local own = rawget(client.handlers, key)
+  local msgs = {}
+  client.handlers[key] = function(err, result, ctx, cfg)
+    if result and (result.type == 1 or result.type == 2) then
+      msgs[#msgs + 1] = result.message
+      return vim.NIL
+    end
+    local h = own or vim.lsp.handlers[key]
+    return h and h(err, result, ctx, cfg)
+  end
+  local ok, res, rerr = pcall(client.request_sync, client, method, params, ms, buf)
+  vim.wait(0) -- notifications dispatched with the answer (they are queued before it)
+  client.handlers[key] = own
+  if not ok then return nil, res, msgs end
+  return res, rerr, msgs
+end
+
+local function cs_params(uri, l, c)
+  return { textDocument = { uri = uri }, range = { start = { line = l, character = c }, ["end"] = { line = l, character = c } },
+    context = { diagnostics = {}, triggerKind = 1 } }
+end
+
+local function signature_info(client, buf, uri, l, c)
+  local res, rerr = client:request_sync("java/getChangeSignatureInfo", cs_params(uri, l, c), M.inline_ms, buf)
+  if not res then return nil, ("jdt.ls did not answer getChangeSignatureInfo in %d ms (%s)"):format(M.inline_ms, tostring(rerr)) end
+  if res.err then return nil, ("jdt.ls refused getChangeSignatureInfo (%s)"):format(res.err.message or vim.inspect(res.err)) end
+  return res.result or false
+end
+
+--- Asks jdt.ls to validate these open files again (it then publishes their diagnostics from the current
+--- state of every open file). Returns the time (ms, hrtime) the request was sent.
+function M.revalidate(client, paths)
+  local t = vim.uv.hrtime() / 1e6
+  for _, p in ipairs(paths) do
+    local b = vim.fn.bufnr(p)
+    if b ~= -1 and vim.api.nvim_buf_is_loaded(b) then
+      client:notify("java/validateDocument", { textDocument = { uri = vim.uri_from_fname(p) } })
+    end
+  end
+  return t
+end
+
+--- 0-based (l, c) of the method name `name` in its declaration header around the cursor line `l`.
+local function header_name(lines, l, name)
+  local pat = "%f[%w_$]" .. vim.pesc(name) .. "%s*%("
+  local text = vim.split(blank(table.concat(lines, "\n")), "\n", { plain = true })
+  for i = l + 1, math.max(1, l - 20), -1 do
+    local c = (text[i] or ""):find(pat)
+    if c then return i - 1, c - 1 end
+  end
+  for i = l + 2, math.min(#text, l + 10) do
+    local c = (text[i] or ""):find(pat)
+    if c then return i - 1, c - 1 end
+  end
+end
+
+--- Changes the signature of the method at the cursor (on its declaration, or on a call of it):
+--- opts.add = { { type, name, default, at? } } (default: what the call sites pass; at: 1-based position,
+--- default the end, before a trailing varargs), opts.remove = { name or 1-based position }, opts.rename =
+--- { old = "new" }, opts.retype = { name = "Type" }, opts.reorder = { names in the new order, all of
+--- them }, opts.name, opts.returns, opts.visibility ("public"/"protected"/"private"/"package"), or
+--- opts.signature = "public int total(Invoice invoice, int discount = 0)" (the prompt's form). Without
+--- any of them the signature is asked with vim.ui.input in that form. opts.on_done(ok) afterwards.
+--- Returns ok (nil while prompting).
+function M.change_signature(opts)
+  opts = opts or {}
+  local buf = vim.api.nvim_get_current_buf()
+  local path = vim.api.nvim_buf_get_name(buf)
+  local function done(ok)
+    if opts.on_done then opts.on_done(ok) end
+    return ok
+  end
+  local function refuse(msg, level)
+    M.last = { label = "Change signature", files = {}, ok = false, err = msg }
+    notify("Change signature: " .. msg, level or vim.log.levels.WARN)
+    return done(false)
+  end
+  local client = jdtls_for(path)
+  if not client or #vim.lsp.get_clients({ bufnr = buf, name = "jdtls" }) == 0 then
+    return refuse("jdt.ls is not attached to this buffer")
+  end
+  local root = root_of(client)
+  local ms, t = {}, vim.uv.hrtime()
+  local function lap(k)
+    local n = vim.uv.hrtime()
+    ms[k], t = (ms[k] or 0) + (n - t) / 1e6, n
+  end
+  local cur = vim.api.nvim_win_get_cursor(0)
+  local l, c = cur[1] - 1, cur[2]
+  local word = vim.fn.expand("<cword>")
+  -- jdt.ls answers on the declaration header only (modifiers, return type, name, parameters)
+  local uri = vim.uri_from_bufnr(buf)
+  local info, ierr = signature_info(client, buf, uri, l, c)
+  lap("info")
+  if info == nil then return refuse(ierr .. "; nothing changed", vim.log.levels.ERROR) end
+  local decl
+  if info then
+    decl = { uri = uri, path = path, lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false) }
+    if info.methodName then decl.l, decl.c = header_name(decl.lines, l, info.methodName) end
+  else
+    -- on a call (`name(`, `new Name(`, `Type::name`): the called method, at its declaration
+    local line = vim.api.nvim_get_current_line()
+    local s, e = 1, nil
+    repeat
+      s, e = line:find(word, s, true)
+      if s and c + 1 >= s and c + 1 <= e then break end
+      if s then s = e + 1 end
+    until not s
+    local call = s and word:match("^[%a_$][%w_$]*$") and (line:sub(e + 1):match("^%s*%(") or line:sub(1, s - 1):match("::%s*$"))
+    if not call then
+      return refuse(("the cursor is not on a method: put it on a method's declaration (name, parameters, return type) or on a call of it (`%s` is neither); nothing changed"):format(word))
+    end
+    local d, derr = declaration(client, buf, l, c)
+    lap("definition")
+    if not d then return refuse(("cannot find the declaration of `%s`: %s; nothing changed"):format(word, derr)) end
+    if not d.path or not (root and under(d.path, root)) then
+      return refuse(("`%s` is declared outside this project (%s): only methods declared in the project's sources can change; nothing changed"):format(
+        word, d.path or d.uri))
+    end
+    info, ierr = signature_info(client, buf, d.uri, d.l, d.c)
+    lap("info")
+    if info == nil then return refuse(ierr .. "; nothing changed", vim.log.levels.ERROR) end
+    if not info then return refuse(("`%s` at %s:%d is not a method jdt.ls can change; nothing changed"):format(word, rel(d.path, root), d.l + 1)) end
+    decl = { uri = d.uri, path = d.path, l = d.l, c = d.c, lines = lines_of(d.path) }
+  end
+  if not info then
+    return refuse(("the cursor is not on a method: put it on a method's declaration (name, parameters, return type) or on a call of it; nothing changed"))
+  end
+  if info.errorMessage then
+    local m = info.errorMessage:gsub("^Cannot change signature%.%s*", "")
+    local hint = m:match("implementation of method") and ": change it at the declaration it implements (jdt.ls then changes every implementation)" or ""
+    return refuse(("jdt.ls cannot change this method: %s%s; nothing changed"):format(m ~= "" and m or "no reason given", hint))
+  end
+  local name = info.methodName
+  local decl_line = decl.l and (decl.lines[decl.l + 1] or "") or ""
+  local pre = decl.c and decl_line:sub(1, decl.c) or ""
+  local ctor = info.returnType == "void" and decl.c ~= nil and pre:gsub("@[%w_.]+%b()", ""):gsub("@[%w_.]+", "")
+    :gsub("%f[%w](public)%f[^%w]", ""):gsub("%f[%w](protected)%f[^%w]", ""):gsub("%f[%w](private)%f[^%w]", ""):match("^%s*$") ~= nil
+  local body = decl.l and body_identifiers(decl.lines, decl.l, name) or {}
+  local static = pre:match("%f[%w]static%f[^%w]") ~= nil
+
+  local function run(spec, serr)
+    if spec == nil and serr == nil then return done(false) end -- prompt cancelled
+    if not spec then return refuse(serr .. "; nothing changed", vim.log.levels.ERROR) end
+    local bad = check_spec(spec, info, ctor, body)
+    if bad then return refuse(bad .. "; nothing changed", vim.log.levels.ERROR) end
+    if unchanged(spec, info) then return refuse(("the signature of %s is unchanged; nothing to do"):format(name), vim.log.levels.INFO) end
+    local params = vim.tbl_map(function(p)
+      return { type = p.type, name = p.name, defaultValue = p.orig == nil and p.default or "", originalIndex = p.orig or -1 }
+    end, spec.params)
+    local t_req = vim.uv.hrtime()
+    local res, rerr, msgs = request_capturing(client, "java/getRefactorEdit", {
+      command = "changeSignature", context = cs_params(decl.uri, decl.l or l, decl.c or c),
+      options = { tabSize = vim.lsp.util.get_effective_tabstop(buf), insertSpaces = vim.bo[buf].expandtab },
+      commandArguments = { info.methodIdentifier, false, spec.name, spec.visibility == "package" and "" or spec.visibility,
+        spec.returns, params, info.exceptions or {}, false },
+    }, M.signature_ms, buf)
+    lap("edit")
+    local said = #msgs > 0 and (": " .. table.concat(msgs, "; ")) or ""
+    if not res then
+      return refuse(("jdt.ls did not answer in %d ms (%s)%s; nothing changed"):format(M.signature_ms, tostring(rerr), said), vim.log.levels.ERROR)
+    end
+    if res.err then return refuse(("jdt.ls refused (%s)%s; nothing changed"):format(res.err.message or vim.inspect(res.err), said), vim.log.levels.ERROR) end
+    local result = type(res.result) == "table" and res.result or nil -- null may come as nil or vim.NIL
+    local edit = result and result.edit
+    local n = 0
+    if type(edit) == "table" then
+      n = #(edit.documentChanges or {})
+      for _, es in pairs(edit.changes or {}) do n = n + #es end
+    end
+    if n == 0 then
+      return refuse(("jdt.ls gave no edit%s; nothing changed"):format(#msgs > 0 and (" and said" .. said) or ""), vim.log.levels.ERROR)
+    end
+    local edit_ms = (vim.uv.hrtime() - t_req) / 1e6
+    -- what the call sites should look like afterwards: every reference in a touched file
+    local calls_change = spec.name ~= name or #spec.params ~= #info.parameters
+    for i, p in ipairs(spec.params) do
+      if p.orig ~= i - 1 then calls_change = true end
+    end
+    local narrowed = VIS_RANK[spec.visibility] < VIS_RANK[vis_of(info)]
+    local refs = {}
+    if decl.l and (calls_change or narrowed) then
+      refs = references(client, buf, decl.uri, decl.l, decl.c)
+      lap("references")
+    end
+    local impls = {}
+    if decl.l and not ctor and not static and vis_of(info) ~= "private" then
+      local r = client:request_sync("textDocument/implementation", { textDocument = { uri = decl.uri },
+        position = { line = decl.l, character = decl.c } }, M.inline_ms, buf)
+      for _, loc in ipairs(r and type(r.result) == "table" and r.result or {}) do
+        local u, rg = loc.uri or loc.targetUri, loc.range or loc.targetSelectionRange
+        if u and rg and not (u == decl.uri and rg.start.line == decl.l) and u:match("^file:") then
+          impls[#impls + 1] = ("%s:%d"):format(rel(vim.uri_to_fname(u), root), rg.start.line + 1)
+        end
+      end
+      lap("implementations")
+    end
+    local before = M.error_counts()
+    local ok, files, why = apply(client, edit, dirty_buffers())
+    lap("apply")
+    local old_sig = sig_text(name, vim.tbl_map(function(p) return { type = p.type, name = p.name, orig = p.originalIndex } end, info.parameters))
+    local label = ("Changed signature %s -> %s"):format(old_sig, sig_text(spec.name, spec.params, true))
+    if not ok then
+      failed_part_way(label, why, files, root)
+      return done(false)
+    end
+    local paths = vim.tbl_map(function(f) return f.path end, files)
+    local validated_at = M.revalidate(client, paths)
+    local warn, notes = {}, {}
+    local left = calls_change and untouched_refs(refs, files, root) or {}
+    if #left > 0 then
+      warn[#warn + 1] = ("NOT updated by jdt.ls (it skips a file it cannot parse), still calling the old signature: %s"):format(table.concat(left, ", "))
+    end
+    if narrowed then
+      local outside = {}
+      local dir = vim.fs.dirname(decl.path)
+      for _, r in ipairs(refs) do
+        if (spec.visibility == "private" and r.path ~= decl.path) or (spec.visibility ~= "private" and vim.fs.dirname(r.path) ~= dir) then
+          outside[#outside + 1] = ("%s:%d"):format(rel(r.path, root), r.l + 1)
+        end
+      end
+      if #outside > 0 then
+        warn[#warn + 1] = ("now %s, but called from where it is no longer visible%s: %s"):format(spec.visibility,
+          spec.visibility == "protected" and " (unless from a subclass)" or "", table.concat(outside, ", "))
+      end
+    end
+    if #impls > 0 then
+      notes[#notes + 1] = ("jdt.ls also changed the %d method(s) that implement or override it: %s"):format(#impls, table.concat(impls, ", "))
+    end
+    -- Spring: who calls the method is the container (a @Bean method, a request handler), not the code
+    local added = vim.tbl_filter(function(p) return p.orig == nil end, spec.params)
+    local added_txt = table.concat(vim.tbl_map(param_text, added), ", ")
+    if decl.l and is_bean(decl.lines, decl.l) then
+      if #added > 0 then
+        warn[#warn + 1] = ("Spring: %s is a @Bean method: Spring calls it and injects its parameters, it does not pass your default: `%s` must be a bean (or carry @Value), else the context fails to start; only direct calls got the default"):format(
+          name, added_txt)
+      end
+      if spec.name ~= name then
+        warn[#warn + 1] = ("Spring: the bean's name changes from `%s` to `%s` (injection by name, @Qualifier(\"%s\"), @DependsOn break)"):format(name, spec.name, name)
+      end
+    end
+    local mapping = decl.l and annotated(decl.lines, decl.l, "@(%a*Mapping)%f[^%w_]")
+    if mapping then
+      local renamed = {}
+      for _, p in ipairs(spec.params) do
+        local o = p.orig and info.parameters[p.orig + 1]
+        if o and o.name ~= p.name then renamed[#renamed + 1] = o.name .. " -> " .. p.name end
+      end
+      local removed = #spec.params - #added < #info.parameters
+      if #added > 0 or #renamed > 0 or removed then
+        warn[#warn + 1] = ("Spring: %s is a request handler (@%s): Spring binds its parameters from the request, not from your default%s%s%s; the HTTP API changes for its clients"):format(
+          name, mapping, #added > 0 and ("; new `" .. added_txt .. "` is read from the request (a simple type: a required query parameter of that name, error 400 when missing; annotate it, e.g. @RequestParam(defaultValue = ...))") or "",
+          #renamed > 0 and ("; renamed " .. table.concat(renamed, ", ") .. ": an unannotated parameter is bound by its name") or "",
+          removed and "; a removed parameter is no longer read" or "")
+      end
+    end
+    M.last = { label = label, files = files, ok = true, spec = spec, info = info, left = left, impls = impls, warn = warn, notes = notes,
+      ms = ms, edit_ms = edit_ms, validated_at = validated_at, ctor = ctor }
+    notify(summary(label, files, root) .. (#notes > 0 and (". " .. table.concat(notes, "; ")) or "")
+      .. (#warn > 0 and (". WARNING: " .. table.concat(warn, "; ")) or ""), #warn > 0 and vim.log.levels.WARN or nil)
+    follow_up(label, before, paths)
+    return done(true)
+  end
+
+  local has_change = false
+  for k in pairs(opts) do
+    if k ~= "on_done" then has_change = true end
+  end
+  if opts.signature then return run(spec_from_form(info, opts.signature, ctor)) end
+  if has_change then return run(spec_from_opts(info, opts)) end
+  vim.ui.input({ prompt = "Change signature (new parameter: `Type name = default`): ", default = sig_form(info, ctor) }, function(s)
+    if s == nil or vim.trim(s) == "" then return run(nil, nil) end
+    run(spec_from_form(info, s, ctor))
+  end)
 end
 
 -- ── neo-tree (plugins/neo-tree.lua) ──────────────────────────────────────────────────────────────

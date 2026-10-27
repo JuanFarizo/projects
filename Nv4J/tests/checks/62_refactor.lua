@@ -6,13 +6,14 @@
 -- Fixture: demo.billing.{Invoice, PriceCalculator}, demo.shop.Checkout (call sites in another package).
 -- API under test (Task 4): require("nv4j.refactor").<fn>(opts) at the cursor, no prompts when opts
 -- give the answer: rename_class({ name }), rename_package({ name }) (Task 4a, built), move({ package })
--- (Task 4b, built), inline({ all? }) (Task 4c, built), change_signature({ add = { { type, name, default } } }),
--- safe_delete() (4d-4e). Each case
+-- (Task 4b, built), inline({ all? }) (Task 4c, built), change_signature({ add = { { type, name, default } },
+-- remove, rename, retype, reorder, name, returns, visibility, signature }) (Task 4d, built), safe_delete()
+-- (4e). Each case
 -- uses its function when it exists, else measures today's path: vim.lsp.buf.rename (<leader>cr) or
 -- jdt.ls's code action through Neovim/nvim-jdtls (<leader>ca), with nvim-jdtls's prompts answered.
 --  api, keys          : the functions built so far and their keys (<leader>jr rename, <leader>jp rename
---                       package, <leader>jm move, <leader>ji inline; pending: <leader>js change
---                       signature, <leader>jd safe delete, listed); <leader>cr stays Rename.
+--                       package, <leader>jm move, <leader>ji inline, <leader>js change signature;
+--                       pending: <leader>jd safe delete, listed); <leader>cr stays Rename.
 --  rename_class       : Invoice -> Bill from its declaration: Bill.java on disk, Invoice.java gone,
 --                       Checkout imports demo.billing.Bill, no `Invoice` token left, touched files
 --                       written, summary names them; build clean.
@@ -59,8 +60,8 @@
 --  move_class_stale   : the old qualified name in application.properties listed; a "Invoice" string not.
 --  move_class_errors  : a syntax error in Checkout: still updated by jdt.ls (or warned); _skipped_twin:
 --                       Checkout's edit dropped (stub): the summary warns with Checkout.java:3.
---  Unbuilt functions (change_signature, safe_delete): their cases FAIL "pending" (today's path shown
---  after it) and `api` adds a pending_<fn> FAIL line each: the check stays red until 4e.
+--  Unbuilt functions (safe_delete): their cases FAIL "pending" (today's path shown after it) and `api`
+--  adds a pending_<fn> FAIL line each: the check stays red until 4e.
 --  inline_method (+ _undo): `gross(invoice)` call in total inlined: `invoice.quantity() * invoice.unitPrice()`,
 --                       declaration kept, written, summary; one `u` gives the text back.
 --  inline_variable (+ _undo): local `gross` in total inlined: `return gross(invoice);`.
@@ -77,7 +78,25 @@
 --  inline_value_constant: a constant used as @Value key inlined from its declaration: build clean.
 --  inline_errors (+ _twin, stub): a syntax error in Checkout: inlined there by jdt.ls or its reference
 --                       named in the warning; twin: Checkout's edit dropped, warning names its line.
---  change_signature   : total gets `int discount` with default 0: the 3 call sites in Checkout pass 0.
+--  change_signature (+ _undo): total gets `int discount` with default 0 (nv4j.refactor.change_signature):
+--                       the 3 call sites in Checkout and the 5 in src/test/java pass 0, written, summary
+--                       lists 4 files; build clean = jdt.ls's publish after the revalidation the refactor
+--                       sends (cs_clean); one `u` per touched buffer.
+--  change_signature_call_site: from a call in Checkout (definition first): total changes, payTwice not.
+--  change_signature_unsaved: unsaved edits in PriceCalculator and Checkout kept, both left unsaved.
+--  change_signature_reorder, _remove, _header: rename + reorder + method name; remove by position +
+--                       retype; visibility + return type + name (no callers).
+--  change_signature_prompt: <leader>js with vim.ui.input answered (`... int discount = 0)`, a typed rename).
+--  change_signature_refused: 15 refusals with the reason, nothing changed (not on a method, invalid
+--                       type/name, no default, duplicate, removed-but-used, clash, reorder, constructor
+--                       name, unknown option, no change, jdt.ls's invalid default, library method/interface).
+--  change_signature_no_edit (stub): jdt.ls null + showMessage, empty edit: refused, its message once.
+--  change_signature_constructor: Invoice(...) + discount: every `new Invoice(` passes 0 (declaration, call).
+--  change_signature_interface: from Rule.apply: Half.apply changed too (noted); from Half.apply refused.
+--  change_signature_boot: @Bean parameter / @Bean renamed / @GetMapping parameter: Spring warnings.
+--  change_signature_errors (+ _twin, stub): syntax error in Checkout; twin: its edit dropped -> warning.
+--  change_signature_stale_twin: a planted stale error publish is cleared by refactor.revalidate.
+--  change_signature_parse: typed-form and opts parsing (unit, no jdt.ls).
 --  safe_delete_blocked: on `total` (3 usages): nothing deleted, the usages listed (quickfix).
 --  safe_delete_free   : on `legacyTotal` (no usages): the method is gone, build clean.
 -- The fixture is snapshot before and restored after every case (tests/lib/fixture.lua), jdt.ls told.
@@ -1864,36 +1883,503 @@ case("inline_errors_twin", function()
     and warn:find("whose declaration is gone", 1, true) ~= nil and E.text(chk):find("Invoice.MAX_QUANTITY", 1, true) ~= nil,
     ("returned %s after %.0f ms; warning: %s"):format(tostring(r.ret), r.ms, warn ~= "" and warn or "NONE"))
 end)
--- change_signature
+-- ── change signature (Task 4d): nv4j.refactor.change_signature over jdt.ls's getChangeSignatureInfo /
+-- getRefactorEdit ("changeSignature"), with arguments, no float ───────────────────────────────────────
+local PCFT = TEST .. "demo/billing/PriceCalculatorFailingTest.java"
+local ADD_DISCOUNT = { add = { { type = "int", name = "discount", default = "0" } } }
+
+--- refactor.change_signature(opts) (or `fn`) with the cursor on `word` in the first line of `buf` matching
+--- `pat`. Returns { ret, ms, got } (change_signature is synchronous unless it prompts).
+local function cs_at(buf, pat, word, opts, fn)
+  local l, c = pos(buf, pat, word)
+  vim.api.nvim_set_current_buf(buf); vim.api.nvim_win_set_cursor(0, { l + 1, c })
+  local got, stop = capture()
+  local t0 = E.now()
+  local ok, ret = pcall(fn or refactor.change_signature, opts)
+  local ms = E.now() - t0
+  stop()
+  if not ok then error(ret) end
+  return { ret = ret, ms = ms, got = got }
+end
+
+--- Build clean after a change signature. What it waits on (deterministic, no sleep): jdt.ls's publish
+--- for every path AFTER the `java/validateDocument` that change_signature sends for the touched open
+--- files once its edit is applied (refactor.last.validated_at), with no ERROR. jdt.ls handles didChange
+--- in order and validates on a debounce, so that publish reflects every file of the edit; an earlier
+--- publish (e.g. Checkout checked against the old PriceCalculator, then never checked again: the cause
+--- of the "build NOT clean" flake in a full run) no longer decides the result. Falls back to t0 when the
+--- refactor did not run.
+local function cs_clean(paths, t0)
+  local last = has("change_signature") and refactor.last
+  return clean(paths, (last and last.ok and last.validated_at) or t0)
+end
+
+--- Calls of `name` in `txt`: all, and those whose last argument is `last` (a Lua pattern, e.g. "0").
+local function calls(txt, name, last)
+  local all, hit = 0, 0
+  for args in (txt or ""):gmatch("%f[%w_]" .. name .. "%s*(%b())") do
+    all = all + 1
+    if args:match(",%s*" .. last .. "%)$") then hit = hit + 1 end
+  end
+  return all, hit
+end
+
+--- Where change_signature's time went (refactor.last.ms: info, definition, edit, references, implementations, apply).
+local function cs_ms()
+  local m = has("change_signature") and refactor.last and refactor.last.ms
+  if not m then return "" end
+  local parts = {}
+  for _, k in ipairs({ "info", "definition", "edit", "references", "implementations", "apply" }) do
+    if m[k] then parts[#parts + 1] = ("%s %.0f"):format(k, m[k]) end
+  end
+  return " [ms: " .. table.concat(parts, ", ") .. "]"
+end
+
+--- The snapshot text of `path` as a buffer shows it (no trailing newline).
+local function snap_text(path) return (snap.files[path]:gsub("\n$", "")) end
+
+-- change_signature (+ _undo): total gets `int discount` with default 0 from its declaration: the 3 call
+-- sites in Checkout and the 5 in src/test/java (not open) pass 0, every touched file written, summary
+-- lists the 4 files; build clean (cs_clean); one `u` per touched buffer gives its text back.
 case("change_signature", function()
   local calc = lsp.open(CALC)
   lsp.open(CHECKOUT)
   local l, c = pos(calc, "public int total%(Invoice invoice%)", "total")
   local t0, how = E.now(), nil
+  local got, stop = capture()
   if has("change_signature") then
     vim.api.nvim_set_current_buf(calc); vim.api.nvim_win_set_cursor(0, { l + 1, c })
-    how = "nv4j.refactor.change_signature"; refactor.change_signature({ add = { { type = "int", name = "discount", default = "0" } } })
+    how = "nv4j.refactor.change_signature({ add = { { type = int, name = discount, default = 0 } } })"; refactor.change_signature(ADD_DISCOUNT)
   else
     local ok, t = code_action(calc, l, c, "^Change signature")
     how = "code action " .. tostring(t)
-    if not ok then return report_apply("change_signature", how, false, 0, {}, false, "") end
+    if not ok then stop(); return report_apply("change_signature", how, false, 0, {}, false, "") end
     -- nvim-jdtls opens an editable float (Parameters list); fill it as a user would and close it
     local opened = vim.wait(5000, function() return vim.api.nvim_get_current_buf() ~= calc end, 5)
     local pb = vim.api.nvim_get_current_buf()
     local pl = opened and E.line_of(pb, "^%- 0: Invoice invoice")
-    if not pl then return report_apply("change_signature", how .. " (no prompt buffer with the parameter list)", false, E.now() - t0, {}, false, "") end
+    if not pl then stop(); return report_apply("change_signature", how .. " (no prompt buffer with the parameter list)", false, E.now() - t0, {}, false, "") end
     how = how .. " (nvim-jdtls float prompt filled: '- int discount 0', then closed)"
     vim.api.nvim_buf_set_lines(pb, pl + 1, pl + 1, false, { "- int discount 0" })
     vim.cmd("close")
   end
   local applied, ms = until_ms(t0, function() return (text_of(CHECKOUT) or ""):find("calculator.total(invoice, 0)", 1, true) ~= nil end)
+  stop()
   local ct, pt = text_of(CHECKOUT), text_of(CALC)
-  local n0 = select(2, (ct or ""):gsub(", 0%)", ""))
-  local ok_clean, why = clean({ CHECKOUT, CALC }, t0)
-  report_apply("change_signature", how, applied, ms, {
+  local a1, z1 = calls(ct, "total", "0")
+  local a2, z2 = calls(text_of(PCT), "total", "0")
+  local a3, z3 = calls(text_of(PCFT), "total", "0")
+  local ok_clean, why = cs_clean({ CHECKOUT, CALC, PCT, PCFT }, t0)
+  local label = "Changed signature total(Invoice invoice) -> total(Invoice invoice, int discount = 0)"
+  local sum = find_msg(got, label) or ""
+  local written = true
+  for _, p in ipairs({ CALC, CHECKOUT, PCT, PCFT }) do
+    local b = loaded(p)
+    if not b or vim.bo[b].modified or disk(p) ~= E.text(b) .. "\n" then written = false end
+  end
+  report_apply("change_signature", how .. cs_ms(), applied, ms, {
     { "declaration", (pt or ""):find("total(Invoice invoice, int discount)", 1, true) ~= nil },
-    { ("3 call sites pass 0 (%d)"):format(n0), n0 == 3 },
+    { ("3 call sites in Checkout pass 0 (%d/%d)"):format(z1, a1), a1 == 3 and z1 == 3 },
+    { ("src/test call sites pass 0 (PriceCalculatorTest %d/%d, FailingTest %d/%d)"):format(z2, a2, z3, a3), a2 == 3 and z2 == 3 and a3 == 2 and z3 == 2 },
+    { "written to disk", written },
+    { "summary: 4 files", sum:find(label .. ": 4 file(s)", 1, true) == 1 and sum:find("src/main/java/demo/shop/Checkout.java", 1, true) ~= nil
+      and sum:find("src/test/java/demo/billing/PriceCalculatorTest.java", 1, true) ~= nil and sum:find("PriceCalculatorFailingTest.java", 1, true) ~= nil },
   }, ok_clean, why)
+  if not has("change_signature") then return end
+  local bad = {}
+  for _, p in ipairs({ CALC, CHECKOUT, PCT, PCFT }) do
+    local b = loaded(p)
+    if b then
+      vim.api.nvim_buf_call(b, function() vim.cmd("silent! undo") end)
+      if E.text(b) ~= snap_text(p) then bad[#bad + 1] = vim.fs.basename(p) end
+    else
+      bad[#bad + 1] = vim.fs.basename(p) .. " (no buffer)"
+    end
+  end
+  lsp.report(P .. "change_signature_undo", applied and #bad == 0, applied and (#bad == 0 and "one u restored each of the 4 touched buffers"
+    or ("not restored by one u: " .. table.concat(bad, ", "))) or "not applied, nothing to undo")
+end)
+
+-- change_signature_call_site: the cursor on a call of total in Checkout's payTwice: total changes (found
+-- with textDocument/definition: jdt.ls answers only on a declaration), payTwice does not.
+case("change_signature_call_site", function()
+  if not has("change_signature") then return lsp.report(P .. "change_signature_call_site", false, pending_reason("change_signature")) end
+  local chk = lsp.open(CHECKOUT)
+  local r = cs_at(chk, "return calculator%.total%(invoice%)", "total", ADD_DISCOUNT)
+  local ct, pt = text_of(CHECKOUT), text_of(CALC)
+  local a, z = calls(ct, "total", "0")
+  report_apply("change_signature_call_site", "nv4j.refactor.change_signature on a call" .. cs_ms(), r.ret == true, r.ms, {
+    { "total's declaration changed", (pt or ""):find("public int total(Invoice invoice, int discount)", 1, true) ~= nil },
+    { "payTwice unchanged", ct:find("public int payTwice(Invoice invoice) {", 1, true) ~= nil },
+    { ("Checkout's calls pass 0 (%d/%d)"):format(z, a), a == 3 and z == 3 },
+  }, cs_clean({ CHECKOUT, CALC }, E.now() - r.ms))
+end)
+
+-- change_signature_unsaved: unsaved user edits in PriceCalculator (the declaration) and Checkout survive,
+-- both left unsaved (disk untouched), the tests (not open) written; the summary says which.
+case("change_signature_unsaved", function()
+  if not has("change_signature") then return lsp.report(P .. "change_signature_unsaved", false, pending_reason("change_signature")) end
+  local calc, chk = lsp.open(CALC), lsp.open(CHECKOUT)
+  append_line(calc, "// user edit in PriceCalculator")
+  append_line(chk, "// user edit in Checkout")
+  local r = cs_at(calc, "public int total%(Invoice invoice%)", "total", ADD_DISCOUNT)
+  local ct, pt = E.text(chk), E.text(calc)
+  local sum = find_msg(r.got, "Changed signature total(") or ""
+  local _, z = calls(ct, "total", "0")
+  report_apply("change_signature_unsaved", "nv4j.refactor.change_signature (unsaved buffers)" .. cs_ms(), r.ret == true, r.ms, {
+    { "user edits kept", pt:find("// user edit in PriceCalculator", 1, true) ~= nil and ct:find("// user edit in Checkout", 1, true) ~= nil },
+    { "edited in the buffers", pt:find("total(Invoice invoice, int discount)", 1, true) ~= nil and z == 3 },
+    { "both left unsaved (disk untouched)", vim.bo[calc].modified and vim.bo[chk].modified and disk(CALC) == snap.files[CALC] and disk(CHECKOUT) == snap.files[CHECKOUT] },
+    { "tests written", (disk(PCT) or ""):find("new Invoice(2, 3), 0)", 1, true) ~= nil },
+    { "summary: 2 [left unsaved", select(2, sum:gsub("%[left unsaved", "")) == 2 },
+  }, cs_clean({ CHECKOUT, CALC }, E.now() - r.ms))
+end)
+
+-- A static method with three parameters in PriceCalculator, called from Checkout.
+local function plant_scale()
+  plant(CALC, { { "    public int legacyTotal(", "    public static int scale(int value, int factor, int unused) {\n        return value * factor;\n    }\n\n    public int legacyTotal(" } })
+  plant(CHECKOUT, { { "    public int payTwice(", "    public int scaled(int q) {\n        return PriceCalculator.scale(q, 2, 7);\n    }\n\n    public int payTwice(" } })
+  return open_fresh({ CALC, CHECKOUT })
+end
+
+-- change_signature_reorder: scale renamed to times, `factor` renamed to `by` and moved first: the
+-- declaration, the body (`value * by`) and the call (`times(2, q, 7)`).
+case("change_signature_reorder", function()
+  if not has("change_signature") then return lsp.report(P .. "change_signature_reorder", false, pending_reason("change_signature")) end
+  local calc = plant_scale()
+  local r = cs_at(calc, "public static int scale%(", "scale", { name = "times", rename = { factor = "by" }, reorder = { "by", "value", "unused" } })
+  local pt, ct = text_of(CALC), text_of(CHECKOUT)
+  local label = "Changed signature scale(int value, int factor, int unused) -> times(int by, int value, int unused)"
+  report_apply("change_signature_reorder", "nv4j.refactor.change_signature({ name, rename, reorder })" .. cs_ms(), r.ret == true, r.ms, {
+    { "declaration", pt:find("public static int times(int by, int value, int unused) {", 1, true) ~= nil },
+    { "body uses the new name", pt:find("return value * by;", 1, true) ~= nil },
+    { "call reordered", ct:find("return PriceCalculator.times(2, q, 7);", 1, true) ~= nil },
+    { "summary", find_msg(r.got, label .. ": 2 file(s)") ~= nil },
+  }, cs_clean({ CHECKOUT, CALC }, E.now() - r.ms))
+end)
+
+-- change_signature_remove: the unused third parameter removed by position and `value` retyped to Integer:
+-- `scale(Integer value, int factor)`, the call `scale(q, 2)`.
+case("change_signature_remove", function()
+  if not has("change_signature") then return lsp.report(P .. "change_signature_remove", false, pending_reason("change_signature")) end
+  local calc = plant_scale()
+  local r = cs_at(calc, "public static int scale%(", "scale", { remove = { 3 }, retype = { value = "Integer" } })
+  local pt, ct = text_of(CALC), text_of(CHECKOUT)
+  report_apply("change_signature_remove", "nv4j.refactor.change_signature({ remove = { 3 }, retype })" .. cs_ms(), r.ret == true, r.ms, {
+    { "declaration", pt:find("public static int scale(Integer value, int factor) {", 1, true) ~= nil },
+    { "call without the argument", ct:find("return PriceCalculator.scale(q, 2);", 1, true) ~= nil },
+  }, cs_clean({ CHECKOUT, CALC }, E.now() - r.ms))
+end)
+
+-- change_signature_header: legacyTotal (no callers) made protected, returning long, named oldTotal.
+case("change_signature_header", function()
+  if not has("change_signature") then return lsp.report(P .. "change_signature_header", false, pending_reason("change_signature")) end
+  local calc = lsp.open(CALC)
+  local r = cs_at(calc, "public int legacyTotal%(", "legacyTotal", { visibility = "protected", returns = "long", name = "oldTotal" })
+  local pt = text_of(CALC)
+  report_apply("change_signature_header", "nv4j.refactor.change_signature({ visibility, returns, name })" .. cs_ms(), r.ret == true, r.ms, {
+    { "declaration", pt:find("protected long oldTotal(Invoice invoice) {", 1, true) ~= nil },
+    { "summary: 1 file", find_msg(r.got, "Changed signature legacyTotal(Invoice invoice) -> oldTotal(Invoice invoice): 1 file(s)") ~= nil },
+  }, cs_clean({ CALC }, E.now() - r.ms))
+end)
+
+-- change_signature_prompt: <leader>js (the mapping's own function) without arguments: vim.ui.input shows
+-- the signature as text; the answer adds `int discount = 0` (call sites pass 0). Then a typed rename
+-- by position: `Invoice inv` in place of `Invoice invoice` renames the parameter (body too).
+case("change_signature_prompt", function()
+  if not has("change_signature") then return lsp.report(P .. "change_signature_prompt", false, pending_reason("change_signature")) end
+  local m = vim.fn.maparg("<leader>js", "n", false, true)
+  if not m.callback then return lsp.report(P .. "change_signature_prompt", false, "<leader>js has no Lua callback: " .. vim.inspect(m.rhs)) end
+  local calc = lsp.open(CALC)
+  lsp.open(CHECKOUT)
+  local seen = answer_input("public int total(Invoice invoice, int discount = 0)")
+  local r = cs_at(calc, "public int total%(Invoice invoice%)", "total", nil, function() return m.callback() end)
+  local a, z = calls(text_of(CHECKOUT), "total", "0")
+  local first = refactor.last and refactor.last.ok and a == 3 and z == 3
+  F.restore(snap, client)
+  calc = lsp.open(CALC)
+  local seen2 = answer_input("public int total(Invoice inv)")
+  local r2 = cs_at(calc, "public int total%(Invoice invoice%)", "total")
+  local pt = text_of(CALC)
+  local second = refactor.last and refactor.last.ok and pt:find("public int total(Invoice inv) {", 1, true) ~= nil and pt:find("int gross = gross(inv);", 1, true) ~= nil
+  lsp.report(P .. "change_signature_prompt", first and second and seen.default == "public int total(Invoice invoice)"
+    and (seen.prompt or ""):find("Type name = default", 1, true) ~= nil and r.ms <= APPLY_MS and r2.ms <= APPLY_MS,
+    ("prompt %q default %q; <leader>js: applied %s (%d/%d calls pass 0, %.0f ms); typed rename: %s (%.0f ms, prompt default %q)"):format(
+      tostring(seen.prompt), tostring(seen.default), tostring(first), z, a, r.ms, tostring(second), r2.ms, tostring(seen2.default)))
+end)
+
+-- change_signature_refused: each refused with its reason, nothing changed (buffers and disk): not on a
+-- method (class line, field), invalid type/name, no default, duplicate name, a removed parameter still
+-- used, a new name clashing with a local, bad reorder, constructor renamed, unknown option, nothing to
+-- change, an invalid default (jdt.ls's own message, shown once), a library method from a call,
+-- an implementation of a library interface method (jdt.ls's refusal).
+case("change_signature_refused", function()
+  if not has("change_signature") then return lsp.report(P .. "change_signature_refused", false, pending_reason("change_signature")) end
+  local SR = main .. "demo/StartupRunner.java"
+  local T = "public int total%(Invoice invoice%)"
+  local runs = {
+    { "class line", CALC, "^public class PriceCalculator", "PriceCalculator", ADD_DISCOUNT, "the cursor is not on a method" },
+    { "field", CHECKOUT, "private final PriceCalculator calculator", "calculator", ADD_DISCOUNT, "the cursor is not on a method" },
+    { "invalid type", CALC, T, "total", { add = { { "in t", "discount", "0" } } }, "`in t` is not a valid parameter type" },
+    { "invalid name", CALC, T, "total", { add = { { "int", "class", "0" } } }, "`class` is not a valid parameter name" },
+    { "no default", CALC, T, "total", { add = { { type = "int", name = "discount" } } }, "needs a default value" },
+    { "duplicate", CALC, T, "total", { add = { { "int", "invoice", "0" } } }, "duplicate parameter name `invoice`" },
+    { "removed but used", CALC, T, "total", { remove = { "invoice" } }, "parameter `invoice` is still used in the body of total" },
+    { "clash with a local", CALC, T, "total", { add = { { "int", "gross", "0" } } }, "`gross` is already used in the body of total" },
+    { "bad reorder", CALC, T, "total", { reorder = { "nope" } }, "reorder: `nope` is not a parameter" },
+    { "constructor renamed", INVOICE, "public Invoice%(", "Invoice", { name = "Bill" }, "a constructor keeps its class's name" },
+    { "unknown option", CALC, T, "total", { adds = {} }, "unknown option `adds`" },
+    { "nothing to change", CALC, T, "total", { name = "total" }, "is unchanged; nothing to do" },
+    { "invalid default (jdt.ls)", CALC, T, "total", { add = { { "int", "discount", "1 +" } } }, "'1 +' is not a valid expression" },
+    { "library method", SR, "System%.out%.println", "println", ADD_DISCOUNT, "is declared outside this project" },
+    { "library interface", SR, "public void run%(", "run", ADD_DISCOUNT, "implementation of method 'void run(ApplicationArguments args)'" },
+  }
+  local bad, parts, changed = {}, {}, {}
+  for _, x in ipairs(runs) do
+    local b = lsp.open(x[2])
+    local before = { [b] = E.text(b) }
+    local r = cs_at(b, x[3], x[4], x[5])
+    local msg = find_msg(r.got, x[6])
+    local shown = 0
+    for _, g in ipairs(r.got) do
+      if g.msg:find(x[6], 1, true) then shown = shown + 1 end
+    end
+    local d = F.diff(snap)
+    local same = untouched(before) and #d.added + #d.changed + #d.missing == 0
+    local good = r.ret == false and msg ~= nil and shown == 1 and msg:find("nothing", 1, true) ~= nil and same
+    if not good then bad[#bad + 1] = x[1] .. " (returned " .. tostring(r.ret) .. ", shown " .. shown .. "x, " .. (same and "unchanged" or "CHANGED") .. ": "
+      .. table.concat(vim.tbl_map(function(g) return g.msg end, r.got), " || ") .. ")" end
+    if not same then
+      changed[#changed + 1] = x[1]
+      F.restore(snap, client) -- the next refusal starts from the fixture again
+    end
+    parts[#parts + 1] = ("%s %.0f ms"):format(x[1], r.ms)
+  end
+  local same = #changed == 0
+  lsp.report(P .. "change_signature_refused", #bad == 0 and same, ("%d/%d refused with the reason (%s)%s; buffers and disk %s"):format(#runs - #bad, #runs,
+    table.concat(parts, ", "), #bad > 0 and ("; WRONG: " .. table.concat(bad, "; ")) or "", same and "unchanged" or ("CHANGED by: " .. table.concat(changed, ", "))))
+end)
+
+-- change_signature_no_edit (stub): jdt.ls answers getRefactorEdit with null after a window/showMessage
+-- error (how it refuses), then with an empty edit: refused, its message in ours (shown once), nothing changed.
+case("change_signature_no_edit", function()
+  if not has("change_signature") then return lsp.report(P .. "change_signature_no_edit", false, pending_reason("change_signature")) end
+  local calc = lsp.open(CALC)
+  local before = { [calc] = E.text(calc) }
+  local real = client.request_sync
+  local mode = "null"
+  client.request_sync = function(self, m, params, t, b)
+    if m == "java/getRefactorEdit" then
+      if mode == "null" then
+        local h = self.handlers["window/showMessage"] or vim.lsp.handlers["window/showMessage"]
+        h(nil, { type = 1, message = "stubbed jdt.ls refusal" }, { method = "window/showMessage", client_id = self.id })
+        return { result = vim.NIL }
+      end
+      return { result = { edit = { documentChanges = {} } } }
+    end
+    return real(self, m, params, t, b)
+  end
+  local ok, r1, r2 = pcall(function()
+    local a = cs_at(calc, "public int total%(Invoice invoice%)", "total", ADD_DISCOUNT)
+    mode = "empty"
+    return a, cs_at(calc, "public int total%(Invoice invoice%)", "total", ADD_DISCOUNT)
+  end)
+  client.request_sync = real
+  if not ok then error(r1) end
+  local m1 = find_msg(r1.got, "Change signature: jdt.ls gave no edit and said: stubbed jdt.ls refusal; nothing changed", vim.log.levels.ERROR)
+  local n1 = #vim.tbl_filter(function(g) return g.msg:find("stubbed jdt.ls refusal", 1, true) ~= nil end, r1.got)
+  local m2 = find_msg(r2.got, "Change signature: jdt.ls gave no edit; nothing changed", vim.log.levels.ERROR)
+  lsp.report(P .. "change_signature_no_edit", r1.ret == false and m1 ~= nil and n1 == 1 and r2.ret == false and m2 ~= nil and untouched(before),
+    ("null + showMessage: returned %s, message %s (shown %dx); empty edit: returned %s, message %s; file %s"):format(tostring(r1.ret), tostring(m1), n1,
+      tostring(r2.ret), tostring(m2), untouched(before) and "unchanged" or "CHANGED"))
+end)
+
+-- change_signature_constructor: Invoice's constructor gets `int discount = 0`: every `new Invoice(...)` in
+-- main and test sources passes 0; from the declaration, and from a `new Invoice(` call in Checkout.
+case("change_signature_constructor", function()
+  if not has("change_signature") then return lsp.report(P .. "change_signature_constructor", false, pending_reason("change_signature")) end
+  local inv = lsp.open(INVOICE)
+  local r = cs_at(inv, "public Invoice%(", "Invoice", ADD_DISCOUNT)
+  local a1, z1 = calls(text_of(CHECKOUT), "Invoice", "0")
+  local a2, z2 = calls(text_of(PCT), "Invoice", "0")
+  local label = "Changed signature Invoice(int quantity, int unitPrice) -> Invoice(int quantity, int unitPrice, int discount = 0)"
+  local first = { r.ret == true, a1 == 1 and z1 == 1 and a2 == 3 and z2 == 3, find_msg(r.got, label) ~= nil,
+    text_of(INVOICE):find("public Invoice(int quantity, int unitPrice, int discount) {", 1, true) ~= nil }
+  local ok_clean, why = cs_clean({ INVOICE, CHECKOUT, PCT }, E.now() - r.ms)
+  F.restore(snap, client)
+  local chk = lsp.open(CHECKOUT)
+  local r2 = cs_at(chk, "new Invoice%(quantity", "Invoice", ADD_DISCOUNT)
+  local a3, z3 = calls(text_of(CHECKOUT), "Invoice", "0")
+  report_apply("change_signature_constructor", "nv4j.refactor.change_signature on the constructor", first[1], math.max(r.ms, r2.ms), {
+    { "declaration", first[4] },
+    { ("new Invoice(...) pass 0 (Checkout %d/%d, PriceCalculatorTest %d/%d)"):format(z1, a1, z2, a2), first[2] },
+    { "summary label", first[3] },
+    { ("from a `new Invoice(` call: returned %s, Checkout %d/%d"):format(tostring(r2.ret), z3, a3), r2.ret == true and a3 == 1 and z3 == 1 },
+  }, ok_clean, why)
+end)
+
+-- An interface method implemented by a nested class, called through the interface (planted in PriceCalculator).
+local function plant_rule()
+  plant(CALC, { { "    public int legacyTotal(", [[    interface Rule {
+        int apply(int amount);
+    }
+
+    static class Half implements Rule {
+        @Override
+        public int apply(int amount) {
+            return amount / 2;
+        }
+    }
+
+    public int halve(int amount) {
+        Rule r = new Half();
+        return r.apply(amount);
+    }
+
+    public int legacyTotal(]] } })
+  return open_fresh({ CALC })
+end
+
+-- change_signature_interface: from the interface method Rule.apply: jdt.ls changes the implementation
+-- Half.apply too (the summary names it) and the call passes the default; from Half.apply: refused with
+-- jdt.ls's reason and where to do it. jdt.ls's hierarchy search makes this one slow (3-5 s measured, over
+-- the 2 s budget: reported, open item), so the case checks the result within M.signature_ms.
+case("change_signature_interface", function()
+  if not has("change_signature") then return lsp.report(P .. "change_signature_interface", false, pending_reason("change_signature")) end
+  local calc = plant_rule()
+  local before = E.text(calc)
+  local r0 = cs_at(calc, "public int apply%(int amount%)", "apply", { add = { { "int", "extra", "1" } } })
+  local refused = r0.ret == false and find_msg(r0.got, "change it at the declaration it implements") ~= nil and E.text(calc) == before
+  local r = cs_at(calc, "int apply%(int amount%);", "apply", { add = { { "int", "extra", "1" } } })
+  local pt = text_of(CALC)
+  local note = find_msg(r.got, "jdt.ls also changed the 1 method(s) that implement or override it: src/main/java/demo/billing/PriceCalculator.java:")
+  local ok_clean, why = cs_clean({ CALC }, E.now() - r.ms)
+  local good = r.ret == true and refused and note ~= nil and ok_clean and r.ms <= refactor.signature_ms
+    and pt:find("int apply(int amount, int extra);", 1, true) ~= nil and pt:find("public int apply(int amount, int extra) {", 1, true) ~= nil
+    and pt:find("return r.apply(amount, 1);", 1, true) ~= nil
+  E.log("refactor_change_signature_interface", r.ms, 1)
+  lsp.report(P .. "change_signature_interface", good, ("from Half.apply: %s (%.0f ms); from Rule.apply: returned %s after %.0f ms%s (jdt.ls getRefactorEdit %.0f ms); interface + implementation + call changed: %s; note: %s; build %s"):format(
+    refused and "refused with jdt.ls's reason" or "NOT refused", r0.ms, tostring(r.ret), r.ms, r.ms > APPLY_MS and " OVER the 2 s budget (jdt.ls's hierarchy search, open item)" or "",
+    refactor.last and refactor.last.edit_ms or -1, tostring(pt:find("public int apply(int amount, int extra) {", 1, true) ~= nil and pt:find("r.apply(amount, 1)", 1, true) ~= nil),
+    note and "yes" or "MISSING", ok_clean and "clean" or ("NOT clean: " .. why)))
+end)
+
+-- change_signature_boot: a parameter added to the @Bean devBanner (Spring injects it, the default is not
+-- used: warning), devBanner renamed (the bean name changes: warning), a parameter added to the
+-- @GetMapping handler hello (bound from the request: warning). Each applied, build clean.
+case("change_signature_boot", function()
+  if not has("change_signature") then return lsp.report(P .. "change_signature_boot", false, pending_reason("change_signature")) end
+  local res = {}
+  local function one(path, pat, word, opts, want, check_text)
+    local b = lsp.open(path)
+    local r = cs_at(b, pat, word, opts)
+    local w = find_msg(r.got, want, vim.log.levels.WARN)
+    local ok_clean, why = cs_clean({ path }, E.now() - r.ms)
+    res[#res + 1] = { ok = r.ret == true and w ~= nil and ok_clean and r.ms <= APPLY_MS and text_of(path):find(check_text, 1, true) ~= nil,
+      txt = ("%s: returned %s %.0f ms, warning %s, build %s"):format(word, tostring(r.ret), r.ms, w and "yes" or "MISSING", ok_clean and "clean" or ("NOT clean: " .. why)) }
+    F.restore(snap, client)
+  end
+  one(GCFG, "public String devBanner", "devBanner", { add = { { "int", "n", "0" } } }, "Spring: devBanner is a @Bean method: Spring calls it and injects its parameters",
+    "devBanner(GreetingProperties properties, int n)")
+  one(GCFG, "public String devBanner", "devBanner", { name = "banner" }, "Spring: the bean's name changes from `devBanner` to `banner`", "public String banner(")
+  one(GCTRL, "public String hello", "hello", { add = { { "int", "times", "1" } } }, "Spring: hello is a request handler (@GetMapping)", "public String hello(int times)")
+  lsp.report(P .. "change_signature_boot", vim.iter(res):all(function(x) return x.ok end), table.concat(vim.tbl_map(function(x) return x.txt end, res), "; "))
+end)
+
+-- change_signature_errors: a syntax error in Checkout (unsaved): jdt.ls updates its calls anyway, or the
+-- warning names them (jdt.ls's references); Checkout keeps its syntax error. _twin (deterministic):
+-- Checkout's edit dropped from jdt.ls's answer (stub): the warning names Checkout's two call lines.
+case("change_signature_errors", function()
+  if not has("change_signature") then return lsp.report(P .. "change_signature_errors", false, pending_reason("change_signature")) end
+  local calc, chk = lsp.open(CALC), lsp.open(CHECKOUT)
+  local bl = E.line_of(chk, "^public class Checkout")
+  vim.api.nvim_buf_set_lines(chk, bl + 1, bl + 1, false, { "    int broken = ;" })
+  local tset = E.now()
+  vim.wait(CLEAN_MS, function()
+    return (published_at[vim.uri_from_fname(CHECKOUT)] or 0) >= tset and E.count(vim.diagnostic.get(chk), vim.diagnostic.severity.ERROR) > 0
+  end, 20)
+  local r = cs_at(calc, "public int total%(Invoice invoice%)", "total", ADD_DISCOUNT)
+  local ct = E.text(chk)
+  local a, z = calls(ct, "total", "0")
+  local named = find_msg(r.got, "NOT updated by jdt.ls", vim.log.levels.WARN)
+  lsp.report(P .. "change_signature_errors", r.ms <= APPLY_MS and r.ret == true and ((a == 3 and z == 3) or (named and named:find("Checkout.java", 1, true) ~= nil) or false)
+    and ct:find("int broken = ;", 1, true) ~= nil,
+    ("returned %s after %.0f ms; Checkout's calls %d/%d updated by jdt.ls; warning %s; Checkout's syntax error kept"):format(tostring(r.ret), r.ms, z, a,
+      named and "names Checkout" or "none"))
+end)
+case("change_signature_errors_twin", function()
+  if not has("change_signature") then return lsp.report(P .. "change_signature_errors_twin", false, pending_reason("change_signature")) end
+  local calc, chk = lsp.open(CALC), lsp.open(CHECKOUT)
+  local l1, l2 = E.line_of(chk, "calculator%.total%(new Invoice") + 1, E.line_of(chk, "calculator%.total%(invoice%)") + 1
+  local real = client.request_sync
+  client.request_sync = function(self, m, params, t, b)
+    local res, err = real(self, m, params, t, b)
+    if m == "java/getRefactorEdit" and res and type(res.result) == "table" and res.result.edit and res.result.edit.documentChanges then
+      res.result.edit.documentChanges = vim.tbl_filter(function(ch)
+        return not (ch.textDocument and ch.textDocument.uri:find("/demo/shop/Checkout.java", 1, true))
+      end, res.result.edit.documentChanges)
+    end
+    return res, err
+  end
+  local ok, r = pcall(cs_at, calc, "public int total%(Invoice invoice%)", "total", ADD_DISCOUNT)
+  client.request_sync = real
+  if not ok then error(r) end
+  local warn = find_msg(r.got, "NOT updated by jdt.ls", vim.log.levels.WARN) or ""
+  lsp.report(P .. "change_signature_errors_twin", r.ret == true and warn:find("src/main/java/demo/shop/Checkout.java:" .. l1, 1, true) ~= nil
+    and warn:find("src/main/java/demo/shop/Checkout.java:" .. l2, 1, true) ~= nil and E.text(chk):find("calculator.total(invoice)", 1, true) ~= nil,
+    ("returned %s after %.0f ms; warning: %s"):format(tostring(r.ret), r.ms, warn ~= "" and warn or "NONE"))
+end)
+
+-- change_signature_stale_twin (deterministic twin of the build-clean race): after a clean change, a stale
+-- ERROR publish for Checkout is planted (what jdt.ls leaves when it checked Checkout against the old
+-- declaration and never again); refactor.revalidate (what change_signature sends after its edit) makes
+-- jdt.ls publish Checkout again from the current state: the stale error is gone.
+case("change_signature_stale_twin", function()
+  if not has("change_signature") then return lsp.report(P .. "change_signature_stale_twin", false, pending_reason("change_signature")) end
+  local calc = lsp.open(CALC)
+  lsp.open(CHECKOUT)
+  local r = cs_at(calc, "public int total%(Invoice invoice%)", "total", ADD_DISCOUNT)
+  local ok1 = cs_clean({ CHECKOUT, CALC }, E.now() - r.ms)
+  local chk = loaded(CHECKOUT)
+  local h = vim.lsp.handlers["textDocument/publishDiagnostics"]
+  h(nil, { uri = vim.uri_from_fname(CHECKOUT), diagnostics = { { range = { start = { line = 11, character = 8 }, ["end"] = { line = 11, character = 20 } },
+    severity = 1, source = "Java", message = "planted stale error: total(Invoice) is not applicable" } } }, { method = "textDocument/publishDiagnostics", client_id = client.id })
+  local planted = E.count(vim.diagnostic.get(chk), vim.diagnostic.severity.ERROR)
+  local t = refactor.revalidate(client, { CHECKOUT })
+  local ok2, why = clean({ CHECKOUT }, t)
+  lsp.report(P .. "change_signature_stale_twin", r.ret == true and ok1 and planted > 0 and ok2,
+    ("change applied %s, clean %s; planted stale errors %d; after revalidate: %s"):format(tostring(r.ret), tostring(ok1), planted, ok2 and "fresh clean publish" or ("still NOT clean: " .. why)))
+end)
+
+-- change_signature_parse (unit, no jdt.ls): the typed form and opts turned into the new parameter list.
+case("change_signature_parse", function()
+  if not has("change_signature") then return lsp.report(P .. "change_signature_parse", false, pending_reason("change_signature")) end
+  local info = { methodName = "total", modifier = "public", returnType = "int", parameters = { { type = "Invoice", name = "invoice", originalIndex = 0 } } }
+  local v = { methodName = "scale", modifier = "", returnType = "int", parameters = { { type = "int", name = "value", originalIndex = 0 },
+    { type = "String...", name = "tags", originalIndex = 1 } } }
+  local function sig(spec) return spec and (spec.visibility .. " " .. spec.returns .. " " .. spec.name .. "(" .. table.concat(vim.tbl_map(function(p)
+    return p.type .. " " .. p.name .. (p.orig and ("#" .. p.orig) or "") .. (p.default and (" = " .. p.default) or "") end, spec.params), ", ") .. ")") or "nil" end
+  local cases = {
+    { refactor._spec_from_form(info, 'public int total(Map<String, Integer> m = Map.of("a", 1), Invoice invoice)'),
+      'public int total(Map<String, Integer> m = Map.of("a", 1), Invoice invoice#0)' },
+    { refactor._spec_from_form(info, "long total(Invoice inv, int d = a < b ? 1 : 2)"), "package long total(Invoice inv#0, int d = a < b ? 1 : 2)" },
+    { select(2, refactor._spec_from_form(info, "public int total(Invoice invoice, int x)")), "new parameter `x` needs a default value for the call sites: `int x = value`" },
+    { select(2, refactor._spec_from_form(info, "public static int total(Invoice invoice)")), "`static` cannot be changed here (only visibility, return type, name and parameters); leave it out" },
+    { refactor._spec_from_opts(v, { add = { { "int", "z", "0" } } }), "package int scale(int value#0, int z = 0, String... tags#1)" },
+    { refactor._spec_from_opts(v, { add = { { "int", "z", "0", 1 } }, rename = { value = "x" } }), "package int scale(int z = 0, int x#0, String... tags#1)" },
+  }
+  local bad = {}
+  for i, x in ipairs(cases) do
+    local got = type(x[1]) == "table" and sig(x[1]) or tostring(x[1])
+    if got ~= x[2] then bad[#bad + 1] = ("#%d got %q want %q"):format(i, got, x[2]) end
+  end
+  local types = { ["Map<String, List<Integer>>"] = true, ["List<? extends Number>"] = true, ["int[]"] = true, ["java.util.List<String>"] = true,
+    ["in t"] = false, ["List<"] = false, ["class"] = false, ["@A int"] = false, ["a..b"] = false }
+  for t, want in pairs(types) do
+    if refactor._valid_type(t, false, false) ~= want then bad[#bad + 1] = ("type %q: %s"):format(t, tostring(not want)) end
+  end
+  lsp.report(P .. "change_signature_parse", #bad == 0, #bad == 0 and ("%d forms/opts and %d types as expected"):format(#cases, vim.tbl_count(types))
+    or table.concat(bad, "; "))
 end)
 
 -- safe delete
