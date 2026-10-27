@@ -1231,13 +1231,13 @@ end
 -- summary). After the edit the touched open files are revalidated (`java/validateDocument`): jdt.ls
 -- otherwise keeps a dependent file's diagnostics from before the declaration changed.
 
-M.signature_ms = 10000 -- getRefactorEdit: about 0.4 s; a method with implementations takes jdt.ls 3-5 s (hierarchy search)
+M.signature_ms = 10000 -- getRefactorEdit: about 0.4 s; a method with implementations takes jdt.ls 2.6-3.9 s (hierarchy search); hard timeout
 
 local PRIMITIVES = { boolean = true, byte = true, char = true, short = true, int = true, long = true, float = true, double = true }
 local VISIBILITY = { public = true, protected = true, private = true, package = true }
 local VIS_RANK = { private = 0, package = 1, protected = 2, public = 3 }
 local OPT_KEYS = { add = true, remove = true, rename = true, retype = true, reorder = true, name = true, returns = true,
-  visibility = true, signature = true, on_done = true }
+  visibility = true, signature = true, on_done = true, async = true }
 
 --- `src` with string/char literal contents and comments replaced by spaces (same length, newlines kept).
 local function blank(src)
@@ -1381,7 +1381,11 @@ local function spec_from_form(info, s, ctor)
     if not old and not p.default then
       -- a rename: the old parameter at this position, if its name is gone from the form
       local at = info.parameters[i]
-      if at and not used[at.name] then
+      if at and not used[at.name] and at.type ~= p.type then
+        -- ambiguous: a rename + retype, or a new parameter without its default in place of a removed one
+        return nil, ("`%s %s` takes the place of `%s %s` with another type: say what you mean: a new parameter needs `= default` (`%s %s = value`), a rename/retype or removal needs the explicit options (rename = { %s = \"%s\" }, retype, remove)"):format(
+          p.type, p.name, at.type, at.name, p.type, p.name, at.name, p.name)
+      elseif at and not used[at.name] then
         old, used[at.name] = at, true
       else
         return nil, ("new parameter `%s` needs a default value for the call sites: `%s %s = value`"):format(p.name, p.type, p.name)
@@ -1557,25 +1561,54 @@ local function unchanged(spec, info)
   return true
 end
 
---- jdt.ls request with its window/showMessage errors/warnings captured (jdt.ls reports a refused change
---- signature that way and answers null): res, rerr, messages. Other messages go to the usual handler.
-local function request_capturing(client, method, params, ms, buf)
+--- Asynchronous jdt.ls request with its window/showMessage errors/warnings captured until the answer
+--- (jdt.ls reports a refused change signature that way and answers null): cb(res, rerr, messages) once,
+--- res = { err?, result? }, or res = nil and rerr on a timeout after `ms`. Other messages go to the usual
+--- handler.
+local function request_capturing(client, method, params, ms, buf, cb)
   local key = "window/showMessage"
   local own = rawget(client.handlers, key)
-  local msgs = {}
+  local msgs, finished = {}, false
   client.handlers[key] = function(err, result, ctx, cfg)
-    if result and (result.type == 1 or result.type == 2) then
+    if not finished and result and (result.type == 1 or result.type == 2) then
       msgs[#msgs + 1] = result.message
       return vim.NIL
     end
     local h = own or vim.lsp.handlers[key]
     return h and h(err, result, ctx, cfg)
   end
-  local ok, res, rerr = pcall(client.request_sync, client, method, params, ms, buf)
-  vim.wait(0) -- notifications dispatched with the answer (they are queued before it)
-  client.handlers[key] = own
-  if not ok then return nil, res, msgs end
-  return res, rerr, msgs
+  local function finish(res, rerr)
+    if finished then return end
+    finished = true
+    if client.handlers[key] ~= own then client.handlers[key] = own end
+    cb(res, rerr, msgs)
+  end
+  local ok, sent, id = pcall(client.request, client, method, params, function(err, result)
+    finish({ err = err, result = result })
+  end, buf)
+  if not ok or not sent then return finish(nil, ok and "the request could not be sent" or tostring(sent)) end
+  vim.defer_fn(function()
+    if not finished then
+      pcall(client.cancel_request, client, id)
+      finish(nil, "timeout")
+    end
+  end, ms)
+end
+
+--- Fires a jdt.ls request now and returns a slot filled when it answers ({ done, result, ms }); wait(slot)
+--- waits for it (at most M.inline_ms).
+local function fire(client, method, params, buf)
+  local slot, t0 = { done = false }, vim.uv.hrtime()
+  local ok = pcall(client.request, client, method, params, function(_, result)
+    slot.result, slot.done, slot.ms = result, true, (vim.uv.hrtime() - t0) / 1e6
+  end, buf)
+  if not ok then slot.done = true end
+  return slot
+end
+
+local function wait(slot)
+  if slot and not slot.done then vim.wait(M.inline_ms, function() return slot.done end, 5) end
+  return slot and type(slot.result) == "table" and slot.result or {}
 end
 
 local function cs_params(uri, l, c)
@@ -1701,6 +1734,7 @@ function M.change_signature(opts)
     :gsub("%f[%w](public)%f[^%w]", ""):gsub("%f[%w](protected)%f[^%w]", ""):gsub("%f[%w](private)%f[^%w]", ""):match("^%s*$") ~= nil
   local body = decl.l and body_identifiers(decl.lines, decl.l, name) or {}
   local static = pre:match("%f[%w]static%f[^%w]") ~= nil
+  local async = false
 
   local function run(spec, serr)
     if spec == nil and serr == nil then return done(false) end -- prompt cancelled
@@ -1711,128 +1745,146 @@ function M.change_signature(opts)
     local params = vim.tbl_map(function(p)
       return { type = p.type, name = p.name, defaultValue = p.orig == nil and p.default or "", originalIndex = p.orig or -1 }
     end, spec.params)
-    local t_req = vim.uv.hrtime()
-    local res, rerr, msgs = request_capturing(client, "java/getRefactorEdit", {
-      command = "changeSignature", context = cs_params(decl.uri, decl.l or l, decl.c or c),
-      options = { tabSize = vim.lsp.util.get_effective_tabstop(buf), insertSpaces = vim.bo[buf].expandtab },
-      commandArguments = { info.methodIdentifier, false, spec.name, spec.visibility == "package" and "" or spec.visibility,
-        spec.returns, params, info.exceptions or {}, false },
-    }, M.signature_ms, buf)
-    lap("edit")
-    local said = #msgs > 0 and (": " .. table.concat(msgs, "; ")) or ""
-    if not res then
-      return refuse(("jdt.ls did not answer in %d ms (%s)%s; nothing changed"):format(M.signature_ms, tostring(rerr), said), vim.log.levels.ERROR)
-    end
-    if res.err then return refuse(("jdt.ls refused (%s)%s; nothing changed"):format(res.err.message or vim.inspect(res.err), said), vim.log.levels.ERROR) end
-    local result = type(res.result) == "table" and res.result or nil -- null may come as nil or vim.NIL
-    local edit = result and result.edit
-    local n = 0
-    if type(edit) == "table" then
-      n = #(edit.documentChanges or {})
-      for _, es in pairs(edit.changes or {}) do n = n + #es end
-    end
-    if n == 0 then
-      return refuse(("jdt.ls gave no edit%s; nothing changed"):format(#msgs > 0 and (" and said" .. said) or ""), vim.log.levels.ERROR)
-    end
-    local edit_ms = (vim.uv.hrtime() - t_req) / 1e6
     -- what the call sites should look like afterwards: every reference in a touched file
     local calls_change = spec.name ~= name or #spec.params ~= #info.parameters
     for i, p in ipairs(spec.params) do
       if p.orig ~= i - 1 then calls_change = true end
     end
     local narrowed = VIS_RANK[spec.visibility] < VIS_RANK[vis_of(info)]
-    local refs = {}
-    if decl.l and (calls_change or narrowed) then
-      refs = references(client, buf, decl.uri, decl.l, decl.c)
-      lap("references")
-    end
-    local impls = {}
-    if decl.l and not ctor and not static and vis_of(info) ~= "private" then
-      local r = client:request_sync("textDocument/implementation", { textDocument = { uri = decl.uri },
-        position = { line = decl.l, character = decl.c } }, M.inline_ms, buf)
-      for _, loc in ipairs(r and type(r.result) == "table" and r.result or {}) do
+    -- references (calls jdt.ls must update) and implementations (changed with it) asked in parallel with
+    -- the edit, on the state before it (they used to follow the edit: about 0.9 s more for Rule.apply)
+    local refs_slot = (decl.l and (calls_change or narrowed)) and fire(client, "textDocument/references", { textDocument = { uri = decl.uri },
+      position = { line = decl.l, character = decl.c }, context = { includeDeclaration = false } }, buf) or nil
+    local impl_slot = (decl.l and not ctor and not static and vis_of(info) ~= "private") and fire(client, "textDocument/implementation",
+      { textDocument = { uri = decl.uri }, position = { line = decl.l, character = decl.c } }, buf) or nil
+    local t_req = vim.uv.hrtime()
+    local finished, outcome = false, nil
+    local function finish(res, rerr, msgs)
+      lap("edit")
+      local said = #msgs > 0 and (": " .. table.concat(msgs, "; ")) or ""
+      if not res then
+        return refuse(("jdt.ls did not answer in %d ms (%s)%s; nothing changed"):format(M.signature_ms, tostring(rerr), said), vim.log.levels.ERROR)
+      end
+      if res.err then return refuse(("jdt.ls refused (%s)%s; nothing changed"):format(res.err.message or vim.inspect(res.err), said), vim.log.levels.ERROR) end
+      local result = type(res.result) == "table" and res.result or nil -- null may come as nil or vim.NIL
+      local edit = result and result.edit
+      local n = 0
+      if type(edit) == "table" then
+        n = #(edit.documentChanges or {})
+        for _, es in pairs(edit.changes or {}) do n = n + #es end
+      end
+      if n == 0 then
+        return refuse(("jdt.ls gave no edit%s; nothing changed"):format(#msgs > 0 and (" and said" .. said) or ""), vim.log.levels.ERROR)
+      end
+      local edit_ms = (vim.uv.hrtime() - t_req) / 1e6
+      local refs = {}
+      for _, r in ipairs(wait(refs_slot)) do
+        if r.uri and r.uri:match("^file:") then refs[#refs + 1] = { path = vim.uri_to_fname(r.uri), l = r.range.start.line } end
+      end
+      local impls = {}
+      for _, loc in ipairs(wait(impl_slot)) do
         local u, rg = loc.uri or loc.targetUri, loc.range or loc.targetSelectionRange
         if u and rg and not (u == decl.uri and rg.start.line == decl.l) and u:match("^file:") then
           impls[#impls + 1] = ("%s:%d"):format(rel(vim.uri_to_fname(u), root), rg.start.line + 1)
         end
       end
-      lap("implementations")
-    end
-    local before = M.error_counts()
-    local ok, files, why = apply(client, edit, dirty_buffers())
-    lap("apply")
-    local old_sig = sig_text(name, vim.tbl_map(function(p) return { type = p.type, name = p.name, orig = p.originalIndex } end, info.parameters))
-    local label = ("Changed signature %s -> %s"):format(old_sig, sig_text(spec.name, spec.params, true))
-    if not ok then
-      failed_part_way(label, why, files, root)
-      return done(false)
-    end
-    local paths = vim.tbl_map(function(f) return f.path end, files)
-    local validated_at = M.revalidate(client, paths)
-    local warn, notes = {}, {}
-    local left = calls_change and untouched_refs(refs, files, root) or {}
-    if #left > 0 then
-      warn[#warn + 1] = ("NOT updated by jdt.ls (it skips a file it cannot parse), still calling the old signature: %s"):format(table.concat(left, ", "))
-    end
-    if narrowed then
-      local outside = {}
-      local dir = vim.fs.dirname(decl.path)
-      for _, r in ipairs(refs) do
-        if (spec.visibility == "private" and r.path ~= decl.path) or (spec.visibility ~= "private" and vim.fs.dirname(r.path) ~= dir) then
-          outside[#outside + 1] = ("%s:%d"):format(rel(r.path, root), r.l + 1)
+      ms.references, ms.implementations = refs_slot and refs_slot.ms, impl_slot and impl_slot.ms -- in parallel with "edit"
+      lap("wait")
+      local before = M.error_counts()
+      local ok, files, why = apply(client, edit, dirty_buffers())
+      lap("apply")
+      local old_sig = sig_text(name, vim.tbl_map(function(p) return { type = p.type, name = p.name, orig = p.originalIndex } end, info.parameters))
+      local label = ("Changed signature %s -> %s"):format(old_sig, sig_text(spec.name, spec.params, true))
+      if not ok then
+        failed_part_way(label, why, files, root)
+        return done(false)
+      end
+      local paths = vim.tbl_map(function(f) return f.path end, files)
+      local validated_at = M.revalidate(client, paths)
+      local warn, notes = {}, {}
+      local left = calls_change and untouched_refs(refs, files, root) or {}
+      if #left > 0 then
+        warn[#warn + 1] = ("NOT updated by jdt.ls (it skips a file it cannot parse), still calling the old signature: %s"):format(table.concat(left, ", "))
+      end
+      if narrowed then
+        local outside = {}
+        local dir = vim.fs.dirname(decl.path)
+        for _, r in ipairs(refs) do
+          if (spec.visibility == "private" and r.path ~= decl.path) or (spec.visibility ~= "private" and vim.fs.dirname(r.path) ~= dir) then
+            outside[#outside + 1] = ("%s:%d"):format(rel(r.path, root), r.l + 1)
+          end
+        end
+        if #outside > 0 then
+          warn[#warn + 1] = ("now %s, but called from where it is no longer visible%s: %s"):format(spec.visibility,
+            spec.visibility == "protected" and " (unless from a subclass)" or "", table.concat(outside, ", "))
         end
       end
-      if #outside > 0 then
-        warn[#warn + 1] = ("now %s, but called from where it is no longer visible%s: %s"):format(spec.visibility,
-          spec.visibility == "protected" and " (unless from a subclass)" or "", table.concat(outside, ", "))
+      if #impls > 0 then
+        notes[#notes + 1] = ("jdt.ls also changed the %d method(s) that implement or override it: %s"):format(#impls, table.concat(impls, ", "))
       end
+      -- Spring: who calls the method is the container (a @Bean method, a request handler), not the code
+      local added = vim.tbl_filter(function(p) return p.orig == nil end, spec.params)
+      local added_txt = table.concat(vim.tbl_map(param_text, added), ", ")
+      if decl.l and is_bean(decl.lines, decl.l) then
+        if #added > 0 then
+          warn[#warn + 1] = ("Spring: %s is a @Bean method: Spring calls it and injects its parameters, it does not pass your default: `%s` must be a bean (or carry @Value), else the context fails to start; only direct calls got the default"):format(
+            name, added_txt)
+        end
+        if spec.name ~= name then
+          warn[#warn + 1] = ("Spring: the bean's name changes from `%s` to `%s` (injection by name, @Qualifier(\"%s\"), @DependsOn break)"):format(name, spec.name, name)
+        end
+      end
+      local mapping = decl.l and annotated(decl.lines, decl.l, "@(%a*Mapping)%f[^%w_]")
+      if mapping then
+        local renamed = {}
+        for _, p in ipairs(spec.params) do
+          local o = p.orig and info.parameters[p.orig + 1]
+          if o and o.name ~= p.name then renamed[#renamed + 1] = o.name .. " -> " .. p.name end
+        end
+        local removed = #spec.params - #added < #info.parameters
+        if #added > 0 or #renamed > 0 or removed then
+          warn[#warn + 1] = ("Spring: %s is a request handler (@%s): Spring binds its parameters from the request, not from your default%s%s%s; the HTTP API changes for its clients"):format(
+            name, mapping, #added > 0 and ("; new `" .. added_txt .. "` is read from the request (a simple type: a required query parameter of that name, error 400 when missing; annotate it, e.g. @RequestParam(defaultValue = ...))") or "",
+            #renamed > 0 and ("; renamed " .. table.concat(renamed, ", ") .. ": an unannotated parameter is bound by its name") or "",
+            removed and "; a removed parameter is no longer read" or "")
+        end
+      end
+      M.last = { label = label, files = files, ok = true, spec = spec, info = info, left = left, impls = impls, warn = warn, notes = notes,
+        ms = ms, edit_ms = edit_ms, validated_at = validated_at, ctor = ctor }
+      notify(summary(label, files, root) .. (#notes > 0 and (". " .. table.concat(notes, "; ")) or "")
+        .. (#warn > 0 and (". WARNING: " .. table.concat(warn, "; ")) or ""), #warn > 0 and vim.log.levels.WARN or nil)
+      follow_up(label, before, paths)
+      return done(true)
     end
-    if #impls > 0 then
-      notes[#notes + 1] = ("jdt.ls also changed the %d method(s) that implement or override it: %s"):format(#impls, table.concat(impls, ", "))
+    if async then
+      notify(("Changing signature of %s... (jdt.ls is computing it; a method with implementations takes a few seconds)"):format(name))
     end
-    -- Spring: who calls the method is the container (a @Bean method, a request handler), not the code
-    local added = vim.tbl_filter(function(p) return p.orig == nil end, spec.params)
-    local added_txt = table.concat(vim.tbl_map(param_text, added), ", ")
-    if decl.l and is_bean(decl.lines, decl.l) then
-      if #added > 0 then
-        warn[#warn + 1] = ("Spring: %s is a @Bean method: Spring calls it and injects its parameters, it does not pass your default: `%s` must be a bean (or carry @Value), else the context fails to start; only direct calls got the default"):format(
-          name, added_txt)
-      end
-      if spec.name ~= name then
-        warn[#warn + 1] = ("Spring: the bean's name changes from `%s` to `%s` (injection by name, @Qualifier(\"%s\"), @DependsOn break)"):format(name, spec.name, name)
-      end
-    end
-    local mapping = decl.l and annotated(decl.lines, decl.l, "@(%a*Mapping)%f[^%w_]")
-    if mapping then
-      local renamed = {}
-      for _, p in ipairs(spec.params) do
-        local o = p.orig and info.parameters[p.orig + 1]
-        if o and o.name ~= p.name then renamed[#renamed + 1] = o.name .. " -> " .. p.name end
-      end
-      local removed = #spec.params - #added < #info.parameters
-      if #added > 0 or #renamed > 0 or removed then
-        warn[#warn + 1] = ("Spring: %s is a request handler (@%s): Spring binds its parameters from the request, not from your default%s%s%s; the HTTP API changes for its clients"):format(
-          name, mapping, #added > 0 and ("; new `" .. added_txt .. "` is read from the request (a simple type: a required query parameter of that name, error 400 when missing; annotate it, e.g. @RequestParam(defaultValue = ...))") or "",
-          #renamed > 0 and ("; renamed " .. table.concat(renamed, ", ") .. ": an unannotated parameter is bound by its name") or "",
-          removed and "; a removed parameter is no longer read" or "")
-      end
-    end
-    M.last = { label = label, files = files, ok = true, spec = spec, info = info, left = left, impls = impls, warn = warn, notes = notes,
-      ms = ms, edit_ms = edit_ms, validated_at = validated_at, ctor = ctor }
-    notify(summary(label, files, root) .. (#notes > 0 and (". " .. table.concat(notes, "; ")) or "")
-      .. (#warn > 0 and (". WARNING: " .. table.concat(warn, "; ")) or ""), #warn > 0 and vim.log.levels.WARN or nil)
-    follow_up(label, before, paths)
-    return done(true)
+    request_capturing(client, "java/getRefactorEdit", {
+      command = "changeSignature", context = cs_params(decl.uri, decl.l or l, decl.c or c),
+      options = { tabSize = vim.lsp.util.get_effective_tabstop(buf), insertSpaces = vim.bo[buf].expandtab },
+      commandArguments = { info.methodIdentifier, false, spec.name, spec.visibility == "package" and "" or spec.visibility,
+        spec.returns, params, info.exceptions or {}, false },
+    }, M.signature_ms, buf, function(res, rerr, msgs)
+      outcome, finished = finish(res, rerr, msgs), true
+    end)
+    if async then return nil end -- opts.on_done(ok) reports the outcome
+    vim.wait(M.signature_ms + 1000, function() return finished end, 5)
+    return outcome
   end
 
   local has_change = false
   for k in pairs(opts) do
-    if k ~= "on_done" then has_change = true end
+    if k ~= "on_done" and k ~= "async" then has_change = true end
   end
+  -- async: the edit request runs in the background (a progress message, the editor stays usable; the
+  -- method with implementations takes jdt.ls 2.6-3.9 s), the function returns nil and opts.on_done(ok) follows.
+  -- Default: synchronous for Lua callers with arguments (returns ok), asynchronous for the prompt (<leader>js).
+  async = opts.async == true
   if opts.signature then return run(spec_from_form(info, opts.signature, ctor)) end
   if has_change then return run(spec_from_opts(info, opts)) end
   vim.ui.input({ prompt = "Change signature (new parameter: `Type name = default`): ", default = sig_form(info, ctor) }, function(s)
     if s == nil or vim.trim(s) == "" then return run(nil, nil) end
+    async = opts.async ~= false
     run(spec_from_form(info, s, ctor))
   end)
 end

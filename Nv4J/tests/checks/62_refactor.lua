@@ -92,6 +92,7 @@
 --                       name, unknown option, no change, jdt.ls's invalid default, library method/interface).
 --  change_signature_no_edit (stub): jdt.ls null + showMessage, empty edit: refused, its message once.
 --  change_signature_constructor: Invoice(...) + discount: every `new Invoice(` passes 0 (declaration, call).
+--  change_signature_interface_budget: the first interface change of the session within 2 s (FAILs while over).
 --  change_signature_interface: from Rule.apply: Half.apply changed too (noted); from Half.apply refused.
 --  change_signature_boot: @Bean parameter / @Bean renamed / @GetMapping parameter: Spring warnings.
 --  change_signature_errors (+ _twin, stub): syntax error in Checkout; twin: its edit dropped -> warning.
@@ -1924,12 +1925,13 @@ local function calls(txt, name, last)
   return all, hit
 end
 
---- Where change_signature's time went (refactor.last.ms: info, definition, edit, references, implementations, apply).
+--- Where change_signature's time went (refactor.last.ms: info, definition, edit; references and implementations
+--- run in parallel with edit; wait = for them after the edit; apply).
 local function cs_ms()
   local m = has("change_signature") and refactor.last and refactor.last.ms
   if not m then return "" end
   local parts = {}
-  for _, k in ipairs({ "info", "definition", "edit", "references", "implementations", "apply" }) do
+  for _, k in ipairs({ "info", "definition", "edit", "references", "implementations", "wait", "apply" }) do
     if m[k] then parts[#parts + 1] = ("%s %.0f"):format(k, m[k]) end
   end
   return " [ms: " .. table.concat(parts, ", ") .. "]"
@@ -2092,20 +2094,36 @@ case("change_signature_prompt", function()
   if not m.callback then return lsp.report(P .. "change_signature_prompt", false, "<leader>js has no Lua callback: " .. vim.inspect(m.rhs)) end
   local calc = lsp.open(CALC)
   lsp.open(CHECKOUT)
-  local seen = answer_input("public int total(Invoice invoice, int discount = 0)")
-  local r = cs_at(calc, "public int total%(Invoice invoice%)", "total", nil, function() return m.callback() end)
+  -- the prompt path is asynchronous: the mapping returns at once with a progress message; the outcome follows
+  local function prompted(buf, answer, fn)
+    local seen = answer_input(answer)
+    refactor.last = nil
+    local l, c = pos(buf, "public int total%(Invoice invoice%)", "total")
+    vim.api.nvim_set_current_buf(buf); vim.api.nvim_win_set_cursor(0, { l + 1, c })
+    local got, stop = capture()
+    local t0 = E.now()
+    local ret = fn()
+    local returned = E.now() - t0
+    local ok = vim.wait(refactor.signature_ms + 1000, function() return refactor.last ~= nil end, 5)
+    local ms = E.now() - t0
+    stop()
+    return { seen = seen, ret = ret, returned = returned, ms = ms, ok = ok and refactor.last.ok,
+      progress = find_msg(got, "Changing signature of total...") ~= nil }
+  end
+  local r = prompted(calc, "public int total(Invoice invoice, int discount = 0)", function() return m.callback() end)
+  local seen = r.seen
   local a, z = calls(text_of(CHECKOUT), "total", "0")
-  local first = refactor.last and refactor.last.ok and a == 3 and z == 3
+  local first = r.ok and a == 3 and z == 3 and r.progress and r.ret == nil
   F.restore(snap, client)
   calc = lsp.open(CALC)
-  local seen2 = answer_input("public int total(Invoice inv)")
-  local r2 = cs_at(calc, "public int total%(Invoice invoice%)", "total")
+  local r2 = prompted(calc, "public int total(Invoice inv)", function() return refactor.change_signature() end)
+  local seen2 = r2.seen
   local pt = text_of(CALC)
-  local second = refactor.last and refactor.last.ok and pt:find("public int total(Invoice inv) {", 1, true) ~= nil and pt:find("int gross = gross(inv);", 1, true) ~= nil
+  local second = r2.ok and pt:find("public int total(Invoice inv) {", 1, true) ~= nil and pt:find("int gross = gross(inv);", 1, true) ~= nil
   lsp.report(P .. "change_signature_prompt", first and second and seen.default == "public int total(Invoice invoice)"
     and (seen.prompt or ""):find("Type name = default", 1, true) ~= nil and r.ms <= APPLY_MS and r2.ms <= APPLY_MS,
-    ("prompt %q default %q; <leader>js: applied %s (%d/%d calls pass 0, %.0f ms); typed rename: %s (%.0f ms, prompt default %q)"):format(
-      tostring(seen.prompt), tostring(seen.default), tostring(first), z, a, r.ms, tostring(second), r2.ms, tostring(seen2.default)))
+    ("prompt %q default %q; <leader>js: returned %s after %.0f ms with progress message %s, applied %s (%d/%d calls pass 0, done after %.0f ms); typed rename: %s (%.0f ms, prompt default %q)"):format(
+      tostring(seen.prompt), tostring(seen.default), tostring(r.ret), r.returned, tostring(r.progress), tostring(first), z, a, r.ms, tostring(second), r2.ms, tostring(seen2.default)))
 end)
 
 -- change_signature_refused: each refused with its reason, nothing changed (buffers and disk): not on a
@@ -2166,25 +2184,27 @@ case("change_signature_no_edit", function()
   if not has("change_signature") then return lsp.report(P .. "change_signature_no_edit", false, pending_reason("change_signature")) end
   local calc = lsp.open(CALC)
   local before = { [calc] = E.text(calc) }
-  local real = client.request_sync
+  local real = client.request
   local mode = "null"
-  client.request_sync = function(self, m, params, t, b)
+  -- getRefactorEdit is asynchronous (client:request): the stub answers on the next tick, like jdt.ls
+  client.request = function(self, m, params, handler, b)
     if m == "java/getRefactorEdit" then
       if mode == "null" then
         local h = self.handlers["window/showMessage"] or vim.lsp.handlers["window/showMessage"]
         h(nil, { type = 1, message = "stubbed jdt.ls refusal" }, { method = "window/showMessage", client_id = self.id })
-        return { result = vim.NIL }
       end
-      return { result = { edit = { documentChanges = {} } } }
+      local result = mode == "null" and vim.NIL or { edit = { documentChanges = {} } }
+      vim.schedule(function() handler(nil, result, { method = m, client_id = self.id, bufnr = b }) end)
+      return true, 0
     end
-    return real(self, m, params, t, b)
+    return real(self, m, params, handler, b)
   end
   local ok, r1, r2 = pcall(function()
     local a = cs_at(calc, "public int total%(Invoice invoice%)", "total", ADD_DISCOUNT)
     mode = "empty"
     return a, cs_at(calc, "public int total%(Invoice invoice%)", "total", ADD_DISCOUNT)
   end)
-  client.request_sync = real
+  client.request = real
   if not ok then error(r1) end
   local m1 = find_msg(r1.got, "Change signature: jdt.ls gave no edit and said: stubbed jdt.ls refusal; nothing changed", vim.log.levels.ERROR)
   local n1 = #vim.tbl_filter(function(g) return g.msg:find("stubbed jdt.ls refusal", 1, true) ~= nil end, r1.got)
@@ -2240,27 +2260,50 @@ local function plant_rule()
   return open_fresh({ CALC })
 end
 
+-- change_signature_interface_budget: the 2 s budget for a method with implementations, measured on the first
+-- such change of the session (Rule.apply gets `int extra = 1`). jdt.ls's hierarchy search took 5.1 to 5.4 s
+-- in Task 4d: this case FAILs visibly while it is over 2 s ("awaiting user ruling"), like the pending lines.
+local BUDGET_MS = APPLY_MS
+case("change_signature_interface_budget", function()
+  if not has("change_signature") then return lsp.report(P .. "change_signature_interface_budget", false, pending_reason("change_signature")) end
+  local calc = plant_rule()
+  local r = cs_at(calc, "int apply%(int amount%);", "apply", { add = { { "int", "extra", "1" } } })
+  local applied = r.ret == true and text_of(CALC):find("public int apply(int amount, int extra) {", 1, true) ~= nil
+  E.log("refactor_change_signature_interface", r.ms, 1)
+  local within = applied and r.ms <= BUDGET_MS
+  lsp.report(P .. "change_signature_interface_budget", within, ("%s after %.0f ms (budget %d ms)%s%s"):format(applied and "applied" or "NOT applied", r.ms, BUDGET_MS,
+    cs_ms(), (applied and not within) and "; OVER 2 s budget: awaiting user ruling" or ""))
+end)
+
 -- change_signature_interface: from the interface method Rule.apply: jdt.ls changes the implementation
--- Half.apply too (the summary names it) and the call passes the default; from Half.apply: refused with
--- jdt.ls's reason and where to do it. jdt.ls's hierarchy search makes this one slow (3-5 s measured, over
--- the 2 s budget: reported, open item), so the case checks the result within M.signature_ms.
+-- Half.apply too (the summary names it), the call passes the default, build clean; from Half.apply:
+-- refused with jdt.ls's reason and where to do it. Correctness only, with the request's hard timeout
+-- (refactor.signature_ms); the time is change_signature_interface_budget's.
 case("change_signature_interface", function()
   if not has("change_signature") then return lsp.report(P .. "change_signature_interface", false, pending_reason("change_signature")) end
   local calc = plant_rule()
   local before = E.text(calc)
   local r0 = cs_at(calc, "public int apply%(int amount%)", "apply", { add = { { "int", "extra", "1" } } })
   local refused = r0.ret == false and find_msg(r0.got, "change it at the declaration it implements") ~= nil and E.text(calc) == before
-  local r = cs_at(calc, "int apply%(int amount%);", "apply", { add = { { "int", "extra", "1" } } })
+  -- asynchronous (opts.async): returns at once with a progress message, the editor is not blocked for jdt.ls's
+  -- 2.6-3.9 s; on_done reports the outcome
+  local outcome
+  local r = cs_at(calc, "int apply%(int amount%);", "apply", { add = { { "int", "extra", "1" } }, async = true, on_done = function(ok) outcome = ok end })
+  local t_ret, got = r.ms, r.got
+  local got2, stop = capture()
+  local t0 = E.now() - r.ms
+  vim.wait(refactor.signature_ms + 1000, function() return outcome ~= nil end, 5)
+  stop()
+  r = { ret = outcome, ms = E.now() - t0, got = vim.list_extend(got, got2) }
+  local nonblocking = t_ret < 300 and find_msg(got, "Changing signature of apply...") ~= nil
   local pt = text_of(CALC)
+  local changed = pt:find("int apply(int amount, int extra);", 1, true) ~= nil and pt:find("public int apply(int amount, int extra) {", 1, true) ~= nil
+    and pt:find("return r.apply(amount, 1);", 1, true) ~= nil
   local note = find_msg(r.got, "jdt.ls also changed the 1 method(s) that implement or override it: src/main/java/demo/billing/PriceCalculator.java:")
   local ok_clean, why = cs_clean({ CALC }, E.now() - r.ms)
-  local good = r.ret == true and refused and note ~= nil and ok_clean and r.ms <= refactor.signature_ms
-    and pt:find("int apply(int amount, int extra);", 1, true) ~= nil and pt:find("public int apply(int amount, int extra) {", 1, true) ~= nil
-    and pt:find("return r.apply(amount, 1);", 1, true) ~= nil
-  E.log("refactor_change_signature_interface", r.ms, 1)
-  lsp.report(P .. "change_signature_interface", good, ("from Half.apply: %s (%.0f ms); from Rule.apply: returned %s after %.0f ms%s (jdt.ls getRefactorEdit %.0f ms); interface + implementation + call changed: %s; note: %s; build %s"):format(
-    refused and "refused with jdt.ls's reason" or "NOT refused", r0.ms, tostring(r.ret), r.ms, r.ms > APPLY_MS and " OVER the 2 s budget (jdt.ls's hierarchy search, open item)" or "",
-    refactor.last and refactor.last.edit_ms or -1, tostring(pt:find("public int apply(int amount, int extra) {", 1, true) ~= nil and pt:find("r.apply(amount, 1)", 1, true) ~= nil),
+  local good = r.ret == true and refused and note ~= nil and ok_clean and changed and r.ms <= refactor.signature_ms and nonblocking
+  lsp.report(P .. "change_signature_interface", good, ("from Half.apply: %s; from Rule.apply (async): returned after %.0f ms with a progress message %s, on_done %s (%.0f ms, second change of the session%s); interface + implementation + call changed: %s; note: %s; build %s"):format(
+    refused and "refused with jdt.ls's reason" or "NOT refused", t_ret, tostring(nonblocking), tostring(r.ret), r.ms, cs_ms(), tostring(changed),
     note and "yes" or "MISSING", ok_clean and "clean" or ("NOT clean: " .. why)))
 end)
 
@@ -2311,18 +2354,20 @@ case("change_signature_errors_twin", function()
   if not has("change_signature") then return lsp.report(P .. "change_signature_errors_twin", false, pending_reason("change_signature")) end
   local calc, chk = lsp.open(CALC), lsp.open(CHECKOUT)
   local l1, l2 = E.line_of(chk, "calculator%.total%(new Invoice") + 1, E.line_of(chk, "calculator%.total%(invoice%)") + 1
-  local real = client.request_sync
-  client.request_sync = function(self, m, params, t, b)
-    local res, err = real(self, m, params, t, b)
-    if m == "java/getRefactorEdit" and res and type(res.result) == "table" and res.result.edit and res.result.edit.documentChanges then
-      res.result.edit.documentChanges = vim.tbl_filter(function(ch)
-        return not (ch.textDocument and ch.textDocument.uri:find("/demo/shop/Checkout.java", 1, true))
-      end, res.result.edit.documentChanges)
-    end
-    return res, err
+  local real = client.request
+  client.request = function(self, m, params, handler, b)
+    if m ~= "java/getRefactorEdit" then return real(self, m, params, handler, b) end
+    return real(self, m, params, function(err, result, ctx)
+      if type(result) == "table" and result.edit and result.edit.documentChanges then
+        result.edit.documentChanges = vim.tbl_filter(function(ch)
+          return not (ch.textDocument and ch.textDocument.uri:find("/demo/shop/Checkout.java", 1, true))
+        end, result.edit.documentChanges)
+      end
+      return handler(err, result, ctx)
+    end, b)
   end
   local ok, r = pcall(cs_at, calc, "public int total%(Invoice invoice%)", "total", ADD_DISCOUNT)
-  client.request_sync = real
+  client.request = real
   if not ok then error(r) end
   local warn = find_msg(r.got, "NOT updated by jdt.ls", vim.log.levels.WARN) or ""
   lsp.report(P .. "change_signature_errors_twin", r.ret == true and warn:find("src/main/java/demo/shop/Checkout.java:" .. l1, 1, true) ~= nil
@@ -2364,6 +2409,10 @@ case("change_signature_parse", function()
       'public int total(Map<String, Integer> m = Map.of("a", 1), Invoice invoice#0)' },
     { refactor._spec_from_form(info, "long total(Invoice inv, int d = a < b ? 1 : 2)"), "package long total(Invoice inv#0, int d = a < b ? 1 : 2)" },
     { select(2, refactor._spec_from_form(info, "public int total(Invoice invoice, int x)")), "new parameter `x` needs a default value for the call sites: `int x = value`" },
+    { select(2, refactor._spec_from_form({ methodName = "f", modifier = "public", returnType = "int", parameters = { { type = "Invoice", name = "invoice", originalIndex = 0 },
+      { type = "int", name = "n", originalIndex = 1 } } }, "public int f(int m)")),
+      "`int m` takes the place of `Invoice invoice` with another type: say what you mean: a new parameter needs `= default` (`int m = value`), a rename/retype or removal needs the explicit options (rename = { invoice = \"m\" }, retype, remove)" },
+    { refactor._spec_from_form(info, "public int total(Invoice inv)"), "public int total(Invoice inv#0)" },
     { select(2, refactor._spec_from_form(info, "public static int total(Invoice invoice)")), "`static` cannot be changed here (only visibility, return type, name and parameters); leave it out" },
     { refactor._spec_from_opts(v, { add = { { "int", "z", "0" } } }), "package int scale(int value#0, int z = 0, String... tags#1)" },
     { refactor._spec_from_opts(v, { add = { { "int", "z", "0", 1 } }, rename = { value = "x" } }), "package int scale(int z = 0, int x#0, String... tags#1)" },
