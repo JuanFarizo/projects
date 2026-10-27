@@ -330,7 +330,9 @@ end, { desc = "Test for this class (open or create)" })
 -- occurrence, the declaration inlines every one and removes it; a local variable every use).
 -- <leader>js: change the signature of the method at the cursor (on its declaration or a call): the
 -- signature is asked as text, e.g. `public int total(Invoice invoice, int discount = 0)` (a new
--- parameter's default is what the call sites pass). Safe delete: not built yet.
+-- parameter's default is what the call sites pass). <leader>jd: safe delete the method, field, constant or
+-- type at the cursor: with usages nothing is deleted and they are listed in the quickfix list; without,
+-- the declaration is removed (the file, for the only type of its file).
 map("n", "<leader>jr", function()
   require("nv4j.refactor").rename()
 end, { desc = "Refactor: rename class (package on a package line)" })
@@ -346,6 +348,9 @@ end, { desc = "Refactor: inline method / variable / constant" })
 map("n", "<leader>js", function()
   require("nv4j.refactor").change_signature()
 end, { desc = "Refactor: change method signature" })
+map("n", "<leader>jd", function()
+  require("nv4j.refactor").safe_delete()
+end, { desc = "Refactor: safe delete (usages listed, else deleted)" })
 pcall(function()
   require("which-key").add({ { "<leader>j", group = "java" } })
 end)

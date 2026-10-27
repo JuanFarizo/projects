@@ -1,8 +1,8 @@
 -- Refactors (decision D23, specs/features/refactors.md, check 62_refactor). P3 Task 4a: rename class and
 -- rename package; Task 4b: move a class to another package; Task 4c: inline a method call, local variable
 -- or constant (jdt.ls's inline code actions, see M.inline); Task 4d: change a method's signature with
--- arguments (java/getChangeSignatureInfo + java/getRefactorEdit, see M.change_signature). Safe delete
--- comes in a later sub-task.
+-- arguments (java/getChangeSignatureInfo + java/getRefactorEdit, see M.change_signature); Task 4e: safe
+-- delete (references first; usages to the quickfix, else the declaration removed, see M.safe_delete).
 --
 -- move: the class's file moved to the target package's folder through the same path as a package rename
 -- (rename_paths): `workspace/willRenameFiles` for the file move (jdt.ls's computeMoveEdit runs the same
@@ -1955,6 +1955,390 @@ function M.change_signature(opts)
     async = opts.async ~= false
     run(spec_from_form(info, s, ctor))
   end)
+end
+
+-- ── safe delete (Task 4e) ────────────────────────────────────────────────────────────────────────
+--
+-- jdt.ls has no safe delete: own code on jdt.ls's requests (D23). The declaration under the cursor (or
+-- the one a reference under the cursor resolves to, textDocument/definition) is found among jdt.ls's
+-- document symbols (members and types; their `range` includes the javadoc and the annotations). Its
+-- usages: textDocument/references (declaration excluded, main and test sources; references inside the
+-- declaration itself, e.g. recursion, do not count), for a method also textDocument/implementation
+-- (methods that implement/override it count as usages). Files jdt.ls may not have searched right are
+-- read as text too: buffers with unsaved changes (jdt.ls may not have taken the change in yet) and files
+-- with errors (jdt.ls skips what it cannot parse): a match of the name there is a "possible usage".
+-- Any usage: nothing deleted, every usage in the quickfix list (opened), a message with the count.
+-- None: the declaration's lines removed (with its javadoc/annotations, and one blank line next to it)
+-- through apply() (written unless the buffer had unsaved changes, one `u`), or, for the only type of its
+-- file, the file deleted (buffer wiped, jdt.ls told with didChangeWatchedFiles: it has no willDeleteFiles).
+-- Refused (nothing deleted, reason shown): local variables and parameters (jdt.ls lists no symbols for
+-- them), constructors (implicit super() calls and frameworks are not references), enum constants
+-- (values()/valueOf() and switches), record components (the canonical constructor and accessors),
+-- a field declared together with another (`int a, b;`), a method with @Override (deleting it changes
+-- which method runs), a type file with unsaved changes. Framework entry points (a @Bean method, a
+-- request handler, an @Value field, a stereotype class, a @Test...) have no references: deleted with
+-- a WARNING, plus the strings/config still naming it (stale_refs).
+
+M.delete_ms = 5000 -- per jdt.ls request (symbols, references, implementations); the first search of a session can take a while
+
+local TYPE_WORD = { [5] = "class", [10] = "enum", [11] = "interface", [23] = "record" }
+local KIND_WORD = { [6] = "method", [8] = "field", [14] = "constant", [7] = "field" }
+-- framework annotations whose element is used by reflection (no reference in the code)
+local ENTRY = { "Bean", "GetMapping", "PostMapping", "PutMapping", "DeleteMapping", "PatchMapping", "RequestMapping",
+  "EventListener", "Scheduled", "PostConstruct", "PreDestroy", "ExceptionHandler", "ModelAttribute", "InitBinder",
+  "Autowired", "Inject", "Value", "Resource", "KafkaListener", "RabbitListener", "JmsListener", "Component", "Service",
+  "Repository", "Controller", "RestController", "Configuration", "ControllerAdvice", "RestControllerAdvice",
+  "SpringBootApplication", "ConfigurationProperties", "Entity", "Embeddable", "MappedSuperclass", "Id", "Column",
+  "JsonProperty", "Test", "ParameterizedTest", "BeforeEach", "AfterEach", "BeforeAll", "AfterAll" }
+
+local function plain_name(n) return (tostring(n):gsub("[<(].*$", "")) end
+
+local function before_pos(a, b) -- a < b (positions)
+  return a.line < b.line or (a.line == b.line and a.character < b.character)
+end
+
+--- jdt.ls's document symbols of `uri` as a flat list { sym, parent } (depth first), or nil, reason.
+local function symbols_of(client, uri, buf)
+  local res, rerr = client:request_sync("textDocument/documentSymbol", { textDocument = { uri = uri } }, M.delete_ms, buf)
+  if not res then return nil, ("jdt.ls did not answer the document symbol request in %d ms (%s)"):format(M.delete_ms, tostring(rerr)) end
+  if res.err then return nil, ("jdt.ls refused the document symbol request (%s)"):format(res.err.message or vim.inspect(res.err)) end
+  local syms = res.result
+  if type(syms) ~= "table" or (syms[1] and not syms[1].range) then return nil, "jdt.ls gave no document symbols for this file" end
+  local flat = {}
+  local function walk(list, parent)
+    for _, s in ipairs(list or {}) do
+      flat[#flat + 1] = { sym = s, parent = parent }
+      walk(s.children, s)
+    end
+  end
+  walk(syms, nil)
+  return flat
+end
+
+--- The text between two 0-based positions of `lines`.
+local function text_between(lines, a, b)
+  if a.line == b.line then return (lines[a.line + 1] or ""):sub(a.character + 1, b.character) end
+  local out = { (lines[a.line + 1] or ""):sub(a.character + 1) }
+  for i = a.line + 2, b.line do out[#out + 1] = lines[i] or "" end
+  out[#out + 1] = (lines[b.line + 1] or ""):sub(1, b.character)
+  return table.concat(out, "\n")
+end
+
+--- The whole-line (or exact) range to delete for `sym` in `lines`, with one blank line next to it:
+--- { s = { line, character }, e = { line, character } } (0-based, end exclusive).
+local function delete_range(lines, sym)
+  local r = sym.range
+  local first, last = lines[r.start.line + 1] or "", lines[r["end"].line + 1] or ""
+  if first:sub(1, r.start.character):match("%S") or last:sub(r["end"].character + 1):match("%S") then
+    return { s = r.start, e = r["end"] } -- shares its line(s) with other code: the exact range only
+  end
+  local s, e = r.start.line, r["end"].line -- whole lines s..e (0-based)
+  local function blank_line(i) return i >= 0 and i < #lines and not lines[i + 1]:match("%S") end
+  if blank_line(s - 1) and (blank_line(e + 1) or (lines[e + 2] or ""):match("^%s*}") or e + 1 >= #lines) then
+    s = s - 1
+  elseif blank_line(e + 1) and ((lines[s] or ""):match("{%s*$") or s == 0) then
+    e = e + 1
+  end
+  if e + 1 >= #lines then -- the last line: from the end of the line before
+    if s == 0 then return { s = { line = 0, character = 0 }, e = { line = e, character = #lines[e + 1] } } end
+    return { s = { line = s - 1, character = #lines[s] }, e = { line = e, character = #lines[e + 1] } }
+  end
+  return { s = { line = s, character = 0 }, e = { line = e + 1, character = 0 } }
+end
+
+--- Imports of `lines` whose name the deleted text used and the rest of the file no longer does.
+local function orphaned_imports(lines, gone)
+  local kept, used, out = {}, blank(table.concat(gone, "\n")), {}
+  local imports = {}
+  for _, l in ipairs(lines) do
+    local fqn = l:match("^%s*import%s+static%s+([%w_$.]+)%s*;") or l:match("^%s*import%s+([%w_$.]+)%s*;")
+    if fqn then imports[#imports + 1] = fqn else kept[#kept + 1] = l end
+  end
+  local rest = blank(table.concat(kept, "\n"))
+  for _, fqn in ipairs(imports) do
+    local simple = fqn:match("([%w_$]+)$")
+    if simple and used:find(word(simple)) and not rest:find(word(simple)) then out[#out + 1] = fqn end
+  end
+  return out
+end
+
+--- Deletes the method, field, constant or type at the cursor (its declaration name, or a reference to it)
+--- when nothing uses it; otherwise nothing is deleted and the usages are listed in the quickfix list.
+--- See the section comment above. opts.on_done(ok) afterwards. Returns ok (true = deleted).
+function M.safe_delete(opts)
+  opts = opts or {}
+  local buf = vim.api.nvim_get_current_buf()
+  local path = vim.api.nvim_buf_get_name(buf)
+  local mine = false
+  local function done(ok)
+    if mine then busy, mine = nil, false end
+    if opts.on_done then opts.on_done(ok) end
+    return ok
+  end
+  local function refuse(msg, level)
+    M.last = { label = "Safe delete", files = {}, ok = false, err = msg }
+    notify("Safe delete: " .. msg, level or vim.log.levels.WARN)
+    return done(false)
+  end
+  if busy then return refuse(busy_msg() .. "; nothing deleted") end
+  local client = jdtls_for(path)
+  if not client or #vim.lsp.get_clients({ bufnr = buf, name = "jdtls" }) == 0 then
+    return refuse("jdt.ls is not attached to this buffer")
+  end
+  local root = root_of(client)
+  if not (root and under(path, root)) then
+    return refuse(("%s is outside jdt.ls's project (%s): its usages cannot be searched; nothing deleted"):format(path, tostring(root)))
+  end
+  busy, mine = { label = "safe delete" }, true
+  local ms, t = {}, vim.uv.hrtime()
+  local function lap(k)
+    local n = vim.uv.hrtime()
+    ms[k], t = (ms[k] or 0) + (n - t) / 1e6, n
+  end
+  local cur = vim.api.nvim_win_get_cursor(0)
+  local l, c = cur[1] - 1, cur[2]
+  local cword = vim.fn.expand("<cword>")
+  local uri = vim.uri_from_bufnr(buf)
+
+  -- 1. the declaration: a symbol whose name is under the cursor, else where the reference under it points
+  local flat, serr = symbols_of(client, uri, buf)
+  lap("symbols")
+  if not flat then return refuse(serr .. "; nothing deleted", vim.log.levels.ERROR) end
+  local hit, decl_path, decl_uri = nil, path, uri
+  for _, x in ipairs(flat) do
+    local sr = x.sym.selectionRange
+    if x.sym.kind ~= 4 and contains({ start = sr.start, ["end"] = { line = sr.start.line, character = sr.start.character + #plain_name(x.sym.name) } }, l, c) then
+      hit = x
+    end
+  end
+  if not hit then
+    local d, derr = declaration(client, buf, l, c)
+    lap("definition")
+    if not d then
+      return refuse(("the cursor is not on a declaration or a reference (`%s`: %s): put it on the name of a method, field or type; nothing deleted"):format(cword, derr))
+    end
+    if not d.path or not under(d.path, root) then
+      return refuse(("`%s` is declared outside this project (%s): only the project's own declarations can be deleted; nothing deleted"):format(cword, d.path or d.uri))
+    end
+    if d.uri ~= uri then
+      flat, serr = symbols_of(client, d.uri, buf)
+      lap("symbols")
+      if not flat then return refuse(serr .. "; nothing deleted", vim.log.levels.ERROR) end
+    end
+    decl_path, decl_uri = d.path, d.uri
+    for _, x in ipairs(flat) do
+      local sr = x.sym.selectionRange.start
+      if x.sym.kind ~= 4 and sr.line == d.range.start.line and sr.character == d.range.start.character then hit = x end
+    end
+    if not hit then
+      return refuse(("`%s` is a local variable or a parameter (jdt.ls lists only types and members): inline a local with <leader>ji or delete its line; remove a parameter with change signature (<leader>js); nothing deleted"):format(cword))
+    end
+  end
+  local sym, parent = hit.sym, hit.parent
+  local name = plain_name(sym.name)
+  local lines = lines_of(decl_path)
+  local kind = sym.kind
+  local header = text_between(lines, sym.range.start, sym.selectionRange.start)
+  local is_type = TYPE_WORD[kind] ~= nil
+  local what = is_type and (header:match("@interface%s*$") and "annotation" or blank(header):match("%f[%w](%a+)%s*$") or TYPE_WORD[kind])
+    or KIND_WORD[kind]
+  if kind == 9 then
+    return refuse(("`%s` is a constructor: its callers include implicit super() calls and frameworks (Spring, JPA, Jackson) that create objects by reflection, which jdt.ls's references do not show; delete it by hand if you are sure; nothing deleted"):format(name))
+  elseif kind == 22 then
+    return refuse(("`%s` is an enum constant: values(), valueOf(\"%s\"), switches and serialized data use it without a reference jdt.ls can show; delete it by hand if you are sure; nothing deleted"):format(name, name))
+  elseif not what then
+    return refuse(("`%s` (symbol kind %d) is not something safe delete handles (methods, fields, constants, types); nothing deleted"):format(name, kind))
+  end
+  if (kind == 8 or kind == 7) and parent and TYPE_WORD[parent.kind]
+      and not text_between(lines, parent.selectionRange["end"], sym.range.start):find("{", 1, true) then
+    return refuse(("`%s` is a record component: it is the canonical constructor's parameter and an accessor too; remove it from the record header by hand (or with change signature on the constructor); nothing deleted"):format(name))
+  end
+  for _, x in ipairs(flat) do
+    local o = x.sym
+    if o ~= sym and o.kind ~= 4 and x.parent == parent and not (before_pos(o.range["end"], sym.range.start) or before_pos(sym.range["end"], o.range.start)
+        or (o.range["end"].line == sym.range.start.line and o.range["end"].character == sym.range.start.character)) then
+      return refuse(("`%s` is declared together with `%s` (%s:%d): split the declaration first; nothing deleted"):format(name, plain_name(o.name),
+        rel(decl_path, root), sym.range.start.line + 1))
+    end
+  end
+  local hb = blank(header) -- annotations and modifiers, javadoc/comments blanked
+  local entry = {}
+  for _, a in ipairs(ENTRY) do
+    if hb:find("@" .. a .. "%f[^%w_]") then entry[#entry + 1] = a end
+  end
+  if kind == 6 and hb:find("@Override%f[^%w_]") then
+    return refuse(("`%s` overrides or implements a method of a supertype (@Override): deleting it changes which method runs (or breaks the class when the supertype's is abstract); nothing deleted"):format(name))
+  end
+
+  -- 2. usages: references (+ implementations of a method) and possible usages jdt.ls may have missed
+  local spos = sym.selectionRange.start
+  local res, rerr = client:request_sync("textDocument/references", { textDocument = { uri = decl_uri }, position = spos,
+    context = { includeDeclaration = false } }, M.delete_ms, nil) -- no buffer: every buffer's pending changes are sent first
+  lap("references")
+  if not res then return refuse(("jdt.ls did not answer the references request in %d ms (%s): usages unknown; nothing deleted"):format(M.delete_ms, tostring(rerr)), vim.log.levels.ERROR) end
+  if res.err then return refuse(("jdt.ls refused the references request (%s): usages unknown; nothing deleted"):format(res.err.message or vim.inspect(res.err)), vim.log.levels.ERROR) end
+  local usages, seen, seen_line, self_refs = {}, {}, {}, 0
+  local function add(p, lnum, col, tag)
+    local key = p .. ":" .. lnum .. ":" .. col
+    if seen[key] then return end
+    seen[key], seen_line[p .. ":" .. lnum] = true, true
+    usages[#usages + 1] = { path = p, l = lnum, c = col, tag = tag }
+  end
+  for _, r in ipairs(type(res.result) == "table" and res.result or {}) do
+    if r.uri and r.uri:match("^file:") then
+      local p = vim.uri_to_fname(r.uri)
+      if p == decl_path and contains(sym.range, r.range.start.line, r.range.start.character) then
+        self_refs = self_refs + 1 -- inside the declaration itself (recursion, its own field): goes with it
+      else
+        add(p, r.range.start.line, r.range.start.character, "usage")
+      end
+    end
+  end
+  local impls = 0
+  if kind == 6 and not hb:find("%f[%w]private%f[^%w]") and not hb:find("%f[%w]static%f[^%w]") then
+    local ires = client:request_sync("textDocument/implementation", { textDocument = { uri = decl_uri }, position = spos }, M.delete_ms, nil)
+    lap("implementations")
+    for _, loc in ipairs(ires and type(ires.result) == "table" and ires.result or {}) do
+      local u, rg = loc.uri or loc.targetUri, loc.targetSelectionRange or loc.range
+      if u and rg and u:match("^file:") and not (u == decl_uri and rg.start.line == spos.line) then
+        impls = impls + 1
+        add(vim.uri_to_fname(u), rg.start.line, rg.start.character, "implements or overrides it")
+      end
+    end
+  end
+  -- text of files jdt.ls may not have searched right: unsaved buffers and files with errors
+  local errfiles = {}
+  for _, d in ipairs(vim.diagnostic.get(nil, { severity = ERROR })) do
+    local p = vim.api.nvim_buf_get_name(d.bufnr)
+    if under(p, root) and p:match("%.java$") then errfiles[p] = true end
+  end
+  local scan = {}
+  for p in pairs(dirty_buffers()) do
+    if under(p, root) and p:match("%.java$") then scan[p] = "unsaved changes: jdt.ls may not have taken them in yet" end
+  end
+  for p in pairs(errfiles) do scan[p] = "this file has errors: jdt.ls may skip what it cannot parse" end
+  local pats = kind == 6 and { "%f[%w_$]" .. vim.pesc(name) .. "%s*%(", "::%s*" .. vim.pesc(name) .. "%f[^%w_$]" } or { word(name) }
+  local possible, err_named = 0, {}
+  for p, why in pairs(scan) do
+    local text = vim.split(blank(table.concat(lines_of(p), "\n")), "\n", { plain = true })
+    for i, s in ipairs(text) do
+      for _, pat in ipairs(pats) do
+        local col = s:find(pat)
+        if col and not (p == decl_path and i - 1 >= sym.range.start.line and i - 1 <= sym.range["end"].line) then
+          if not seen_line[p .. ":" .. (i - 1)] then
+            possible = possible + 1
+            add(p, i - 1, col - 1, "possible usage: " .. why)
+          end
+          if errfiles[p] then err_named[p] = true end
+          break
+        end
+      end
+    end
+  end
+  lap("scan")
+  local label_what = ("%s %s"):format(what, kind == 6 and sym.name or name)
+  if #usages > 0 then
+    table.sort(usages, function(a, b) if a.path ~= b.path then return a.path < b.path end return a.l < b.l end)
+    local items, nfiles, files_seen = {}, 0, {}
+    for _, u in ipairs(usages) do
+      if not files_seen[u.path] then files_seen[u.path], nfiles = true, nfiles + 1 end
+      local txt = vim.trim(lines_of(u.path)[u.l + 1] or "")
+      items[#items + 1] = { filename = u.path, lnum = u.l + 1, col = u.c + 1, text = txt .. (u.tag ~= "usage" and (" [" .. u.tag .. "]") or "")
+        .. (under(u.path, root) and "" or " [outside the project]") }
+    end
+    vim.fn.setqflist({}, " ", { title = ("Safe delete %s: usages (nothing deleted)"):format(name), items = items })
+    local win = vim.api.nvim_get_current_win()
+    pcall(vim.cmd, "botright copen")
+    if vim.api.nvim_win_is_valid(win) then vim.api.nvim_set_current_win(win) end
+    local n_use = #usages - impls - possible
+    local parts = { ("%d usage(s)"):format(n_use) }
+    if impls > 0 then parts[#parts + 1] = ("%d method(s) that implement or override it"):format(impls) end
+    if possible > 0 then parts[#parts + 1] = ("%d possible usage(s) in unsaved or broken files (save them / fix their errors, then run it again)"):format(possible) end
+    local listed = vim.tbl_map(function(u) return ("%s:%d"):format(rel(u.path, root), u.l + 1) end, vim.list_slice(usages, 1, 6))
+    local msg = ("Safe delete: %s NOT deleted: %s in %d file(s), listed in the quickfix: %s%s; nothing changed"):format(label_what,
+      table.concat(parts, ", "), nfiles, table.concat(listed, ", "), #usages > 6 and (", +" .. (#usages - 6) .. " more") or "")
+    M.last = { label = "Safe delete " .. name, ok = false, blocked = true, files = {}, usages = usages, impls = impls, possible = possible,
+      count = n_use, ms = ms, err = msg }
+    notify(msg, vim.log.levels.WARN)
+    return done(false)
+  end
+
+  -- 3. no usage: delete
+  local warn, notes = {}, {}
+  local nerr = vim.tbl_count(errfiles)
+  if nerr > 0 then
+    notes[#notes + 1] = ("jdt.ls reports errors in %d file(s) (%s): none of them names `%s` in its text"):format(nerr,
+      table.concat(vim.tbl_map(function(p) return rel(p, root) end, vim.list_slice(vim.tbl_keys(errfiles), 1, 3)), ", "), name)
+  end
+  if self_refs > 0 then notes[#notes + 1] = ("%d reference(s) inside %s itself went with it"):format(self_refs, name) end
+  if #entry > 0 then
+    local extra = ""
+    for _, a in ipairs(entry) do
+      if a == "Bean" then extra = extra .. ("; the bean `%s` is no longer defined: whatever injects it (by type or name) fails at startup"):format(name)
+      elseif a:match("Mapping$") then extra = extra .. "; its HTTP endpoint is gone"
+      elseif a == "Value" then
+        local key = header:match('@Value%s*%(%s*"([^"]*)"')
+        extra = extra .. ("; the property %s is no longer read (it stays in the config)"):format(key and ("`" .. key .. "`") or "it named")
+      end
+    end
+    warn[#warn + 1] = ("Spring/framework: %s carries @%s: the framework uses it by reflection, which jdt.ls's references do not show (deleted anyway; `u` gives it back)%s"):format(
+      name, table.concat(entry, ", @"), extra)
+  end
+  if kind == 6 and name == "main" and hb:find("%f[%w]void%s*$") then
+    warn[#warn + 1] = ("%s is a `main` method: the JVM's entry point, called without a reference"):format(name)
+  end
+  local before = M.error_counts()
+  local files
+  local tops = vim.tbl_filter(function(x) return x.parent == nil and TYPE_WORD[x.sym.kind] end, flat)
+  local whole_file = is_type and parent == nil and #tops == 1
+  if whole_file then
+    local b = vim.fn.bufnr(decl_path)
+    if b ~= -1 and vim.api.nvim_buf_is_loaded(b) and vim.bo[b].modified then
+      return refuse(("%s has unsaved changes and deleting %s deletes the whole file: save or discard them first; nothing deleted"):format(rel(decl_path, root), name))
+    end
+    local text = table.concat(lines, "\n") .. "\n"
+    for _, bb in ipairs(vim.api.nvim_list_bufs()) do
+      if vim.api.nvim_buf_get_name(bb) == decl_path then pcall(vim.api.nvim_buf_delete, bb, { force = true }) end
+    end
+    local okr, rmerr = os.remove(decl_path)
+    if not okr then
+      return refuse(("could not delete %s (%s); its buffer was closed, nothing else changed"):format(rel(decl_path, root), tostring(rmerr)), vim.log.levels.ERROR)
+    end
+    client:notify("workspace/didChangeWatchedFiles", { changes = { { uri = vim.uri_from_fname(decl_path), type = 3 } } })
+    files = { { path = decl_path, deleted = true } }
+    M.last_deleted_text = text
+    notes[#notes + 1] = ("the file is deleted (no `u` for a deleted file: its text is in require(\"nv4j.refactor\").last_deleted_text until the next file deletion, or restore it from git)")
+  else
+    local r = delete_range(lines, sym)
+    local gone = vim.list_slice(lines, sym.range.start.line + 1, sym.range["end"].line + 1)
+    local edit = { documentChanges = { { textDocument = { uri = decl_uri, version = vim.NIL }, edits = { { range = { start = r.s, ["end"] = r.e }, newText = "" } } } } }
+    local ok, fs, why = apply(client, edit, dirty_buffers())
+    lap("apply")
+    files = fs
+    if not ok then
+      failed_part_way("Deleted " .. label_what, why, files, root)
+      return done(false)
+    end
+    local orphans = orphaned_imports(lines_of(decl_path), gone)
+    if #orphans > 0 then
+      notes[#notes + 1] = ("left unused import(s) in %s (remove them with organize imports, <leader>co): %s"):format(vim.fs.basename(decl_path), table.concat(orphans, ", "))
+    end
+  end
+  local _, pkg = src_root_of(vim.fs.dirname(decl_path))
+  local names = is_type and class_names(name, pkg ~= "" and pkg or nil) or { java = { word(name) }, config = { word(name) },
+    bean = vim.tbl_contains(entry, "Bean") and word(name) or nil }
+  local stale, cut = M.stale_refs(require("nv4j.root").project(decl_path), names)
+  if #stale > 0 then
+    warn[#warn + 1] = ("still named in strings/config (reflection, JPQL, bean names, properties: not code usages, check them): %s%s"):format(
+      table.concat(vim.list_slice(stale, 1, 8), ", "), #stale > 8 and (", +" .. (#stale - 8) .. " more") or "")
+  end
+  if cut then warn[#warn + 1] = ("the strings/config scan stopped after %d files"):format(M.scan_max_files) end
+  local label = "Deleted " .. label_what
+  M.last = { label = label, files = files, ok = true, whole_file = whole_file, warn = warn, notes = notes, stale = stale, entry = entry, ms = ms }
+  notify(summary(label, files, root) .. (whole_file and " [file deleted]" or "") .. (#notes > 0 and (". " .. table.concat(notes, "; ")) or "")
+    .. (#warn > 0 and (". WARNING: " .. table.concat(warn, "; ")) or ""), #warn > 0 and vim.log.levels.WARN or nil)
+  follow_up(label, before, whole_file and {} or vim.tbl_map(function(f) return f.path end, files))
+  return done(true)
 end
 
 -- ── neo-tree (plugins/neo-tree.lua) ──────────────────────────────────────────────────────────────
