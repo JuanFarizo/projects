@@ -2062,6 +2062,80 @@ local function orphaned_imports(lines, gone)
   return out
 end
 
+--- Trash for files deleted by safe delete (no `u` for a deleted file): <stdpath cache>/nv4j-trash/<stamp>/
+--- holds the copy at its project-relative path and `.origin` (its absolute path). The newest
+--- M.trash_keep entries are kept. M.trash_dir overrides the place (checks).
+M.trash_keep = 20
+M.trash_dir = nil
+function M.trash_root() return M.trash_dir or (vim.fn.stdpath("cache") .. "/nv4j-trash") end
+
+local function trash_entries()
+  local root, out = M.trash_root(), {}
+  if vim.fn.isdirectory(root) == 0 then return out end
+  for name, kind in vim.fs.dir(root) do
+    if kind == "directory" and vim.uv.fs_stat(root .. "/" .. name .. "/.origin") then out[#out + 1] = name end
+  end
+  table.sort(out)
+  return out
+end
+
+local trash_seq = 0
+--- Copies `path` (bytes from disk) into a new trash entry; returns entry dir, copy path, or nil, err.
+local function to_trash(path, project)
+  local f = io.open(path, "rb")
+  if not f then return nil, nil, "cannot read it" end
+  local bytes = f:read("*a")
+  f:close()
+  trash_seq = trash_seq + 1
+  local dir = ("%s/%s-%06d-%03d"):format(M.trash_root(), os.date("%Y%m%d-%H%M%S"), math.floor(vim.uv.hrtime() / 1e3) % 1000000, trash_seq % 1000)
+  local copy = dir .. "/" .. ((project and under(path, project)) and path:sub(#project + 2) or vim.fs.basename(path))
+  if vim.fn.mkdir(vim.fs.dirname(copy), "p") == 0 then return nil, nil, "cannot create " .. dir end
+  local w = io.open(copy, "wb")
+  local o = io.open(dir .. "/.origin", "wb")
+  if not (w and o) then
+    if w then w:close() end
+    if o then o:close() end
+    vim.fn.delete(dir, "rf")
+    return nil, nil, "cannot write into " .. dir
+  end
+  w:write(bytes); w:close()
+  o:write(path .. "\n" .. copy:sub(#dir + 2) .. "\n"); o:close()
+  local all = trash_entries()
+  for i = 1, #all - M.trash_keep do vim.fn.delete(M.trash_root() .. "/" .. all[i], "rf") end
+  return dir, copy
+end
+
+--- Puts the newest trash entry back at its original path (refused when that path exists), opens it,
+--- tells jdt.ls, removes the entry. Returns ok, message.
+function M.restore_deleted()
+  local all = trash_entries()
+  local function say(msg, level)
+    notify("Restore deleted: " .. msg, level)
+    return level ~= vim.log.levels.WARN and level ~= vim.log.levels.ERROR, msg
+  end
+  if #all == 0 then return say("the trash is empty (" .. M.trash_root() .. ")", vim.log.levels.WARN) end
+  local dir = M.trash_root() .. "/" .. all[#all]
+  local o = vim.fn.readfile(dir .. "/.origin")
+  local dest, relp = o[1], o[2]
+  local copy = dir .. "/" .. (relp or "")
+  if not (dest and relp and vim.uv.fs_stat(copy)) then return say(dir .. " is not a complete trash entry", vim.log.levels.ERROR) end
+  if vim.uv.fs_stat(dest) then
+    return say(("%s exists again; the copy stays in %s"):format(dest, copy), vim.log.levels.WARN)
+  end
+  local f = assert(io.open(copy, "rb"))
+  local bytes = f:read("*a")
+  f:close()
+  vim.fn.mkdir(vim.fs.dirname(dest), "p")
+  local w = io.open(dest, "wb")
+  if not w then return say("cannot write " .. dest .. "; the copy stays in " .. copy, vim.log.levels.ERROR) end
+  w:write(bytes); w:close()
+  local client = jdtls_for(dest)
+  if client then client:notify("workspace/didChangeWatchedFiles", { changes = { { uri = vim.uri_from_fname(dest), type = 1 } } }) end
+  vim.fn.delete(dir, "rf")
+  vim.cmd.edit(vim.fn.fnameescape(dest))
+  return say(("%s restored from the trash"):format(dest))
+end
+
 --- Deletes the method, field, constant or type at the cursor (its declaration name, or a reference to it)
 --- when nothing uses it; otherwise nothing is deleted and the usages are listed in the quickfix list.
 --- See the section comment above. opts.on_done(ok) afterwards. Returns ok (true = deleted).
@@ -2169,6 +2243,22 @@ function M.safe_delete(opts)
   if kind == 6 and hb:find("@Override%f[^%w_]") then
     return refuse(("`%s` overrides or implements a method of a supertype (@Override): deleting it changes which method runs (or breaks the class when the supertype's is abstract); nothing deleted"):format(name))
   end
+  -- the same without @Override (javac allows it): jdt.ls's "go to super implementation" (java/findLinks),
+  -- which resolves the method binding against every supertype (Object and library types too)
+  if kind == 6 and not hb:find("%f[%w]private%f[^%w]") and not hb:find("%f[%w]static%f[^%w]") then
+    local sres, sre = client:request_sync("java/findLinks", { type = "superImplementation",
+      position = { textDocument = { uri = decl_uri }, position = sym.selectionRange.start } }, M.delete_ms, nil)
+    lap("supertypes")
+    if not sres or sres.err or type(sres.result) ~= "table" then
+      return refuse(("could not check the supertypes of `%s` (jdt.ls's super implementation request: %s): it may override or implement a method, deleting it could change which method runs; nothing deleted"):format(
+        name, not sres and ("no answer in " .. M.delete_ms .. " ms: " .. tostring(sre)) or (sres.err and (sres.err.message or "error") or "no list")), vim.log.levels.ERROR)
+    end
+    if #sres.result > 0 then
+      local supers = vim.tbl_map(function(x) return tostring(x.displayName or x.uri) end, sres.result)
+      return refuse(("`%s` overrides or implements %s (no @Override on it): deleting it changes which method runs (or breaks the class when that one is abstract); nothing deleted"):format(
+        name, table.concat(supers, ", ")))
+    end
+  end
 
   -- 2. usages: references (+ implementations of a method) and possible usages jdt.ls may have missed
   local spos = sym.selectionRange.start
@@ -2271,6 +2361,9 @@ function M.safe_delete(opts)
       table.concat(vim.tbl_map(function(p) return rel(p, root) end, vim.list_slice(vim.tbl_keys(errfiles), 1, 3)), ", "), name)
   end
   if self_refs > 0 then notes[#notes + 1] = ("%d reference(s) inside %s itself went with it"):format(self_refs, name) end
+  local tops = vim.tbl_filter(function(x) return x.parent == nil and TYPE_WORD[x.sym.kind] end, flat)
+  local whole_file = is_type and parent == nil and #tops == 1
+  local back = whole_file and "`:Nv4jRestoreDeleted` brings the file back from the trash" or "`u` gives it back"
   if #entry > 0 then
     local extra = ""
     for _, a in ipairs(entry) do
@@ -2281,33 +2374,37 @@ function M.safe_delete(opts)
         extra = extra .. ("; the property %s is no longer read (it stays in the config)"):format(key and ("`" .. key .. "`") or "it named")
       end
     end
-    warn[#warn + 1] = ("Spring/framework: %s carries @%s: the framework uses it by reflection, which jdt.ls's references do not show (deleted anyway; `u` gives it back)%s"):format(
-      name, table.concat(entry, ", @"), extra)
+    warn[#warn + 1] = ("Spring/framework: %s carries @%s: the framework uses it by reflection, which jdt.ls's references do not show (deleted anyway; %s)%s"):format(
+      name, table.concat(entry, ", @"), back, extra)
   end
   if kind == 6 and name == "main" and hb:find("%f[%w]void%s*$") then
     warn[#warn + 1] = ("%s is a `main` method: the JVM's entry point, called without a reference"):format(name)
   end
   local before = M.error_counts()
   local files
-  local tops = vim.tbl_filter(function(x) return x.parent == nil and TYPE_WORD[x.sym.kind] end, flat)
-  local whole_file = is_type and parent == nil and #tops == 1
   if whole_file then
     local b = vim.fn.bufnr(decl_path)
     if b ~= -1 and vim.api.nvim_buf_is_loaded(b) and vim.bo[b].modified then
       return refuse(("%s has unsaved changes and deleting %s deletes the whole file: save or discard them first; nothing deleted"):format(rel(decl_path, root), name))
     end
-    local text = table.concat(lines, "\n") .. "\n"
-    for _, bb in ipairs(vim.api.nvim_list_bufs()) do
-      if vim.api.nvim_buf_get_name(bb) == decl_path then pcall(vim.api.nvim_buf_delete, bb, { force = true }) end
+    -- a copy in the trash first (no `u` for a deleted file), then the file, then its buffer: a failed
+    -- removal leaves the buffer open
+    local entry_dir, copy, terr = to_trash(decl_path, require("nv4j.root").project(decl_path))
+    if not entry_dir then
+      return refuse(("could not copy %s to the trash (%s); nothing deleted"):format(rel(decl_path, root), tostring(terr)), vim.log.levels.ERROR)
     end
     local okr, rmerr = os.remove(decl_path)
     if not okr then
-      return refuse(("could not delete %s (%s); its buffer was closed, nothing else changed"):format(rel(decl_path, root), tostring(rmerr)), vim.log.levels.ERROR)
+      vim.fn.delete(entry_dir, "rf")
+      return refuse(("could not delete %s (%s); its buffer is still open, nothing deleted"):format(rel(decl_path, root), tostring(rmerr)), vim.log.levels.ERROR)
+    end
+    for _, bb in ipairs(vim.api.nvim_list_bufs()) do
+      if vim.api.nvim_buf_get_name(bb) == decl_path then pcall(vim.api.nvim_buf_delete, bb, { force = true }) end
     end
     client:notify("workspace/didChangeWatchedFiles", { changes = { { uri = vim.uri_from_fname(decl_path), type = 3 } } })
     files = { { path = decl_path, deleted = true } }
-    M.last_deleted_text = text
-    notes[#notes + 1] = ("the file is deleted (no `u` for a deleted file: its text is in require(\"nv4j.refactor\").last_deleted_text until the next file deletion, or restore it from git)")
+    M.last_deleted_text = table.concat(lines, "\n") .. "\n"
+    notes[#notes + 1] = ("the file is deleted (no `u` for a deleted file): a copy is in the trash, %s; restore it with :Nv4jRestoreDeleted (or require(\"nv4j.refactor\").restore_deleted())"):format(copy)
   else
     local r = delete_range(lines, sym)
     local gone = vim.list_slice(lines, sym.range.start.line + 1, sym.range["end"].line + 1)

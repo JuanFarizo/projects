@@ -116,6 +116,10 @@
 --                       line naming the bean listed, unused imports reported.
 --  safe_delete_class  : Invoice blocked; the only type of a file: file deleted, buffer wiped, jdt.ls told;
 --                       a second top-level type: its declaration only.
+--  safe_delete_trash  : a deleted file is copied to the trash first (stdpath cache), :Nv4jRestoreDeleted puts it
+--                       back byte for byte; a failing removal keeps the buffer and the file.
+--  safe_delete_supertypes (+ _twin, stub): a method overriding/implementing without @Override refused
+--                       naming the supertype's method; no answer from jdt.ls: refused.
 --  safe_delete_refused: local, parameter, constructor, record component, keyword, library method, two
 --                       declarators, enum constant: refused with the reason, nothing changed.
 --  safe_delete_no_answer (stub), safe_delete_busy (stub): references timeout/error refused; a pending change
@@ -2604,11 +2608,6 @@ end
 case("safe_delete_blocked", function()
   local calc = lsp.open(CALC)
   lsp.open(CHECKOUT)
-  if not has("safe_delete") then
-    local l, c = pos(calc, "public int total%(Invoice invoice%)", "total")
-    local r = E.code_actions(client, calc, l, c, l, c)
-    return lsp.report(P .. "safe_delete_blocked", false, ("jdt.ls code actions at `total`: %s"):format(E.titles(r.actions or {})))
-  end
   local before = { [calc] = E.text(calc) }
   local r = sd_at(calc, "public int total%(Invoice invoice%)", "total")
   local win_ok = vim.api.nvim_get_current_buf() == calc
@@ -2627,11 +2626,6 @@ end)
 -- (the text is exactly the snapshot without them), written, summary, busy cleared, build clean; one `u`.
 case("safe_delete_free", function()
   local calc = lsp.open(CALC)
-  if not has("safe_delete") then
-    local l, c = pos(calc, "public int legacyTotal%(", "legacyTotal")
-    local r = E.code_actions(client, calc, l, c, l, c)
-    return lsp.report(P .. "safe_delete_free", false, ("jdt.ls code actions at `legacyTotal`: %s"):format(E.titles(r.actions or {})))
-  end
   local r = sd_at(calc, "public int legacyTotal%(", "legacyTotal")
   local want = snap_text(CALC):gsub(vim.pesc(LEGACY), "", 1)
   local label = "Deleted method legacyTotal(Invoice): 1 file(s): src/main/java/demo/billing/PriceCalculator.java"
@@ -2650,7 +2644,6 @@ end)
 -- safe_delete_unsaved: <leader>jd (the mapping's own function) on legacyTotal with an unsaved user edit in
 -- PriceCalculator: deleted in the buffer, the user edit kept, left unsaved (disk = snapshot), summary says so.
 case("safe_delete_unsaved", function()
-  if not has("safe_delete") then return lsp.report(P .. "safe_delete_unsaved", false, pending_reason("safe_delete")) end
   local m = vim.fn.maparg("<leader>jd", "n", false, true)
   if not m.callback then return lsp.report(P .. "safe_delete_unsaved", false, "<leader>jd has no Lua callback: " .. vim.inspect(m.rhs)) end
   local calc = lsp.open(CALC)
@@ -2667,7 +2660,6 @@ end)
 -- safe_delete_unsaved_usage: an unsaved call of legacyTotal typed into Checkout: blocked (jdt.ls's working
 -- copy, or the text of the unsaved buffer), Checkout listed, nothing deleted, the typed line kept.
 case("safe_delete_unsaved_usage", function()
-  if not has("safe_delete") then return lsp.report(P .. "safe_delete_unsaved_usage", false, pending_reason("safe_delete")) end
   local calc, chk = lsp.open(CALC), lsp.open(CHECKOUT)
   local bl = E.line_of(chk, "public int payTwice")
   vim.api.nvim_buf_set_lines(chk, bl, bl, false, { "    public int lt(Invoice i) { return calculator.legacyTotal(i); }" })
@@ -2696,7 +2688,6 @@ end
 -- (b) Checkout saved with a call and an ERROR planted on it (check namespace): blocked, "has errors";
 -- (c) an ERROR planted on Invoice (does not name legacyTotal): deleted, the note says it.
 case("safe_delete_unconfirmed_twin", function()
-  if not has("safe_delete") then return lsp.report(P .. "safe_delete_unconfirmed_twin", false, pending_reason("safe_delete")) end
   local undo = stub_references(function() return { result = {} } end)
   local ns = vim.api.nvim_create_namespace("nv4j_check_62_sd_twin")
   local ok, err = pcall(function()
@@ -2734,7 +2725,6 @@ end)
 -- safe_delete_errors: a real syntax error in Checkout (unsaved) that does not name legacyTotal: deleted,
 -- the note names the file with errors; Checkout keeps its error; PriceCalculator's build clean.
 case("safe_delete_errors", function()
-  if not has("safe_delete") then return lsp.report(P .. "safe_delete_errors", false, pending_reason("safe_delete")) end
   local calc, chk = lsp.open(CALC), lsp.open(CHECKOUT)
   local bl = E.line_of(chk, "^public class Checkout")
   vim.api.nvim_buf_set_lines(chk, bl + 1, bl + 1, false, { "    int broken = ;" })
@@ -2754,7 +2744,6 @@ end)
 -- safe_delete_self_ref: a recursive method nobody else calls, with a javadoc and an annotation: its own call
 -- does not block it (the note says so); javadoc, annotation, method and one blank line go (snapshot text).
 case("safe_delete_self_ref", function()
-  if not has("safe_delete") then return lsp.report(P .. "safe_delete_self_ref", false, pending_reason("safe_delete")) end
   plant(CALC, { { "    public int legacyTotal(", "    /**\n     * Factorial.\n     */\n    @Deprecated\n    int fact(int n) {\n        return n <= 1 ? 1 : n * fact(n - 1);\n    }\n\n    public int legacyTotal(" } })
   local calc = open_fresh({ CALC })
   local r = sd_at(calc, "int fact%(int n%)", "fact")
@@ -2783,7 +2772,6 @@ end
 -- safe_delete_hierarchy: Half.apply (@Override): refused, says why; Rule.apply (no call, implemented by
 -- Half.apply): blocked, the implementation listed in the quickfix. Nothing changed.
 case("safe_delete_hierarchy", function()
-  if not has("safe_delete") then return lsp.report(P .. "safe_delete_hierarchy", false, pending_reason("safe_delete")) end
   local calc = plant_rule_uncalled()
   local before = { [calc] = E.text(calc) }
   local a = sd_at(calc, "public int apply%(int amount%)", "apply")
@@ -2803,7 +2791,6 @@ end)
 -- @GetMapping handler hello: deleted with the endpoint warning; an unused @Value field: deleted with the
 -- property warning. Each build clean.
 case("safe_delete_boot", function()
-  if not has("safe_delete") then return lsp.report(P .. "safe_delete_boot", false, pending_reason("safe_delete")) end
   local res = {}
   local function one(path, pat, w, wants, prep)
     if prep then prep() end
@@ -2837,7 +2824,6 @@ end)
 -- declaration removed (the file is the snapshot again).
 local UNUSED = main .. "demo/billing/Unused.java"
 case("safe_delete_class", function()
-  if not has("safe_delete") then return lsp.report(P .. "safe_delete_class", false, pending_reason("safe_delete")) end
   local inv = lsp.open(INVOICE)
   local a = sd_at(inv, "^public class Invoice", "Invoice")
   local la = qf_close()
@@ -2858,7 +2844,10 @@ case("safe_delete_class", function()
     end
     return real_notify(self, m, params)
   end
+  refactor.trash_dir = "/tmp/nv4j/trash-check-class" -- the user's trash (stdpath cache) stays out of the checks
   local okb, b = pcall(sd_at, ub, "^public class Unused", "Unused")
+  refactor.trash_dir = nil
+  vim.fn.delete("/tmp/nv4j/trash-check-class", "rf")
   client.notify = real_notify
   if not okb then error(b) end
   local gone = vim.uv.fs_stat(UNUSED) == nil and vim.fn.bufnr(UNUSED) == -1
@@ -2882,11 +2871,150 @@ case("safe_delete_class", function()
       ok_clean and "clean" or ("NOT clean: " .. why)))
 end)
 
+--- Writes the planted @Service class Unused (the only type of its file), tells jdt.ls, opens it.
+local UNUSED_TEXT = "package demo.billing;\n\nimport org.springframework.stereotype.Service;\n\n@Service\npublic class Unused {\n    public int one() {\n        return 1;\n    }\n}\n"
+local function plant_unused()
+  local f = assert(io.open(UNUSED, "wb"))
+  f:write(UNUSED_TEXT)
+  f:close()
+  client:notify("workspace/didChangeWatchedFiles", { changes = { { uri = vim.uri_from_fname(UNUSED), type = 1 } } })
+  return open_fresh({ UNUSED })
+end
+
+-- safe_delete_trash: the default trash is under stdpath("cache") (not the repo, not /tmp); with the trash
+-- pointed at /tmp/nv4j/trash-check: deleting Unused.java copies it byte for byte to the trash first, the
+-- notification names the copy and :Nv4jRestoreDeleted (not `u`); :Nv4jRestoreDeleted puts it back byte for
+-- byte, opens it, tells jdt.ls, empties the entry. Then os.remove made to fail (stub): refused, the buffer
+-- still open, the file still there, no trash entry left.
+case("safe_delete_trash", function()
+  local def = refactor.trash_root()
+  local cache = vim.fn.stdpath("cache")
+  local def_ok = def:sub(1, #cache + 1) == cache .. "/" and not def:find(vim.fn.getcwd(), 1, true) and not def:find("^/tmp") and not def:find("^/private/tmp")
+  local tdir = "/tmp/nv4j/trash-check"
+  vim.fn.delete(tdir, "rf")
+  refactor.trash_dir = tdir
+  local real_remove = os.remove
+  local ok, err = pcall(function()
+    local ub = plant_unused()
+    local told = {}
+    local real_notify = client.notify
+    client.notify = function(self, m, params)
+      if m == "workspace/didChangeWatchedFiles" then
+        for _, ch in ipairs(params.changes or {}) do
+          if ch.uri == vim.uri_from_fname(UNUSED) then told[#told + 1] = ch.type end
+        end
+      end
+      return real_notify(self, m, params)
+    end
+    local okd, r = pcall(sd_at, ub, "^public class Unused", "Unused")
+    local entries = vim.fn.glob(tdir .. "/*", false, true)
+    local copy = entries[1] and (entries[1] .. "/src/main/java/demo/billing/Unused.java")
+    local copied = #entries == 1 and copy and disk(copy) == UNUSED_TEXT and vim.uv.fs_stat(UNUSED) == nil
+    local msg = okd and (find_msg(r.got, "Deleted class Unused") or "") or ""
+    local named = copy and msg:find(copy, 1, true) ~= nil and msg:find(":Nv4jRestoreDeleted", 1, true) ~= nil
+      and msg:find("deleted anyway; `:Nv4jRestoreDeleted` brings the file back", 1, true) ~= nil and not msg:find("`u` gives it back", 1, true)
+    local got, stop = capture()
+    local okr, rerr = pcall(vim.cmd, "Nv4jRestoreDeleted")
+    stop()
+    local restored = okr and disk(UNUSED) == UNUSED_TEXT and vim.api.nvim_buf_get_name(0) == UNUSED and #vim.fn.glob(tdir .. "/*", false, true) == 0
+      and find_msg(got, "restored from the trash") ~= nil
+    client.notify = real_notify
+    if not okd then error(r) end
+    -- removal fails: nothing deleted, buffer kept, no entry left
+    local ub2 = open_fresh({ UNUSED })
+    os.remove = function(p) if p == UNUSED then return nil, "stubbed EPERM" end return real_remove(p) end
+    local r2 = sd_at(ub2, "^public class Unused", "Unused")
+    os.remove = real_remove
+    local m2 = find_msg(r2.got, "could not delete src/main/java/demo/billing/Unused.java (stubbed EPERM); its buffer is still open, nothing deleted", vim.log.levels.ERROR)
+    local kept = r2.ret == false and m2 ~= nil and vim.api.nvim_buf_is_loaded(ub2) and vim.api.nvim_buf_get_name(ub2) == UNUSED
+      and disk(UNUSED) == UNUSED_TEXT and #vim.fn.glob(tdir .. "/*", false, true) == 0
+    os.remove(UNUSED) -- the planted file goes before the restore (not in the snapshot)
+    lsp.report(P .. "safe_delete_trash", def_ok and copied and named and restored and kept and vim.tbl_contains(told, 3) and vim.tbl_contains(told, 1),
+      ("default trash %s (%s); delete: copy %s, message %s, jdt.ls told %s; :Nv4jRestoreDeleted: %s%s; removal failing: %s"):format(def,
+        def_ok and "under stdpath cache" or "WRONG place", copied and "byte for byte" or ("WRONG: " .. vim.inspect(entries)), named and "names the copy and the command"
+        or ("WRONG: " .. msg), table.concat(vim.tbl_map(tostring, told), ","), restored and "file back byte for byte, opened, entry gone" or "FAILED",
+        okr and "" or (" " .. tostring(rerr)), kept and "refused, buffer and file kept, no trash entry" or ("WRONG: returned " .. tostring(r2.ret) .. " " .. tostring(m2))))
+  end)
+  os.remove = real_remove
+  refactor.trash_dir = nil
+  vim.fn.delete(tdir, "rf")
+  if not ok then error(err) end
+end)
+
+-- An interface method and a toString() overridden WITHOUT @Override, and an unused own method.
+local function plant_no_override()
+  plant(CALC, { { "    public int legacyTotal(", [[    interface Rule {
+        int apply(int amount);
+    }
+
+    static class Half implements Rule {
+        public int apply(int amount) {
+            return amount / 2;
+        }
+
+        public String toString() {
+            return "half";
+        }
+
+        int own() {
+            return 1;
+        }
+    }
+
+    public int legacyTotal(]] } })
+  return open_fresh({ CALC })
+end
+
+-- safe_delete_supertypes: no @Override: Half.apply (implements Rule.apply) and toString (overrides
+-- Object.toString) refused, the supertype named (jdt.ls's super implementation); the unused own() deleted.
+case("safe_delete_supertypes", function()
+  local calc = plant_no_override()
+  local before = E.text(calc)
+  local a = sd_at(calc, "public int apply%(int amount%)", "apply")
+  local b = sd_at(calc, "public String toString", "toString")
+  local ma = find_msg(a.got, "`apply` overrides or implements demo.billing.PriceCalculator$Rule.apply (no @Override on it)")
+  local mb = find_msg(b.got, "`toString` overrides or implements java.lang.Object.toString (no @Override on it)")
+  local same = E.text(calc) == before
+  local c = sd_at(calc, "int own%(%)", "own")
+  local gone = c.ret == true and not E.text(calc):find("int own()", 1, true)
+  lsp.report(P .. "safe_delete_supertypes", a.ret == false and ma ~= nil and b.ret == false and mb ~= nil and same and gone,
+    ("Half.apply: %s; toString: %s; text %s; own(): returned %s after %.0f ms"):format(ma and "refused, Rule.apply named" or "NOT refused",
+      mb and "refused, Object.toString named" or "NOT refused", same and "unchanged" or "CHANGED", tostring(c.ret), c.ms))
+end)
+
+-- safe_delete_supertypes_twin (deterministic: java/findLinks stubbed): a super implementation answered for
+-- legacyTotal: refused naming it; no answer: refused "could not check the supertypes" (never deleted).
+case("safe_delete_supertypes_twin", function()
+  local mode = "found"
+  local real = client.request_sync
+  client.request_sync = function(self, m, params, ms, b)
+    if m == "java/findLinks" then
+      if mode == "found" then return { result = { { displayName = "stub.Base.legacyTotal", kind = "method", uri = "file:///stub/Base.java",
+        range = { start = { line = 0, character = 0 }, ["end"] = { line = 0, character = 1 } } } } } end
+      return nil, "timeout"
+    end
+    return real(self, m, params, ms, b)
+  end
+  local ok, err = pcall(function()
+    local calc = lsp.open(CALC)
+    local before = { [calc] = E.text(calc) }
+    local a = sd_at(calc, "public int legacyTotal%(", "legacyTotal")
+    mode = "none"
+    local b = sd_at(calc, "public int legacyTotal%(", "legacyTotal")
+    local ma = find_msg(a.got, "`legacyTotal` overrides or implements stub.Base.legacyTotal")
+    local mb = find_msg(b.got, "could not check the supertypes of `legacyTotal`", vim.log.levels.ERROR)
+    lsp.report(P .. "safe_delete_supertypes_twin", a.ret == false and ma ~= nil and b.ret == false and mb ~= nil and nothing_changed(before),
+      ("found: returned %s, %s; no answer: returned %s, %s; %s"):format(tostring(a.ret), ma and "refused naming it" or "NOT refused", tostring(b.ret),
+        mb and "refused (could not check)" or "NOT refused", nothing_changed(before) and "nothing changed" or "CHANGED"))
+  end)
+  client.request_sync = real
+  if not ok then error(err) end
+end)
+
 -- safe_delete_refused: each refused with its reason, nothing changed: a local variable, a parameter, a
 -- constructor, a record component, the `return` keyword, a library method, then (planted) a field declared
 -- together with another and an enum constant.
 case("safe_delete_refused", function()
-  if not has("safe_delete") then return lsp.report(P .. "safe_delete_refused", false, pending_reason("safe_delete")) end
   local SR = main .. "demo/StartupRunner.java"
   local runs = {
     { "local", CALC, "int gross = gross%(invoice%);", "gross", "is a local variable or a parameter" },
@@ -2927,7 +3055,6 @@ end)
 -- safe_delete_no_answer (stub): jdt.ls's references time out, then answer an error: refused ("usages
 -- unknown"), nothing deleted (never taken as "no usages").
 case("safe_delete_no_answer", function()
-  if not has("safe_delete") then return lsp.report(P .. "safe_delete_no_answer", false, pending_reason("safe_delete")) end
   local mode = "timeout"
   local undo = stub_references(function()
     if mode == "timeout" then return nil, "timeout" end
@@ -2953,7 +3080,6 @@ end)
 -- safe_delete_busy (deterministic: change signature's answer delayed 600 ms): safe delete refused while it
 -- is pending ("a refactor is in progress"), legacyTotal kept; the change signature completes.
 case("safe_delete_busy", function()
-  if not has("safe_delete") then return lsp.report(P .. "safe_delete_busy", false, pending_reason("safe_delete")) end
   local calc = lsp.open(CALC)
   lsp.open(CHECKOUT)
   local undo = delay_edit(600)
