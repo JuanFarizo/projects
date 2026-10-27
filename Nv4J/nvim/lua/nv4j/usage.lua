@@ -35,7 +35,10 @@ M.MARKERS = { "pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle", 
 --- project worth counting.
 function M.is_project(root)
   for _, m in ipairs(M.MARKERS) do
-    if vim.uv.fs_stat(root .. "/" .. m) then return true end
+    -- a `.nv4j` at $HOME, `/` or above never turns on the rg scan of everything below it
+    if vim.uv.fs_stat(root .. "/" .. m) and not (m == ".nv4j" and require("nv4j.root").home_or_above(root)) then
+      return true
+    end
   end
   return false
 end

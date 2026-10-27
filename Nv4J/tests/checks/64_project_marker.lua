@@ -11,6 +11,10 @@
 --                   client runs (text names both roots, the common parent and .nv4j, title Nv4J), once per
 --                   root; never for a root that already has a client, a `.nv4j` or build root, or the
 --                   first loose client.
+--  warn_broad     : the warning names no folder when the common parent is $HOME, `/` or a short path
+--                   (fewer than 3 segments): "the project folder that holds both" ($HOME stubbed under TMP).
+--  project_home_warn : a `.nv4j` at $HOME is honoured as the root but warned once (title Nv4J).
+--  usage_home     : a `.nv4j` at $HOME or above never enables the rg usage scan; a normal one does.
 --  single_client  : files in 3 sibling dirs under one `.nv4j` -> exactly one jdt.ls client, root = the
 --                   `.nv4j` dir, cross-directory reference resolves (no error in alpha/A.java using
 --                   beta/B.java), the planted error in gamma/C.java is reported.
@@ -74,9 +78,12 @@ local notes = {}
 -- Notifications are recorded, not forwarded: LazyVim's start-up notify queue replays into whatever
 -- vim.notify is at that moment, so forwarding to the saved one would loop.
 local orig_notify = vim.notify
+local broad_notes = {}
 vim.notify = function(msg, level, o)
-  if o and o.title == "Nv4J" and level == vim.log.levels.WARN and tostring(msg):find(".nv4j", 1, true) then
-    notes[#notes + 1] = msg
+  if o and o.title == "Nv4J" and level == vim.log.levels.WARN then
+    msg = tostring(msg)
+    if msg:find("^Starting a second jdt.ls") then notes[#notes + 1] = msg end
+    if msg:find("^A %.nv4j file in ") then broad_notes[#broad_notes + 1] = msg end
   end
 end
 local function stub(r) return { config = { root_dir = r } } end
@@ -100,6 +107,45 @@ do
     ("first %s, same %s, nv4j/build roots silent %s, second loose -> %s, again %s, non-loose others %s, notifications %d (want 1)")
       :format(tostring(first), tostring(same), tostring(others), m and ("%q"):format(m) or "nil", tostring(again),
         tostring(nonloose_other), #notes - before))
+end
+
+-- ── broad dirs: $HOME, `/`, short paths (stubbed $HOME under TMP) ─────────────────────────────
+do
+  local H = TMP .. "/home/me"
+  vim.fn.mkdir(H .. "/a", "p")
+  vim.fn.mkdir(H .. "/b", "p")
+  local real_home = root.home
+  root.home = function() return H end
+  local ok_b, e_b = pcall(function()
+    local m_home = root.warn_loose(H .. "/b", { stub(H .. "/a") }) or ""
+    local m_root = root.warn_loose("/nv4j-d25-x/b", { stub("/nv4j-d25-y/a") }) or ""
+    local m_short = root.warn_loose("/opt/nv4j-d25-b", { stub("/opt/nv4j-d25-a") }) or ""
+    local generic = "create an empty .nv4j file in the project folder that holds both"
+    local function ok_msg(m, bad) return m:find(generic, 1, true) ~= nil and not m:find("(" .. bad .. ")", 1, true) end
+    lsp.report(P .. "warn_broad", ok_msg(m_home, H) and ok_msg(m_root, "/") and ok_msg(m_short, "/opt"),
+      ("common parent $HOME -> %q; / -> %q; /opt -> %q (want %q, no dir named)"):format(m_home, m_root, m_short, generic))
+
+    -- a .nv4j at $HOME and one above it: honoured as root, warned once each, no rg usage scan
+    write(H .. "/.nv4j")
+    write(TMP .. "/home/.nv4j")
+    local usage = require("nv4j.usage")
+    local r1, m1, k1 = root.project(H .. "/a/X.java")
+    root.project(H .. "/b/Y.java")
+    vim.wait(1000, function() return #broad_notes >= 1 end, 20)
+    vim.wait(200)
+    local n_home = #broad_notes
+    local first_note = broad_notes[1] or ""
+    lsp.report(P .. "project_home_warn", r1 == H and m1 == false and k1 == "nv4j" and n_home == 1 and first_note:find(H, 1, true) ~= nil,
+      ("project under a $HOME .nv4j -> %s, %s, %s (want %s, false, nv4j); warnings %d after 2 lookups (want 1): %q")
+        :format(r1, tostring(m1), tostring(k1), H, n_home, first_note))
+    local u_home, u_above, u_n1 = usage.is_project(H), usage.is_project(TMP .. "/home"), usage.is_project(U .. "/n1")
+    lsp.report(P .. "usage_home", not u_home and not u_above and u_n1,
+      ("usage scan with .nv4j at $HOME %s, above $HOME %s (want false, false); at a project dir %s (want true)")
+        :format(tostring(u_home), tostring(u_above), tostring(u_n1)))
+  end)
+  root.home = real_home
+  if not ok_b then lsp.report(P .. "warn_broad", false, "error: " .. tostring(e_b)) end
+  vim.fn.delete(TMP .. "/home", "rf")
 end
 
 -- ── helpers for the integration cases ──────────────────────────────────────────────────────────

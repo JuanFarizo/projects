@@ -17,6 +17,34 @@ M.build_markers = {
 --- project root, before any build marker. Empty is enough (no format yet).
 M.project_marker = ".nv4j"
 
+--- $HOME (a function so checks can point it at a temp dir).
+function M.home() return vim.fs.normalize(vim.uv.os_homedir()) end
+
+--- true for `/`, $HOME and any ancestor of $HOME: a `.nv4j` there would make everything below one project.
+function M.home_or_above(dir)
+  if not dir then return false end
+  dir = vim.fs.normalize(dir)
+  local home = M.home()
+  return dir == "/" or dir == home or home:sub(1, #dir + 1) == dir .. "/"
+end
+
+--- true when `dir` is too broad to suggest for a `.nv4j`: home_or_above, or fewer than 3 path segments.
+function M.too_broad(dir)
+  local n = select(2, vim.fs.normalize(dir):gsub("/[^/]+", ""))
+  return M.home_or_above(dir) or n < 3
+end
+
+local warned_broad = {}
+--- Once per dir: a `.nv4j` at $HOME or above is honoured (the user put it there) but said out loud.
+local function warn_broad(dir)
+  if warned_broad[dir] then return end
+  warned_broad[dir] = true
+  vim.schedule(function()
+    vim.notify(("A .nv4j file in %s makes every Java file below it one jdt.ls project (usage counts are off there). "
+      .. "Move it to the project folder if that is not what you want."):format(dir), vim.log.levels.WARN, { title = "Nv4J" })
+  end)
+end
+
 --- Project root of `path`, first rule that applies:
 ---  1. the nearest dir with a `.nv4j` file (D25), so every directory below it shares one jdt.ls;
 ---  2. the nearest build-marker dir, or the repo's .git root when that root has a build marker itself
@@ -30,6 +58,7 @@ M.project_marker = ".nv4j"
 function M.project(path)
   local nv4j_root = vim.fs.root(path, { M.project_marker })
   if nv4j_root then
+    if M.home_or_above(nv4j_root) then warn_broad(nv4j_root) end
     for _, marker in ipairs(M.build_markers) do
       if vim.uv.fs_stat(nv4j_root .. "/" .. marker) then return nv4j_root, true, "nv4j" end
     end
@@ -69,8 +98,9 @@ function M.warn_loose(root, clients)
   local parent = root
   while parent ~= "/" and other:sub(1, #parent + 1) ~= parent .. "/" do parent = vim.fs.dirname(parent) end
   local msg = ("Starting a second jdt.ls (about 1 GB or more) for loose Java files in %s while one runs for %s. "
-    .. "To use one jdt.ls for both, create an empty .nv4j file in their common parent (%s) and restart Neovim.")
-    :format(root, other, parent)
+    .. "To use one jdt.ls for both, create an empty .nv4j file in %s and restart Neovim.")
+    :format(root, other, M.too_broad(parent) and "the project folder that holds both"
+      or ("their common parent (" .. parent .. ")"))
   vim.notify(msg, vim.log.levels.WARN, { title = "Nv4J" })
   return msg
 end
