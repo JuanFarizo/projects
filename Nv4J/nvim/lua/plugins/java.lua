@@ -21,6 +21,11 @@ return {
       -- or calls the lazy `java` shell function. Raises a clear error if no JDK >= 21 exists.
       -- The per-project runtimes (java.configuration.runtimes) are set in opts.jdtls below, once the
       -- project root is known.
+      -- No test keys from the extra (its <leader>tr/tt/tT through which-key on LspAttach): Nv4J binds its
+      -- own (nv4j/tests.lua, <leader>tT = nvim-jdtls's pick_test). Off also drops the java-test bundle
+      -- from the extra's list, so opts.jdtls below adds it back.
+      opts.test = false
+
       local server_home = require("nv4j.jdk").server_home()
       table.insert(opts.cmd, "--java-executable=" .. server_home .. "/bin/java")
 
@@ -134,6 +139,16 @@ return {
         end
         -- Spring Boot projects: the Spring Boot LS's five jdt.ls extension bundles (sts.java.* commands),
         -- added to LazyVim's java-debug/java-test bundles, not replacing them (nv4j/spring.lua).
+        -- java-test bundle (nv4j/tests.lua): LazyVim adds it only with opts.test, turned off below for its keys.
+        local test_jars = vim.fn.glob("$MASON/share/java-test/*.jar", false, true)
+        if #test_jars > 0 then
+          config.init_options = config.init_options or {}
+          local have = {}
+          for _, j in ipairs(config.init_options.bundles or {}) do have[j] = true end
+          local merged = vim.list_extend({}, config.init_options.bundles or {})
+          for _, j in ipairs(test_jars) do if not have[j] then merged[#merged + 1] = j end end
+          config.init_options.bundles = merged
+        end
         local spring_jars = require("nv4j.spring").bundles_for(config.root_dir)
         if #spring_jars > 0 then
           config.init_options = config.init_options or {}
@@ -158,7 +173,7 @@ return {
         -- Java launch, no debuggee left after terminate. Runs after LazyVim's setup_dap, which
         -- registers the java adapter wrapped here.
         require("nv4j.debug").on_attach(client)
-        -- Test keys (nv4j/tests.lua) for this buffer, over LazyVim's <leader>tr/<leader>tt just added.
+        -- Test keys (nv4j/tests.lua) for this buffer (LazyVim's are off: opts.test = false above).
         require("nv4j.tests").bind(args.buf)
       end
       -- The "Publish Diagnostics" / "Building" / "Validate documents" toasts

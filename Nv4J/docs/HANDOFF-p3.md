@@ -36,12 +36,12 @@ Read this first when resuming (same session or a new agent). The SDD ledger and 
 
 ## Open items and known issues (nothing here blocks Task 3)
 
-From the Task 2 review (all minor, none fixed yet):
-1. `nvim/lua/nv4j/tests.lua` `launch_one` `finish`: `s:disconnect(...)` is called on luv TCP handles (no such method, hidden by `pcall`), so on timeout/cancel the accepted socket stays open until the JVM closes it. Fix: `if not s:is_closing() then s:close() end`; also check `server:bind` and `server:listen` errors.
-2. The `running` lock is set in `start()` after async discovery, so two quick key presses can start two runs. Set it at the top of `run()`.
-3. Discovery requests (`findTestTypesAndMethods` etc.) have no timeout: if jdt.ls never answers there is no message.
-4. `p.raw` / `M._last_raw` keep the whole runner stream: cap or drop outside debug.
-5. Follow-up: key override hack strips LazyVim's `<leader>tr/tt/tT` entries from which-key's private `_queue` (which-key pinned at `3aab214`); the which-key popup can show LazyVim's description while the key runs Nv4J's function. Simpler and more robust: `opts.test = false` on the LazyVim java extra and bind `<leader>tT` = `require("jdtls.dap").pick_test` ourselves.
+From the Task 2 review (all minor; 1 to 5 fixed 2026-10-27, `specs/features/tests-runner.md` t2-n to t2-r, `60_tests_runner` 27 cases):
+1. (fixed) `nvim/lua/nv4j/tests.lua` `launch_one` `finish`: `s:disconnect(...)` is called on luv TCP handles (no such method, hidden by `pcall`), so on timeout/cancel the accepted socket stays open until the JVM closes it. Fix: `if not s:is_closing() then s:close() end`; also check `server:bind` and `server:listen` errors.
+2. (fixed) The `running` lock is set in `start()` after async discovery, so two quick key presses can start two runs. Set it at the top of `run()`.
+3. (fixed, 15 s bound) Discovery requests (`findTestTypesAndMethods` etc.) have no timeout: if jdt.ls never answers there is no message.
+4. (fixed, last 500 lines unless `vim.g.nv4j_tests_debug`) `p.raw` / `M._last_raw` keep the whole runner stream: cap or drop outside debug.
+5. (fixed) Follow-up: key override hack strips LazyVim's `<leader>tr/tt/tT` entries from which-key's private `_queue` (which-key pinned at `3aab214`); the which-key popup can show LazyVim's description while the key runs Nv4J's function. Simpler and more robust: `opts.test = false` on the LazyVim java extra and bind `<leader>tT` = `require("jdtls.dap").pick_test` ourselves.
 6. Not covered by checks: TestNG (a message points to `<leader>tT`), JUnit 4, multi-module and Gradle test runs.
 
 Flakes and unexplained errors:

@@ -304,10 +304,13 @@ end, { desc = "Spring symbols (beans, request mappings)" })
 -- ── Tests (nv4j/tests.lua, decision D21, check 60_tests_runner) ─────────────────────────────
 -- <leader>tr nearest, <leader>tt class, <leader>tp project (replaces the old `mvn test` terminal: results
 -- now in the editor), <leader>tf failed again, <leader>tl last again, <leader>to results (quickfix),
--- <leader>td debug nearest. Global here; Java buffers get the same keys per buffer on attach
--- (plugins/java.lua), over LazyVim's java extra keys. <leader>tT stays LazyVim's pick (nvim-jdtls).
--- `mvn test` itself: <leader>tn opens a terminal.
+-- <leader>td debug nearest, <leader>tT pick (nvim-jdtls's picker, also TestNG). Global here; Java buffers
+-- get the same keys per buffer on attach (plugins/java.lua). LazyVim's java extra test keys are off
+-- (opts.test = false). `mvn test` itself: <leader>tn opens a terminal.
 require("nv4j.tests").bind()
+pcall(function()
+  require("which-key").add({ { "<leader>t", group = "test" } })
+end)
 
 -- ── Java scaffolding (nv4j/scaffold.lua, decision D22, check 61_scaffold) ───────────────────
 -- <leader>jn: new class/interface/record/enum/annotation/Spring stereotype/package/test (kind, then name;

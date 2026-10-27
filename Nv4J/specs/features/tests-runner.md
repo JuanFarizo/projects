@@ -1,6 +1,6 @@
 # Feature: Test runner
 
-Priority: P3. Status: built in Task 2 (`60_tests_runner` 20 cases pass, 3 of 3 runs, see "Task 2"). Decision: D21 in `specs/001-architecture.md`. Spec: `specs/005-p3-tests-scaffold-refactor.md`. Check: `tests/checks/60_tests_runner.lua`. Product: `nvim/lua/nv4j/tests.lua`, keys in `nvim/lua/config/keymaps.lua` (global) and `nvim/lua/plugins/java.lua` (per Java buffer, on attach).
+Priority: P3. Status: built in Task 2 (`60_tests_runner` 20 cases pass, 3 of 3 runs, see "Task 2"); Task 2 review fixes (t2-n to t2-r): 27 cases. Decision: D21 in `specs/001-architecture.md`. Spec: `specs/005-p3-tests-scaffold-refactor.md`. Check: `tests/checks/60_tests_runner.lua`. Product: `nvim/lua/nv4j/tests.lua`, keys in `nvim/lua/config/keymaps.lua` (global) and `nvim/lua/plugins/java.lua` (per Java buffer, on attach).
 
 ## Budget
 
@@ -43,7 +43,7 @@ Keep nvim-jdtls's launch path (java-test bundle, `jdtls.dap.experimental`: fetch
 
 ## Proposed keys (collision check done in Task 0)
 
-`<leader>tr` nearest (LazyVim's name kept), `<leader>tt` class, `<leader>tp` project (replaces the `mvn test` terminal), `<leader>tf` failed, `<leader>tl` last, `<leader>to` results, `<leader>td` debug nearest, `<leader>tT` pick (LazyVim). The plan's `<leader>tn` for nearest collides with Nv4J's global "New terminal in a tab" (`config/keymaps.lua`), so nearest stays `<leader>tr`. LazyVim core and the enabled extras map no other `<leader>t*` key (the `test.core` extra is not enabled; its names agree: `tr` nearest, `tt` file, `tl` last, `to` output, `td` debug nearest).
+`<leader>tr` nearest (LazyVim's name kept), `<leader>tt` class, `<leader>tp` project (replaces the `mvn test` terminal), `<leader>tf` failed, `<leader>tl` last, `<leader>to` results, `<leader>td` debug nearest, `<leader>tT` pick (LazyVim; since the Task 2 fixes bound by Nv4J, see t2-n). The plan's `<leader>tn` for nearest collides with Nv4J's global "New terminal in a tab" (`config/keymaps.lua`), so nearest stays `<leader>tr`. LazyVim core and the enabled extras map no other `<leader>t*` key (the `test.core` extra is not enabled; its names agree: `tr` nearest, `tt` file, `tl` last, `to` output, `td` debug nearest).
 
 ## Test design (`tests/checks/60_tests_runner.lua`)
 
@@ -73,6 +73,11 @@ Negative controls: n60a (Task 0) drops the `jdtls-tests` quickfix list and the `
 | t2-k | Check run 3 (`-091135.log`) | which-key's queue processing died on "Invalid buffer id: 1" (specs queued for a buffer the check wiped), so its load never finished | check prunes queued specs of invalid buffers before loading which-key (a headless artifact, see the check comment) |
 | t2-l | Check run 4 (`-091309.log`) | 20 of 20 PASS | kept |
 | t2-m | Key desc check by pattern only | n60g showed LazyVim's "Run Nearest Test" matches `[Nn]earest`: only `<leader>tt` was reported as overridden | the desc must equal Nv4J's (`nv4j.tests.keys`); n60g then reports both |
+| t2-n | Task 2 review fixes (2026-10-27). Keys: `opts.test = false` on LazyVim's java extra (no `<leader>tr/tt/tT` from it, so which-key shows Nv4J's descs) and `<leader>tT` = nvim-jdtls's `pick_test` in `nv4j.tests.keys`; `opts.test = false` also drops the java-test jars from the extra's bundle list, so `opts.jdtls` adds `$MASON/share/java-test/*.jar` back. The which-key `_queue` strip (t2-j) and `M._strip_queued` are removed | `keys`, `keys_after_whichkey`, `test_bundle`, `pick_key` pass; n60g, n60u, n60v fail them. n60u (bundle not added) fails only `test_bundle` and `no_junit_project`: the test runs still pass, jdt.ls keeps the bundle installed in its `-configuration` cache, so `test_bundle` is the case that catches it | kept (replaces t2-j) |
+| t2-o | Stream handles: `finish` closed the accepted luv sockets with `s:disconnect` (no such method on a TCP handle, hidden by `pcall`): each stayed open until the JVM's EOF. Now `read_stop` + `close`; `bind`, `listen`, `accept` and `getsockname` results checked, a failure ends the launch with "test stream server: ..." | `stream_closed` (at `on_done` the server and the accepted socket are closed), `stream_bind_error` pass; n60p, n60q fail them | kept |
+| t2-p | Lock: taken at the top of `run()` (a discovery lock, replaced by the run in `start()`), released by every refusal (`refuse` with the run's own lock), by an error in a discovery callback (`guard`) and by `finish_run` | `lock_quick_press`: two back-to-back calls, the second refused, one launch; n60r (lock in `start()` only) launches twice | kept |
+| t2-q | Discovery bound: `findTestTypesAndMethods`, `findJavaProjects`, `findTestPackagesAndTypes` time out after `M.discovery_timeout_ms` = 15 s (`vim.g.nv4j_test_discovery_timeout_ms`), the request is cancelled, the run ends with "Test discovery failed: no answer from jdt.ls within 15 s (command)" and the lock is released. Not a D13 budget but a bound: measured answers 5 ms to 1.5 s (`no_tests_file`, `no_junit_project` on a project jdt.ls just imported), 15 s leaves room for a busy jdt.ls | `discovery_timeout` (stubbed `client.request` never answers, bound 500 ms: nearest and project end in about 0.5 s with the message, next real run works); n60s (no bound) holds the lock forever | kept |
+| t2-r | Raw stream: `p.raw` keeps at most 2 x `M.raw_max` (500) lines (trimmed to the last 500 when it passes 1000), `M._last_raw` the last 500; the whole stream with `vim.g.nv4j_tests_debug = true` | `raw_cap`, `timeout_bounded` (`_last_raw` <= 500); n60t fails `raw_cap` | kept |
 
 ## Task 2
 
@@ -82,9 +87,9 @@ Results: `%TSTTREE`/`%TESTS`/`%TESTE`/`%FAILED`/`%ERROR`/`%TRACES` by test id; `
 
 Keys (D21/005): `<leader>tr` nearest, `<leader>tt` class, `<leader>tp` project (replaces the `mvn test` terminal), `<leader>tf` failed, `<leader>tl` last, `<leader>to` results (quickfix), `<leader>td` debug nearest; global from `config/keymaps.lua`, per Java buffer from `plugins/java.lua` on attach (t2-j). `<leader>tT` stays LazyVim's (nvim-jdtls's pick, its own result layer).
 
-### Cases (`60_tests_runner`, 20)
+### Cases (`60_tests_runner`, 27)
 
-`attached`, `api`, `keys` (7 keys, desc equal to Nv4J's, `queued == false`; `<leader>tn` still the terminal), `nearest_warm`, `class_counts`, `file_scope`, `nearest_param`, `nearest_nested`, `failure_shown`, `project_counts`, `failed_only`, `last_again`, `results_panel`, `debug_nearest`, `broken_class`, `no_tests_file`, `no_junit_project`, `timeout_bounded`, `keys_after_whichkey`, `fixture_restored` (details in the check header). Every run case asserts, besides the counts, a RemoteTestRunner launch seen by nvim-dap's `on_config` during the run and Nv4J's quickfix title with the same counts (carried review item a): a stub cannot pass them.
+`attached`, `api`, `keys` (8 keys bound in the buffer with Nv4J's desc, no LazyVim test key in the buffer or globally; `<leader>tn` still the terminal), `test_bundle`, `pick_key`, `raw_cap`, `nearest_warm`, `stream_closed`, `lock_quick_press`, `stream_bind_error`, `discovery_timeout`, `class_counts`, `file_scope`, `nearest_param`, `nearest_nested`, `failure_shown`, `project_counts`, `failed_only`, `last_again`, `results_panel`, `debug_nearest`, `broken_class`, `no_tests_file`, `no_junit_project`, `timeout_bounded`, `keys_after_whichkey`, `fixture_restored` (details in the check header). Every run case asserts, besides the counts, a RemoteTestRunner launch seen by nvim-dap's `on_config` during the run and Nv4J's quickfix title with the same counts (carried review item a): a stub cannot pass them.
 
 ### Negative controls (product changed for one run, reverted; `cmp` with the saved file after each)
 
@@ -96,8 +101,13 @@ Keys (D21/005): `<leader>tr` nearest, `<leader>tt` class, `<leader>tp` project (
 | n60h+l+n | one run: no finish on `%RUNTIME` (h), failure message dropped (l), nearest always the class (n) | `nearest_warm`, `nearest_param`, `nearest_nested`, `debug_nearest`, `timeout_bounded` (n: 5/0/1); `failure_shown`, `broken_class` (l). h alone breaks no case: finishing on `%RUNTIME` is defensive (EOF follows) | `-092457.log` |
 | n60g | no queue strip (after t2-m) | `keys_after_whichkey`: `<leader>tr=Run Nearest Test, <leader>tt=Run All Test` | `-092630.log` |
 | n60f | `bind` a no-op | `keys` (5 unmapped, tr/tt queued LazyVim keys), `keys_after_whichkey` | `-092743.log` |
+| n60p+q+t+v | one run (t2-n..r): sockets closed with `disconnect` again (p), `bind` result ignored (q), no raw cap (t), `<leader>tT` left out of `nv4j.tests.keys` (v) | `stream_closed` (p: "1 still open"); `stream_bind_error` (q: the error is "no port after bind", not the bind); `raw_cap` (t: 5005 of 5005 kept); `keys`, `pick_key`, `keys_after_whichkey` (v: `<leader>tT` not bound) | `/tmp/nv4j/logs/test-20261027-203445.log` |
+| n60r | lock set in `start()` only (not in `run()`) | `lock_quick_press`: second press not refused, launches 2 | `-203602.log` |
+| n60s | discovery bound ignored | `discovery_timeout` (no result in 5 s, lock held) and every later run case ("A test run is in progress (finding the tests)"): the bug itself | `-203701.log` |
+| n60g (t2-n) | `opts.test = false` removed (LazyVim's test keys back) | `keys_after_whichkey`: `<leader>tr=Run Nearest Test`, `<leader>tt=Run All Test`, `<leader>tT=Run Test` (the headless `keys` case runs before which-key creates its queued keys) | `-203755.log` |
+| n60u | java-test jars not added back in `opts.jdtls` | `test_bundle` (0 java-test jars), `no_junit_project` | `-203855.log` |
 
-Deterministic twins: `timeout_bounded` forces the bound with a 300 ms product timeout (instead of a stuck JVM); `keys_after_whichkey` replays the which-key load order headless (lazy load + VimEnter) instead of waiting for a real VeryLazy.
+Deterministic twins: `stream_closed` reads the handles inside `on_done`, which runs in the same callback that read `%RUNTIME` (before the JVM's EOF can be read); `lock_quick_press` makes both calls synchronously, so the second always lands while the first is in its asynchronous discovery; `stream_bind_error` and `discovery_timeout` stub the failure (`vim.uv.new_tcp`, `client.request`) instead of waiting for a real one. `timeout_bounded` forces the bound with a 300 ms product timeout (instead of a stuck JVM); `keys_after_whichkey` replays the which-key load order headless (lazy load + VimEnter) instead of waiting for a real VeryLazy.
 
 ### Final runs
 
@@ -109,5 +119,5 @@ Three consecutive runs 20/0 (`/tmp/nv4j/logs/test-20261022-092842.log`, `-092935
 - Project scope runs one JVM per jdt.ls Java project and test kind; a multi-module project was not measured. Gradle not tested.
 - Frames are resolved to files under `src/*/java` of the root and one module level down; deeper modules show the message entry without frames.
 - Stdout of the tests goes to the dap-repl only (`internalConsole`), not into the results.
-- The which-key queue strip relies on which-key's private `_queue` (pinned `3aab214`); a which-key update can break it, `keys_after_whichkey` catches it.
+- (fixed, t2-n) The which-key queue strip is gone: LazyVim's test keys are off (`opts.test = false`). The check still prunes queued which-key specs of wiped buffers before loading which-key (t2-k, a headless artifact for LazyVim's extract keys).
 - `<leader>to` is the quickfix list (failures and skipped tests), not a tree of every test as IntelliJ's panel.

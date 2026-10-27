@@ -11,19 +11,35 @@
 -- launch seen by nvim-dap (on_config listener) during the run, and Nv4J's own result layer (quickfix
 -- title "Nv4J tests", nv4j_tests diagnostics/signs). Negative controls (specs/features/tests-runner.md):
 -- n60b fabricated on_done stub, n60c stub delegating to nvim-jdtls, n60d @Disabled counted as passed,
--- n60e failed-only reruns the whole class, n60f bind() a no-op, n60g no which-key queue strip, n60j no
--- timeout, n60k refusals without a message, n60l failure message dropped, n60m results() without copen,
--- n60n nearest always the class, n60o last refused.
+-- n60e failed-only reruns the whole class, n60f bind() a no-op, n60g LazyVim's test keys left on
+-- (opts.test true), n60j no timeout, n60k refusals without a message, n60l failure message dropped,
+-- n60m results() without copen, n60n nearest always the class, n60o last refused, n60p sockets not
+-- closed (disconnect on luv handles), n60q bind result ignored, n60r lock taken in start(), n60s no
+-- discovery timeout, n60t no raw cap, n60u java-test bundle not added back, n60v <leader>tT unbound.
 -- Fixture (src/test/java): demo.billing.PriceCalculatorTest (5 passing runs: 1 plain, 3 parameterized,
 -- 1 nested; 1 @Disabled), demo.billing.PriceCalculatorFailingTest (1 pass, 1 failure on purpose,
 -- tagged nv4j-failing so `mvn test` skips it), demo.GreetingPropertiesTest (1 pass).
 --  api              : nv4j.tests.run exists.
 --  keys             : in a test buffer <leader>tr nearest, <leader>tt class, <leader>tp project,
 --                     <leader>tf failed, <leader>tl last, <leader>to results, <leader>td debug nearest,
---                     each bound for real (E.keymap queued == false, not which-key's queue);
---                     <leader>tn stays "New terminal in a tab".
+--                     <leader>tT pick, each a buffer-local mapping (nvim_buf_get_keymap) with Nv4J's desc;
+--                     no mapping with LazyVim's test descs ("Run Nearest Test", "Run All Test", "Run
+--                     Test") in the buffer or globally; <leader>tn stays "New terminal in a tab".
+--  test_bundle      : jdt.ls was started with the java-test bundle (Nv4J adds it back: opts.test = false).
+--  pick_key         : <leader>tT opens nvim-jdtls's test picker (vim.ui.select stubbed) with the file's tests.
+--  raw_cap          : the parser keeps at most 2 x raw_max (the last) lines of a 5005-line stream (counts still right),
+--                     the whole stream with vim.g.nv4j_tests_debug; _last_raw of a real run <= raw_max.
 --  nearest_warm     : nearest = totalMultiplies, run twice: second result <= 10 s, 1 passed, a ✓ sign
 --                     on the method line.
+--  stream_closed    : when the run reports (on_done), its stream server and accepted socket(s) are closed
+--                     (not left to the JVM's EOF).
+--  lock_quick_press : two run() calls back to back (the second while the first is discovering): the second
+--                     is refused ("in progress"), one launch, the first 1 passed, no lock afterwards.
+--  stream_bind_error: the stream server's bind fails (vim.uv.new_tcp stubbed): result error names the bind,
+--                     nothing launched, lock released, quickly.
+--  discovery_timeout: jdt.ls never answers the discovery commands (client.request stubbed for them),
+--                     discovery bound 500 ms: nearest and project end with "no answer from jdt.ls within",
+--                     a visible message, the lock released, the next real run works.
 --  class_counts     : PriceCalculatorTest: 5/0/1, the 3 parameterized invocations, the nested test, notYet skipped.
 --  file_scope       : scope "file" on the same file: 5/0/1.
 --  nearest_param    : cursor in the parameterized method: 3 passed.
@@ -37,13 +53,12 @@
 --  debug_nearest    : debug = true (<leader>td): P2 adapter build ("test debug"), noDebug false, a breakpoint
 --                     in totalMultiplies stops once, then the result 1 passed.
 --  broken_class     : a test class that does not compile: a result (failure "Unresolved compilation"), no hang.
---  no_tests_file    : nearest in a main class: visible "No tests found" message, quickly.
+--  no_tests_file    : nearest in a main class: visible "No tests found" message, quickly, no lock left.
 --  no_junit_project : a Maven project without JUnit (generated under /tmp/nv4j): visible message for
 --                     nearest and project, quickly.
 --  timeout_bounded  : product timeout set to 300 ms: the run ends with "no result within", the next run works.
 --  keys_after_whichkey: which-key loaded and VimEnter fired (which-key then creates every queued mapping):
---                     Nv4J's keys are still the bound ones (LazyVim's queued <leader>tr/<leader>tt for the
---                     buffer were taken out of the queue at attach).
+--                     Nv4J's keys are still the bound ones and no LazyVim test key exists (none was queued).
 --  fixture_restored : the fixture is unchanged on disk afterwards.
 -- Timings: /tmp/nv4j/logs/latency.jsonl (tests_*).
 vim.o.confirm = false
@@ -80,38 +95,106 @@ dap.listeners.on_config["n60"] = function(c)
 end
 
 local KEYS = { ["<leader>tr"] = "[Nn]earest", ["<leader>tt"] = "[Cc]lass", ["<leader>tp"] = "[Pp]roject",
-  ["<leader>tf"] = "[Ff]ailed", ["<leader>tl"] = "[Ll]ast", ["<leader>to"] = "[Rr]esults", ["<leader>td"] = "[Dd]ebug" }
+  ["<leader>tf"] = "[Ff]ailed", ["<leader>tl"] = "[Ll]ast", ["<leader>to"] = "[Rr]esults", ["<leader>td"] = "[Dd]ebug",
+  ["<leader>tT"] = "[Pp]ick" }
 -- Nv4J's own descs (LazyVim's "Run Nearest Test" also matches [Nn]earest: the desc must be Nv4J's exactly)
 local OWN = {}
 for _, k in ipairs(tests.keys or {}) do OWN[k[1]] = k[3] end
+-- LazyVim java extra's test keys (lang/java.lua, opts.test): must not exist anywhere
+local LAZY_DESCS = { ["Run Nearest Test"] = true, ["Run All Test"] = true, ["Run Test"] = true }
 local function check_keys(b)
   vim.api.nvim_set_current_buf(b)
   local bad = {}
+  local local_maps = {}
+  for _, m in ipairs(vim.api.nvim_buf_get_keymap(b, "n")) do local_maps[vim.keycode(m.lhs)] = m end
   for lhs, pat in pairs(KEYS) do
-    local m = E.keymap(lhs, b)
-    local d = m and (m.desc or "no desc") or "unmapped"
-    if not d:find(pat) or d ~= OWN[lhs] or not m or m.queued ~= false then
-      bad[#bad + 1] = lhs .. "=" .. d .. (m and m.queued and " (queued in which-key, not bound)" or "")
+    local m = local_maps[vim.keycode(lhs)]
+    local d = m and (m.desc or "no desc") or "not bound in the buffer"
+    if not d:find(pat) or d ~= OWN[lhs] then bad[#bad + 1] = lhs .. "=" .. d end
+  end
+  for scope, list in pairs({ buffer = vim.api.nvim_buf_get_keymap(b, "n"), global = vim.api.nvim_get_keymap("n") }) do
+    for _, m in ipairs(list) do
+      if LAZY_DESCS[m.desc or ""] then bad[#bad + 1] = ("LazyVim's %s=%s (%s)"):format(m.lhs, m.desc, scope) end
     end
   end
   table.sort(bad)
   return bad
 end
 
--- keys: LazyVim adds its jdtls test keys through which-key on LspAttach; Nv4J's are bound right after
-vim.wait(10000, function() return E.keymap("<leader>tr", buf) ~= nil end, 50)
+-- keys: bound per buffer by plugins/java.lua on attach (LazyVim's java extra test keys are off)
+vim.wait(10000, function() return vim.fn.maparg("<leader>tr", "n", false, true).buffer == 1 end, 50)
 do
   local bad = check_keys(buf)
   local tn = vim.fn.maparg("<leader>tn", "n", false, true)
   local tn_ok = (tn.desc or ""):find("terminal") ~= nil
-  lsp.report(P .. "keys", #bad == 0 and tn_ok, ("%s; <leader>tn=%s"):format(#bad == 0 and "all 7 bound (queued=false)" or
-    ("wrong: " .. table.concat(bad, ", ")), tostring(tn.desc)))
+  lsp.report(P .. "keys", #bad == 0 and tn_ok, ("%s; <leader>tn=%s"):format(#bad == 0 and
+    "all 8 bound in the buffer with Nv4J's descs, no LazyVim test key" or ("wrong: " .. table.concat(bad, ", ")), tostring(tn.desc)))
+end
+
+-- test_bundle: LazyVim adds the java-test jars only with opts.test; Nv4J adds them back (plugins/java.lua)
+do
+  local bundles = (client.config.init_options or {}).bundles or {}
+  local jt = vim.tbl_filter(function(j) return j:find("java%-test") ~= nil end, bundles)
+  local plugin = vim.tbl_filter(function(j) return j:find("com%.microsoft%.java%.test%.plugin") ~= nil end, jt)
+  lsp.report(P .. "test_bundle", #plugin >= 1, ("%d java-test jar(s) in init_options.bundles (%d bundles), test plugin %s"):format(#jt,
+    #bundles, plugin[1] and table.concat(vim.tbl_map(vim.fs.basename, plugin), ", ") or "MISSING"))
+end
+
+-- pick_key: <leader>tT -> nvim-jdtls's pick_test, its list through vim.ui.select (stubbed: nothing picked)
+do
+  vim.api.nvim_set_current_buf(buf)
+  local items
+  local orig_select = vim.ui.select
+  vim.ui.select = function(list, o, cb)
+    items = vim.tbl_map(function(it) return o.format_item and o.format_item(it) or tostring(it) end, list)
+    cb(nil)
+  end
+  local m = vim.fn.maparg("<leader>tT", "n", false, true)
+  local okc, cerr = pcall(function() m.callback() end)
+  vim.wait(10000, function() return items ~= nil end, 20)
+  vim.ui.select = orig_select
+  local has = false
+  for _, it in ipairs(items or {}) do if it:find("PriceCalculatorTest#totalMultiplies", 1, true) then has = true end end
+  lsp.report(P .. "pick_key", okc and has, ("%s; picker %s (%d item(s): %s)"):format(m.desc or "unmapped", items and "opened" or
+    ("NOT opened" .. (okc and "" or (": " .. tostring(cerr)))), items and #items or 0, table.concat(items or {}, ", "):sub(1, 140)))
+end
+
+-- raw_cap: parser memory bounded unless debugging
+do
+  local function feed(n)
+    local p = tests._new_parser()
+    p.feed("%TESTC  1 v2\n%TSTTREE1,t1(demo.X),false,1,false,-1,t1(),,\n%TESTS  1,t1(demo.X)\n")
+    for i = 1, n do p.feed("filler " .. i .. "\n") end
+    p.feed("%TESTE  1,t1(demo.X)\n%RUNTIME12\n")
+    return p
+  end
+  local cap = tests.raw_max or 0
+  local p1 = feed(5000)
+  vim.g.nv4j_tests_debug = true
+  local p2 = feed(5000)
+  vim.g.nv4j_tests_debug = nil
+  local last_ok = p1.raw[#p1.raw] == "%RUNTIME12"
+  local state_ok = p1.nodes["1"] and p1.nodes["1"].state == "passed" and p1.done
+  local ok = cap > 0 and #p1.raw <= 2 * cap and last_ok and state_ok and #p2.raw == 5005
+  lsp.report(P .. "raw_cap", ok, ("raw_max %d: capped stream kept %d of 5005 lines (last line %s, test state %s), debug kept %d")
+    :format(cap, #p1.raw, last_ok and "kept" or "LOST", state_ok and "passed" or "WRONG", #p2.raw))
 end
 
 --- One run through nv4j.tests; returns result (or nil), ms, evidence { launches, cfg, title }.
 local function run(scope, b, lnum, extra)
-  local result
-  local opts = vim.tbl_extend("force", { scope = scope, bufnr = b, lnum = lnum, on_done = function(r) result = r end }, extra or {})
+  local result, handles
+  local opts = vim.tbl_extend("force", { scope = scope, bufnr = b, lnum = lnum, on_done = function(r)
+    result = r
+    -- the stream handles of the run's last launch, as they are when the result is reported
+    local h = tests._last_handles
+    if h then
+      local open = 0
+      for _, s in ipairs(h.socks) do if not s:is_closing() then open = open + 1 end end
+      handles = { server_closed = h.server:is_closing(), socks = #h.socks, open = open }
+    end
+  end }, extra or {})
+  local wait_ms = opts.wait_ms or RUN_TIMEOUT_MS
+  opts.wait_ms = nil
   vim.api.nvim_set_current_buf(b)
   if lnum then vim.api.nvim_win_set_cursor(0, { lnum, 0 }) end
   local before = #launches
@@ -119,10 +202,11 @@ local function run(scope, b, lnum, extra)
   local t0 = E.now()
   local ok, why = pcall(tests.run, opts)
   if not ok then return nil, 0, { err = tostring(why), launches = 0 } end
-  vim.wait(RUN_TIMEOUT_MS, function() return result ~= nil end, 20)
+  vim.wait(wait_ms, function() return result ~= nil end, 20)
   local ms = E.now() - t0
-  local ev = { launches = #launches - before, cfg = launches[#launches], title = vim.fn.getqflist({ title = 0 }).title or "" }
-  if not result then ev.err = "no result within " .. RUN_TIMEOUT_MS / 1000 .. " s" end
+  local ev = { launches = #launches - before, cfg = launches[#launches], title = vim.fn.getqflist({ title = 0 }).title or "",
+    handles = handles }
+  if not result then ev.err = "no result within " .. wait_ms / 1000 .. " s" end
   vim.wait(300) -- the session tear-down settles before the next run
   return result, ms, ev
 end
@@ -156,6 +240,96 @@ local ok_all, err = pcall(function()
   lsp.report(P .. "nearest_warm", counts(r2, 1, 0, 0) and real(r2, ev2, title_of(1, 0, 0)) and name_ok and sign and ms2 <= WARM_BUDGET_MS,
     ("warm %.0f ms (budget %d), %s, test %s, ✓ sign %s; first run %.0f ms, %s"):format(ms2, WARM_BUDGET_MS, fmt(r2, ev2),
       r2 and r2.tests[1] and tostring(r2.tests[1].method) or "-", sign and "on line " .. l or "MISSING", ms1, fmt(r1, ev1)))
+  local h = ev2.handles
+  lsp.report(P .. "stream_closed", counts(r2, 1, 0, 0) and h ~= nil and h.server_closed and h.socks >= 1 and h.open == 0,
+    h and ("at on_done: server %s, %d accepted socket(s), %d still open"):format(h.server_closed and "closed" or "OPEN", h.socks, h.open)
+      or "no stream handles seen")
+
+  -- two quick presses: the second is refused while the first is still discovering
+  do
+    local first, second
+    vim.api.nvim_set_current_buf(buf)
+    vim.api.nvim_win_set_cursor(0, { l, 0 })
+    local before = #launches
+    local n1 = #notes
+    tests.run({ scope = "nearest", bufnr = buf, lnum = l, on_done = function(r) first = r end })
+    tests.run({ scope = "nearest", bufnr = buf, lnum = l, on_done = function(r) second = r end })
+    vim.wait(RUN_TIMEOUT_MS, function() return first ~= nil and second ~= nil end, 20)
+    vim.wait(1500) -- a second run, if one was started, would launch meanwhile
+    local refused = second and (second.error or ""):find("in progress", 1, true) ~= nil
+    local seen = false
+    for i = n1 + 1, #notes do if notes[i].msg:find("A test run is in progress", 1, true) then seen = true end end
+    local nl = #launches - before
+    lsp.report(P .. "lock_quick_press", refused and seen and counts(first, 1, 0, 0) and nl == 1 and tests._busy() == nil,
+      ("second press %s (message %s), first %s, launches %d (want 1), lock afterwards %s"):format(
+        refused and "refused" or ("NOT refused: " .. (second and (tostring(second.passed) .. " passed " .. tostring(second.error)) or "no result")),
+        seen and "seen" or "MISSING", first and (tostring(first.passed) .. "/" .. tostring(first.failed)) or "no result", nl,
+        tests._busy() == nil and "none" or "HELD"))
+    vim.wait(300)
+  end
+
+  -- the stream server cannot bind (vim.uv.new_tcp stubbed for the server handle)
+  do
+    local orig_new_tcp = vim.uv.new_tcp
+    local stub_closed = false
+    local stub = {
+      bind = function() return nil, "EADDRNOTAVAIL: stubbed by 60_tests_runner" end,
+      listen = function() return 0 end,
+      getsockname = function() return nil end,
+      is_closing = function() return stub_closed end,
+      close = function() stub_closed = true end,
+    }
+    -- the stub is taken by the first new_tcp after the launch arguments (the stream server): armed when
+    -- the classpath (the last launch-argument request) is asked for
+    local orig_request = client.request
+    local had = rawget(client, "request")
+    rawset(client, "request", function(self, method, params, handler, b2)
+      if method == "workspace/executeCommand" and params and params.command == "java.project.getClasspaths" then
+        vim.uv.new_tcp = function(...)
+          vim.uv.new_tcp = orig_new_tcp
+          return stub
+        end
+      end
+      return orig_request(self, method, params, handler, b2)
+    end)
+    vim.g.nv4j_test_timeout_ms = 8000
+    local rb, msb, evb = run("nearest", buf, l, { wait_ms = 12000 })
+    vim.g.nv4j_test_timeout_ms = nil
+    rawset(client, "request", had)
+    vim.uv.new_tcp = orig_new_tcp
+    local named = rb and (rb.error or ""):find("bind 127.0.0.1 failed", 1, true) ~= nil
+    lsp.report(P .. "stream_bind_error", named and evb.launches == 0 and stub_closed and tests._busy() == nil and msb < 6000,
+      ("%.0f ms, error: %s; launches %d, stub server %s, lock %s"):format(msb, rb and tostring(rb.error):gsub("\n", " ") or "no result",
+        evb.launches, stub_closed and "closed" or "NOT closed", tests._busy() == nil and "released" or "HELD"))
+  end
+
+  -- discovery never answered: bounded, message, lock released
+  do
+    local orig_request = client.request
+    local had = rawget(client, "request")
+    local DISCOVERY = { ["vscode.java.test.findTestTypesAndMethods"] = true, ["vscode.java.test.findJavaProjects"] = true }
+    rawset(client, "request", function(self, method, params, handler, b2)
+      if method == "workspace/executeCommand" and params and DISCOVERY[params.command] then return true, 987654321 end
+      return orig_request(self, method, params, handler, b2)
+    end)
+    vim.g.nv4j_test_discovery_timeout_ms = 500
+    local n1 = #notes
+    local rn, msn = run("nearest", buf, l, { wait_ms = 5000 })
+    local busy_after_nearest = tests._busy()
+    local rp2, msp2 = run("project", buf, nil, { wait_ms = 5000 })
+    vim.g.nv4j_test_discovery_timeout_ms = nil
+    rawset(client, "request", had)
+    local seen = 0
+    for i = n1 + 1, #notes do if notes[i].msg:find("no answer from jdt.ls within 0.5 s", 1, true) then seen = seen + 1 end end
+    local function timed(r) return r and (r.error or ""):find("no answer from jdt.ls within 0.5 s", 1, true) ~= nil end
+    local busy_after = tests._busy()
+    local rr, msr, evr = run("nearest", buf, l)
+    lsp.report(P .. "discovery_timeout", timed(rn) and timed(rp2) and seen == 2 and busy_after_nearest == nil and busy_after == nil
+      and msn < 3000 and msp2 < 3000 and counts(rr, 1, 0, 0) and real(rr, evr, title_of(1, 0, 0)),
+      ("nearest %.0f ms (%s), project %.0f ms (%s), messages %d/2, lock %s; next run %.0f ms, %s"):format(msn,
+        rn and tostring(rn.error) or "no result", msp2, rp2 and tostring(rp2.error) or "no result", seen,
+        (busy_after_nearest == nil and busy_after == nil) and "released" or "HELD", msr, fmt(rr, evr)))
+  end
 
   -- class with parameterized, nested and disabled tests
   local rc, msc, evc = run("class", buf, 1)
@@ -278,8 +452,10 @@ local ok_all, err = pcall(function()
   local rm, msm, evm = run("nearest", mb, 1)
   local seen
   for i = n0 + 1, #notes do if notes[i].msg:find("No tests found in PriceCalculator.java", 1, true) then seen = notes[i].msg end end
-  lsp.report(P .. "no_tests_file", rm ~= nil and rm.error ~= nil and seen ~= nil and evm.launches == 0 and msm < 5000,
-    ("%.0f ms, message %s"):format(msm, seen and ("'" .. seen:sub(1, 60) .. "...'") or "MISSING"))
+  lsp.report(P .. "no_tests_file", rm ~= nil and rm.error ~= nil and seen ~= nil and evm.launches == 0 and msm < 5000
+    and tests._busy() == nil,
+    ("%.0f ms, message %s, lock %s"):format(msm, seen and ("'" .. seen:sub(1, 60) .. "...'") or "MISSING",
+      tests._busy() == nil and "released" or "HELD"))
 
   F.restore(snap, client) -- drops the fixture buffers
   buf = lsp.open(PASSING)
@@ -318,9 +494,11 @@ local ok_all, err = pcall(function()
   vim.g.nv4j_test_timeout_ms = nil
   vim.wait(4000) -- the abandoned launch is reaped
   local ra, msa, eva = run("nearest", buf, l)
+  local raw_n = #(tests._last_raw or {})
   lsp.report(P .. "timeout_bounded", rt ~= nil and (rt.error or ""):find("no result within", 1, true) ~= nil and mst < 3000
-    and counts(ra, 1, 0, 0) and real(ra, eva, title_of(1, 0, 0)),
-    ("timed-out run ended after %.0f ms (%s); next run %.0f ms, %s"):format(mst, rt and tostring(rt.error) or "no result", msa, fmt(ra, eva)))
+    and counts(ra, 1, 0, 0) and real(ra, eva, title_of(1, 0, 0)) and raw_n > 0 and raw_n <= (tests.raw_max or 0),
+    ("timed-out run ended after %.0f ms (%s); next run %.0f ms, %s; _last_raw %d line(s) (raw_max %s)"):format(mst,
+      rt and tostring(rt.error) or "no result", msa, fmt(ra, eva), raw_n, tostring(tests.raw_max)))
 end)
 if not ok_all then lsp.report(P .. "error", false, tostring(err)) end
 pcall(function() require("dap").terminate() end)
@@ -358,7 +536,7 @@ do
   vim.wait(500)
   local bad = check_keys(buf)
   lsp.report(P .. "keys_after_whichkey", wk_loaded and #bad == 0, ("which-key %s; %s"):format(wk_loaded and "loaded (queue processed)" or "NOT loaded",
-    #bad == 0 and "all 7 still Nv4J's" or ("overridden: " .. table.concat(bad, ", "))))
+    #bad == 0 and "all 8 still Nv4J's, no LazyVim test key" or ("wrong: " .. table.concat(bad, ", "))))
 end
 
 local d = F.diff(snap)

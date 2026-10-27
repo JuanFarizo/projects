@@ -26,6 +26,14 @@ local KIND_NAMES = { [0] = "JUnit 5", [1] = "JUnit 4", [2] = "TestNG" }
 -- Whole run (build, launch, results) bounded: a test JVM that never reports, a hung build or a launch
 -- error that never closes the session ends the run with a visible message instead of a hang.
 M.timeout_ms = 120000
+-- Discovery (findTestTypesAndMethods, findJavaProjects, findTestPackagesAndTypes) bounded on its own: it
+-- runs before the run's timer exists, so a jdt.ls that never answers would leave no message and the
+-- lock held. Measured answers: 5-1500 ms (60_tests_runner no_tests_file / no_junit_project, a project
+-- jdt.ls just imported); 15 s leaves room for a busy jdt.ls. Not a D13 budget (a bound, not a wait).
+M.discovery_timeout_ms = 15000
+-- The runner stream kept per launch for diagnosis (p.raw, M._last_raw): the last RAW_MAX lines, the
+-- whole stream with vim.g.nv4j_tests_debug = true.
+M.raw_max = 500
 M.last_request = nil -- { scope, launches, debug, label }
 M.last_result = nil
 local running = nil
@@ -33,6 +41,7 @@ local running = nil
 local function notify(msg, level) vim.notify(msg, level or vim.log.levels.INFO, { title = "Tests" }) end
 
 local function timeout_ms() return tonumber(vim.g.nv4j_test_timeout_ms) or M.timeout_ms end
+local function discovery_ms() return tonumber(vim.g.nv4j_test_discovery_timeout_ms) or M.discovery_timeout_ms end
 
 --- jdt.ls client for a buffer (attached), else the one whose root holds the file.
 local function client_for(bufnr)
@@ -40,11 +49,29 @@ local function client_for(bufnr)
   return c or require("nv4j.root").client_for_path(vim.api.nvim_buf_get_name(bufnr))
 end
 
-local function exec(client, command, arguments, bufnr, cb)
-  local ok = client:request("workspace/executeCommand", { command = command, arguments = arguments }, function(err, res)
+--- workspace/executeCommand; cb(err, res) once. With bound_ms: no answer within it -> the request is
+--- cancelled and cb gets { message = "no answer from jdt.ls within N s (<command>)", timeout = true }.
+local function exec(client, command, arguments, bufnr, cb, bound_ms)
+  local done, timer, id = false, nil, nil
+  local function once(err, res)
+    if done then return end
+    done = true
+    if timer then pcall(function() timer:stop(); timer:close() end) end
     cb(err, res)
+  end
+  local ok
+  ok, id = client:request("workspace/executeCommand", { command = command, arguments = arguments }, function(err, res)
+    once(err, res)
   end, bufnr)
-  if not ok then cb({ message = "jdtls client stopped" }) end
+  if not ok then return once({ message = "jdtls client stopped" }) end
+  if bound_ms and not done then
+    timer = vim.uv.new_timer()
+    timer:start(bound_ms, 0, vim.schedule_wrap(function()
+      if done then return end
+      if id then pcall(function() client:cancel_request(id) end) end
+      once({ message = ("no answer from jdt.ls within %g s (%s)"):format(bound_ms / 1000, command), timeout = true })
+    end))
+  end
 end
 
 -- ── lenses ──────────────────────────────────────────────────────────────────────────────────────
@@ -124,7 +151,10 @@ local function new_parser()
     return n
   end
   local function line(l)
-    p.raw[#p.raw + 1] = l
+    local raw = p.raw
+    raw[#raw + 1] = l
+    -- capped (M.raw_max last lines) unless debugging: a long run does not keep its whole stream
+    if #raw > 2 * M.raw_max and not vim.g.nv4j_tests_debug then p.raw = vim.list_slice(raw, #raw - M.raw_max + 1) end
     local tag, rest = l:sub(1, 8), l:sub(9)
     if p.tracing and tag ~= "%TRACEE " then
       local t = p.tracing.trace
@@ -420,8 +450,11 @@ local function launch_one(run, launch, done)
     local function finish(e)
       if finished then return end
       finished = true
-      for _, s in ipairs(socks) do pcall(function() if not s:is_closing() then s:disconnect({ terminateDebuggee = true }) end end) end
-      pcall(function() server:close() end)
+      -- luv TCP handles: closed here (timeout, cancel, %RUNTIME) instead of waiting for the JVM's EOF
+      for _, s in ipairs(socks) do
+        if not s:is_closing() then pcall(function() s:read_stop() end); s:close() end
+      end
+      if not server:is_closing() then server:close() end
       run.cancel_launch = nil
       parser.flush()
       done(parser, e)
@@ -441,11 +474,18 @@ local function launch_one(run, launch, done)
       if not finished then reap() end
       inner(e)
     end
-    server:bind("127.0.0.1", 0)
-    server:listen(8, function(lerr)
-      if lerr then return end
+    M._last_handles = { server = server, socks = socks } -- for the checks (60_tests_runner sockets_closed)
+    local bok, berr = server:bind("127.0.0.1", 0)
+    if not bok then return finish("test stream server: bind 127.0.0.1 failed: " .. tostring(berr)) end
+    local lok, lerr0 = server:listen(8, function(lerr)
+      if finished then return end
+      if lerr then return vim.schedule(function() finish("test stream server: accept failed: " .. tostring(lerr)) end) end
       local sock = uv.new_tcp()
-      server:accept(sock)
+      local aok, aerr = server:accept(sock)
+      if not aok then
+        sock:close()
+        return vim.schedule(function() finish("test stream server: accept failed: " .. tostring(aerr)) end)
+      end
       socks[#socks + 1] = sock
       sock:read_start(vim.schedule_wrap(function(rerr, chunk)
         if chunk then
@@ -460,7 +500,10 @@ local function launch_one(run, launch, done)
         end
       end))
     end)
-    local port = server:getsockname().port
+    if not lok then return finish("test stream server: listen failed: " .. tostring(lerr0)) end
+    local sn = server:getsockname()
+    if not sn or not sn.port then return finish("test stream server: no port after bind") end
+    local port = sn.port
     local args = table.concat(la.programArguments or {}, " "):gsub("%-port %d+", "-port " .. port)
     local root = client.config.root_dir
     local home = java_home(launch.root or root)
@@ -503,10 +546,14 @@ local function finish_run(run, r)
   if run.finished then return end
   run.finished = true
   if run.timer then pcall(function() run.timer:stop(); run.timer:close() end) end
-  running = nil
+  if running == run then running = nil end
   r.ms = (vim.uv.hrtime() - run.t0) / 1e6
-  M._last_raw = {} -- the runner stream of the last run, for diagnosis (:lua =require("nv4j.tests")._last_raw)
-  for _, p in ipairs(run.parsers or {}) do vim.list_extend(M._last_raw, p.raw) end
+  -- the runner stream of the last run, for diagnosis (:lua =require("nv4j.tests")._last_raw): its last
+  -- M.raw_max lines, all of it with vim.g.nv4j_tests_debug
+  local raw = {}
+  for _, p in ipairs(run.parsers or {}) do vim.list_extend(raw, p.raw) end
+  if #raw > M.raw_max and not vim.g.nv4j_tests_debug then raw = vim.list_slice(raw, #raw - M.raw_max + 1) end
+  M._last_raw = raw
   if not r.error or r.passed + r.failed + r.skipped > 0 then
     M.last_result = r
   end
@@ -522,7 +569,7 @@ local function finish_run(run, r)
           index({ classes = run.ctx.classes, methods = run.ctx.methods, files = run.ctx.files, lenses_by_file = {} }, ls)
           place_signs(r, { [file] = ls })
         end
-      end)
+      end, discovery_ms()) -- signs only: a timeout just leaves the method lines unsigned
     end
   end
   if run.on_done then pcall(run.on_done, r) end
@@ -530,10 +577,20 @@ end
 
 local function empty_result(err) return { passed = 0, failed = 0, skipped = 0, failures = {}, tests = {}, error = err } end
 
---- Message-only end (nothing launched): visible notification, on_done with error.
+--- Message-only end (nothing launched): visible notification, on_done with error; releases the lock
+--- this run() call took (opts._lock), never another run's.
 local function refuse(opts, msg, level)
+  if opts._lock and running == opts._lock then running = nil end
   notify(msg, level or vim.log.levels.WARN)
   if opts.on_done then pcall(opts.on_done, empty_result(msg)) end
+end
+
+--- A discovery callback that cannot leave the lock held: an error in it ends the run with a message.
+local function guard(opts, fn)
+  return function(...)
+    local ok, e = pcall(fn, ...)
+    if not ok then refuse(opts, "Test run failed: " .. tostring(e), vim.log.levels.ERROR) end
+  end
 end
 
 --- Run the launches one after another, then show the aggregate.
@@ -542,7 +599,7 @@ local function start(req, opts)
   local run = { id = next_id, client = req.client, debug = req.debug, label = req.label, t0 = vim.uv.hrtime(),
     on_done = opts.on_done, lenses_by_file = req.lenses_by_file or {},
     ctx = { files = req.files or {}, roots = req.roots or {}, methods = req.methods or {}, classes = req.classes or {} } }
-  running = run
+  running = run -- replaces the discovery lock of run()
   M.last_request = req
   clear_marks()
   notify(("%s: %s..."):format(req.debug and "Debugging" or "Running", req.label))
@@ -642,7 +699,7 @@ local function from_buffer(opts, scope)
   local client = client_for(bufnr)
   if not client then return refuse(opts, "jdt.ls is not attached to this buffer yet: no tests to run") end
   local lnum0 = (opts.lnum or vim.api.nvim_win_get_cursor(0)[1]) - 1
-  exec(client, "vscode.java.test.findTestTypesAndMethods", { vim.uri_from_bufnr(bufnr) }, bufnr, function(err, lenses)
+  exec(client, "vscode.java.test.findTestTypesAndMethods", { vim.uri_from_bufnr(bufnr) }, bufnr, guard(opts, function(err, lenses)
     if err then return refuse(opts, "Test discovery failed: " .. tostring(err.message), vim.log.levels.ERROR) end
     lenses = lenses or {}
     local file = vim.fs.basename(name)
@@ -676,7 +733,7 @@ local function from_buffer(opts, scope)
     req.launches, skipped = launches_for(items, level, label)
     if #req.launches == 0 then return refuse(opts, tkind_msg(skipped)) end
     start(req, opts)
-  end)
+  end), discovery_ms())
 end
 
 local function from_project(opts)
@@ -690,13 +747,17 @@ local function from_project(opts)
   end
   if not client then return refuse(opts, "No jdt.ls project here: open a Java file of the project first") end
   local root = client.config.root_dir
-  exec(client, "vscode.java.test.findJavaProjects", { vim.uri_from_fname(root) }, nil, function(err, projects)
+  exec(client, "vscode.java.test.findJavaProjects", { vim.uri_from_fname(root) }, nil, guard(opts, function(err, projects)
     if err then return refuse(opts, "Test discovery failed: " .. tostring(err.message), vim.log.levels.ERROR) end
     projects = projects or {}
     local req = new_req(client, "project", opts.debug, "all tests in " .. vim.fs.basename(root))
     local classes = {}
     local pending = #projects
+    local timeouts = {}
     local function done()
+      if #timeouts > 0 then
+        return refuse(opts, "Test discovery failed: " .. table.concat(timeouts, "; "), vim.log.levels.ERROR)
+      end
       if #classes == 0 then
         return refuse(opts, ("No JUnit tests found in %s (no test classes, or JUnit not on the test classpath)"):format(vim.fs.basename(root)))
       end
@@ -708,7 +769,8 @@ local function from_project(opts)
     end
     if pending == 0 then return done() end
     for _, p in ipairs(projects) do
-      exec(client, "vscode.java.test.findTestPackagesAndTypes", { p.jdtHandler }, nil, function(err1, tree)
+      exec(client, "vscode.java.test.findTestPackagesAndTypes", { p.jdtHandler }, nil, guard(opts, function(err1, tree)
+        if err1 and err1.timeout then timeouts[#timeouts + 1] = err1.message end
         if not err1 then
           index(req, tree or {})
           -- top-level classes only (a class run includes its @Nested classes)
@@ -726,9 +788,9 @@ local function from_project(opts)
         end
         pending = pending - 1
         if pending == 0 then done() end
-      end)
+      end), discovery_ms())
     end
-  end)
+  end), discovery_ms())
 end
 
 --- Failed tests of the last run, rerun at method level (a parameterized method reruns all its
@@ -769,24 +831,22 @@ local function from_failed(opts)
   end
   local pending = vim.tbl_count(missing)
   if pending == 0 then return build() end
+  local timeouts = {}
   for file in pairs(missing) do
-    exec(client, "vscode.java.test.findTestTypesAndMethods", { vim.uri_from_fname(file) }, nil, function(_, lenses)
+    exec(client, "vscode.java.test.findTestTypesAndMethods", { vim.uri_from_fname(file) }, nil, guard(opts, function(err, lenses)
+      if err and err.timeout then timeouts[#timeouts + 1] = err.message end
       index(req, lenses or {})
       req.lenses_by_file[file] = lenses or {}
       pending = pending - 1
-      if pending == 0 then build() end
-    end)
+      if pending > 0 then return end
+      if #timeouts > 0 then return refuse(opts, "Test discovery failed: " .. table.concat(timeouts, "; "), vim.log.levels.ERROR) end
+      build()
+    end), discovery_ms())
   end
 end
 
 --- Entry point (see the header).
-function M.run(opts)
-  opts = opts or {}
-  local scope = opts.scope or "nearest"
-  if running then
-    return refuse(opts, ("A test run is in progress (%s): wait for it (it stops after %g s at most)"):format(running.label,
-      timeout_ms() / 1000))
-  end
+local function dispatch(opts, scope)
   if scope == "nearest" or scope == "class" or scope == "file" then return from_buffer(opts, scope) end
   if scope == "project" then return from_project(opts) end
   if scope == "failed" then return from_failed(opts) end
@@ -800,6 +860,29 @@ function M.run(opts)
   end
   refuse(opts, "Unknown test scope: " .. tostring(scope), vim.log.levels.ERROR)
 end
+
+function M.run(opts)
+  opts = vim.tbl_extend("force", {}, opts or {})
+  local scope = opts.scope or "nearest"
+  if running then
+    local what = running.discovering and "finding the tests" or running.label
+    return refuse({ on_done = opts.on_done }, ("A test run is in progress (%s): wait for it (it stops after %g s at most)")
+      :format(what, (running.discovering and discovery_ms() or timeout_ms()) / 1000))
+  end
+  -- The lock is taken here, before the asynchronous discovery (a second key press meanwhile is refused):
+  -- start() replaces it with the run, every refusal releases it (refuse), discovery is bounded
+  -- (discovery_ms), finish_run clears the run.
+  local lock = { discovering = true, label = scope }
+  running = lock
+  opts._lock = lock
+  local ok, err = pcall(dispatch, opts, scope)
+  if not ok then
+    refuse(opts, "Test run failed: " .. tostring(err), vim.log.levels.ERROR)
+  end
+end
+
+--- The run in progress (or the discovery lock of one), nil when idle. For the checks.
+function M._busy() return running end
 
 --- <leader>to: the results (quickfix list of the last run; a summary when nothing failed).
 function M.results()
@@ -820,7 +903,18 @@ function M.results()
   vim.cmd("copen")
 end
 
--- Keys (D21, specs/005): plain vim.keymap.set, bound for real (no which-key queue).
+--- <leader>tT: nvim-jdtls's test picker (its own result layer; also runs TestNG), bound by Nv4J since
+--- LazyVim's java extra test keys are off (opts.test = false, plugins/java.lua).
+local function pick()
+  local b = vim.api.nvim_get_current_buf()
+  if vim.bo[b].filetype ~= "java" or not vim.lsp.get_clients({ bufnr = b, name = "jdtls" })[1] then
+    return notify("Not a Java file with jdt.ls attached: open a test class to pick a test", vim.log.levels.WARN)
+  end
+  require("jdtls.dap").pick_test()
+end
+
+-- Keys (D21, specs/005): plain vim.keymap.set. LazyVim's java extra adds no test keys (opts.test = false in
+-- plugins/java.lua), so nothing else binds <leader>t* in a Java buffer and which-key shows these descs.
 M.keys = {
   { "<leader>tr", function() M.run({ scope = "nearest" }) end, "Test nearest" },
   { "<leader>tt", function() M.run({ scope = "class" }) end, "Test class" },
@@ -829,45 +923,11 @@ M.keys = {
   { "<leader>tl", function() M.run({ scope = "last" }) end, "Test last again" },
   { "<leader>to", function() M.results() end, "Test results (quickfix)" },
   { "<leader>td", function() M.run({ scope = "nearest", debug = true }) end, "Debug nearest test" },
+  { "<leader>tT", pick, "Test pick (nvim-jdtls, also TestNG)" },
 }
 
---- Bind the keys globally (bufnr nil) or for one buffer. LazyVim's java extra adds <leader>tr/<leader>tt
---- per Java buffer through which-key on LspAttach, then calls the user's on_attach, where
---- plugins/java.lua calls this. Two orders exist:
----  - which-key already loaded (the usual case: jdt.ls attaches seconds after startup): its add() created
----    LazyVim's buffer keys synchronously, and the vim.keymap.set below replaces them.
----  - which-key not loaded yet (attach before VeryLazy, or headless): add() only queued the spec, and
----    which-key would create LazyVim's keys later, over Nv4J's. Those entries are taken out of the queue
----    (which-key 3aab214 `_queue`, pinned), so only Nv4J's keys exist once which-key loads.
-local function strip_queued(bufnr)
-  local ok, wk = pcall(require, "which-key")
-  if not ok or type(wk._queue) ~= "table" then return 0 end
-  local ours = {}
-  for _, k in ipairs(M.keys) do ours[vim.keycode(k[1])] = true end
-  local removed = 0
-  local function walk(spec, buffer)
-    if type(spec) ~= "table" then return end
-    local b = spec.buffer or buffer
-    for i = #spec, 1, -1 do
-      local child = spec[i]
-      if type(child) == "table" then
-        local cb = child.buffer or b
-        if type(child[1]) == "string" and child[2] ~= nil and ours[vim.keycode(child[1])] and (cb == bufnr or cb == 0) then
-          table.remove(spec, i)
-          removed = removed + 1
-        else
-          walk(child, b)
-        end
-      end
-    end
-  end
-  for _, todo in ipairs(wk._queue) do walk(todo.spec, nil) end
-  return removed
-end
-M._strip_queued = strip_queued
-
+--- Bind the keys globally (bufnr nil, config/keymaps.lua) or for one buffer (plugins/java.lua on attach).
 function M.bind(bufnr)
-  if bufnr then strip_queued(bufnr) end
   for _, k in ipairs(M.keys) do
     vim.keymap.set("n", k[1], k[2], { desc = k[3], buffer = bufnr })
   end
