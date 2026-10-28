@@ -273,6 +273,8 @@ Nothing of your old setup changed. Just use `nvim` instead of `nv4j`. To remove 
 
 ## How to use
 
+All keys in one table: [docs/KEYS.md](docs/KEYS.md). Short recipes (open a project, create a class, run tests, refactor): [docs/GUIDE.md](docs/GUIDE.md).
+
 `<leader>` is Space. Every key below was read from the config and checked in a real jdt.ls session (`vim.fn.maparg` in a Java buffer). If a key does not do what is written here, that is a bug in this README.
 
 ### Daily Java and Spring workflow
