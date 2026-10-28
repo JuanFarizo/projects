@@ -123,3 +123,7 @@ Three consecutive `61_scaffold` runs: `DONE 61_scaffold 27 0` each (`/tmp/nv4j/l
 
 Full `tests/run.sh` before the Task 3 commit, log `/tmp/nv4j/logs/test-20261026-092355.log` (exit 1, only from 62, which Task 4 builds): `00_boot 11 0`, `01_jdtls_ready 2 0`, `10_completion_latency 17 0`, `11_completion_ranking 26 0`, `12_usage_index 7 0`, `20_java25 10 0`, `30_diagnostics 24 0`, `31_imports 10 0`, `32_code_actions 28 0`, `40_debug 16 0`, `41_run 27 0`, `50_spring_ls 13 0`, `51_spring_completion 20 0`, `52_spring_nav 12 0`, `60_tests_runner 20 0`, `61_scaffold 27 0`, `62_refactor 8 5` (the expected Task 0 failures), `63_async_import 28 0`. That run measured `compiles*` with the earlier "last publish" timing (2.0 s, trial t3-e); the check was changed after it and run 3 times alone.
 
+
+## Task 5 final runs (3 consecutive full `tests/run.sh`, 2026-10-28)
+
+Logs `/tmp/nv4j/logs/test-20261028-151932.log`, `test-20261028-152844.log`, `test-20261028-153833.log` (may be gone). All three exited 0 with the same `DONE` lines (pass fail): `00_boot 11 0`, `01_jdtls_ready 2 0`, `10_completion_latency 17 0`, `11_completion_ranking 26 0`, `12_usage_index 7 0`, `20_java25 10 0`, `30_diagnostics 24 0`, `31_imports 10 0`, `32_code_actions 28 0`, `40_debug 16 0`, `41_run 27 0`, `50_spring_ls 13 0`, `51_spring_completion 20 0`, `52_spring_nav 12 0`, `60_tests_runner 27 0`, `61_scaffold 27 0`, `62_refactor 104 0`, `63_async_import 28 0`, `64_project_marker 17 0`. Load average at start: 1.8, 4.1, 10.0 (run 3 was green under load).
