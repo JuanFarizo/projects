@@ -95,7 +95,7 @@
 --                       whole; a second refactor while one is pending: refused; an error after the answer:
 --                       reported, on_done(false), busy cleared.
 --  change_signature_constructor: Invoice(...) + discount: every `new Invoice(` passes 0 (declaration, call).
---  change_signature_interface_budget: the first interface change of the session within 2 s (FAILs while over).
+--  change_signature_interface_ceiling: the first interface change of the session within the 5 s ceiling (FAILs when over).
 --  change_signature_interface: from Rule.apply: Half.apply changed too (noted); from Half.apply refused.
 --  change_signature_boot: @Bean parameter / @Bean renamed / @GetMapping parameter: Spring warnings.
 --  change_signature_errors (+ _twin, stub): syntax error in Checkout; twin: its edit dropped -> warning.
@@ -2391,25 +2391,28 @@ local function plant_rule()
   return open_fresh({ CALC })
 end
 
--- change_signature_interface_budget: the 2 s budget for a method with implementations, measured on the first
--- such change of the session (Rule.apply gets `int extra = 1`). jdt.ls's hierarchy search took 5.1 to 5.4 s
--- in Task 4d: this case FAILs visibly while it is over 2 s ("awaiting user ruling"), like the pending lines.
-local BUDGET_MS = APPLY_MS
-case("change_signature_interface_budget", function()
-  if not has("change_signature") then return lsp.report(P .. "change_signature_interface_budget", false, pending_reason("change_signature")) end
+-- change_signature_interface_ceiling: change signature of a method WITH implementations or overrides
+-- (Rule.apply gets `int extra = 1`), measured on the first such change of the session. This is a CEILING of
+-- 5 s, not the 2 s APPLY_MS budget: ruling recorded in the SDD ledger (the user delegated it, reversible;
+-- specs/features/refactors.md "Ruling: ceiling 5 s"). jdt.ls's own getRefactorEdit search takes 3.7 to 3.9 s
+-- cold and about 2.6 s warm; nothing is left to overlap on our side. Still FAILs when over the ceiling.
+-- Every other refactor, and the plain `total(Invoice)` change_signature, keep APPLY_MS.
+local CEILING_IMPL_MS = 5000
+case("change_signature_interface_ceiling", function()
+  if not has("change_signature") then return lsp.report(P .. "change_signature_interface_ceiling", false, pending_reason("change_signature")) end
   local calc = plant_rule()
   local r = cs_at(calc, "int apply%(int amount%);", "apply", { add = { { "int", "extra", "1" } } })
   local applied = r.ret == true and text_of(CALC):find("public int apply(int amount, int extra) {", 1, true) ~= nil
   E.log("refactor_change_signature_interface", r.ms, 1)
-  local within = applied and r.ms <= BUDGET_MS
-  lsp.report(P .. "change_signature_interface_budget", within, ("%s after %.0f ms (budget %d ms)%s%s"):format(applied and "applied" or "NOT applied", r.ms, BUDGET_MS,
-    cs_ms(), (applied and not within) and "; OVER 2 s budget: awaiting user ruling" or ""))
+  local within = applied and r.ms <= CEILING_IMPL_MS
+  lsp.report(P .. "change_signature_interface_ceiling", within, ("%s after %.0f ms; ceiling %d ms for methods with implementations (budget %d ms elsewhere)%s%s"):format(
+    applied and "applied" or "NOT applied", r.ms, CEILING_IMPL_MS, APPLY_MS, cs_ms(), (applied and not within) and "; OVER the ceiling" or ""))
 end)
 
 -- change_signature_interface: from the interface method Rule.apply: jdt.ls changes the implementation
 -- Half.apply too (the summary names it), the call passes the default, build clean; from Half.apply:
 -- refused with jdt.ls's reason and where to do it. Correctness only, with the request's hard timeout
--- (refactor.signature_ms); the time is change_signature_interface_budget's.
+-- (refactor.signature_ms); the time is change_signature_interface_ceiling's.
 case("change_signature_interface", function()
   if not has("change_signature") then return lsp.report(P .. "change_signature_interface", false, pending_reason("change_signature")) end
   local calc = plant_rule()

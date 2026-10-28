@@ -53,6 +53,7 @@ Budgets are confirmed (they were provisional until the Task 5 re-baseline). Meas
 | Accept a completion with its import | <= 1.5 s | first `List` 685 to 746 ms, second type 379 to 439 ms | `31_imports` |
 | One code action round trip | <= 1 s | 9 to 120 ms | `32_code_actions` |
 | jdt.ls open to ready | none (info) | about 6.1 to 6.4 s warm workspace, about 15 s first import | `01_jdtls_ready`, `10_completion_latency` |
+| Change signature of a method with implementations or overrides (P3) | <= 5 s ceiling (every other refactor and plain change signature: <= 2 s) | 3.7 to 4.0 s cold, 2.6 s warm (4.4 to 5.0 s with the machine at load 11 to 15); jdt.ls-bound (`getRefactorEdit` hierarchy search), nothing left to overlap. A ruling the user can overturn (delegated, recorded in the SDD ledger) | `62_refactor` `change_signature_interface_ceiling` |
 | Java 25 / Java 21 project correctness, JDK discovery | zero errors, right runtime | pass with `JAVA_HOME` unset and JDK 21 first on `PATH` | `20_java25` |
 
 Last full `tests/run.sh` runs (final review, two consecutive): 135 PASS, 0 FAIL, 0 SKIP each, a `DONE` line for every check (00: 11, 01: 2, 10: 17, 11: 26, 12: 7, 20: 10, 30: 24, 31: 10, 32: 28). Logs `/tmp/nv4j/logs/test-20261020-225853.log`, `-230137.log`. Earlier (Task 7): 129 PASS, log `test-20261020-223125.log`.

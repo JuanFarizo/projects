@@ -15,6 +15,7 @@ A daily workflow close to IntelliJ for tests (nearest, class, project, failed, r
 | Run nearest test, result visible (warm) | <= 10 s | `60_tests_runner` `nearest_warm` |
 | Scaffold: file on disk, opened, right `package` line | <= 300 ms | `61_scaffold` `kind_*`, `nested_name`, `test_for` |
 | Rename/move/inline/change signature applied, references and imports right, build clean (jdt.ls, 3 s) | <= 2 s | `62_refactor` |
+| Change signature of a method with implementations or overrides (jdt.ls's own search takes 3.7 to 4.0 s cold, 2.6 s warm) | <= 5 s ceiling (ruling, user can overturn; see `001`) | `62_refactor` `change_signature_interface_ceiling` |
 | Every refactor undoable with one `u` per buffer | yes | `62_refactor` `rename_class_undo` (Task 4 adds the others) |
 | P1/P2 budgets | unchanged (`001`) | checks 00 to 52 |
 
