@@ -1,21 +1,20 @@
-# Nv4J P3 handoff (written 2026-10-22, work paused for a week)
+# Nv4J P3 handoff (rewritten 2026-10-28, Task 5 docs done)
 
-Read this first when resuming (same session or a new agent). The SDD ledger and task reports live in `~/Documents/projects/.superpowers/sdd/2026-10-21-nv4j-p3-tests-scaffold-refactor/` (git-ignored scratch, may be gone): everything needed is repeated here and in `specs/`.
+Read this first when resuming. The SDD ledger and reports live in `~/Documents/projects/.superpowers/sdd/2026-10-21-nv4j-p3-tests-scaffold-refactor/` (git-ignored scratch, may be gone): the essentials are repeated here and in `specs/`.
 
 ## Where things stand
 
-- P1 and P2 are done, reviewed and pushed (see `README.md`, `specs/001-architecture.md`, `specs/004-p2-spring-run-debug.md`).
-- P3 plan: `docs/superpowers/plans/2026-10-21-nv4j-p3-tests-scaffold-refactor.md` (note the box at the top: key names are superseded by `specs/005-p3-tests-scaffold-refactor.md`).
-- P3 tasks: **0 done** (`0065d4b`: research, fixture, failing checks 60-63, D21-D24), **1 done** (`afa1d32`, `6759171`, `8dfce25`: async import, frecency tie breaker, dirty-fixture guard), **2 done** (`b5e1f29`: test runner `nv4j.tests`). **3 (scaffolding), 4 (refactors), 5 (docs, three final runs, whole-branch review) are NOT started.**
-- Last full run (`/tmp/nv4j/logs/test-20261022-093117.log`, may be gone): P1/P2 223 PASS 0 FAIL, `60_tests_runner` 20/0, `63_async_import` 28/0, `61_scaffold` 3/14 and `62_refactor` 7/6 (these two fail on purpose until Tasks 3 and 4). The run exits 1 only because of 61 and 62.
-- Everything is pushed to `origin/main`. Working tree clean (the untracked `udemy_courses/...` files are the user's own, never touch them).
+- P1 and P2 are done and pushed. P3 Tasks 0 to 4 are done, plus the D25 `.nv4j` marker and the Task 2 minor fixes and the 5 s ceiling for interface-method change signature.
+- Task 5 status: docs pass done (README, `specs/001`, `003` "3c. P3 lessons", `005`, this file). NOT done yet: three consecutive full `tests/run.sh` runs recorded with every `DONE` line, whole-branch review on the most capable model, one fix wave plus scoped re-review, time-boxed look at the jdt.ls flakes, push to `main` (tell the user first), final wrap-up listing every "Ruling:" line of the ledger with the cost if wrong.
+- Checks added in P3: `60_tests_runner` 27, `61_scaffold` 27, `62_refactor` 104, `63_async_import` 28, `64_project_marker` 17.
+- Several commits are not pushed (`git log origin/main..main`).
 
 ## How to resume
 
-1. `cd ~/Documents/projects/Nv4J && git pull && git log --oneline -10` (expect `b5e1f29` or later on top of the P3 commits).
-2. Run the suite to confirm the baseline (takes several minutes, run in background): `tests/run.sh` (single checks: `NV4J_CHECKS=61_scaffold tests/run.sh`). Logs in `/tmp/nv4j/logs/`.
-3. Use the subagent-driven-development skill on the plan: extract a brief with `bash <skill-dir>/scripts/task-brief docs/superpowers/plans/2026-10-21-nv4j-p3-tests-scaffold-refactor.md 3` (then 4, then 5), dispatch an implementer (opus), then a reviewer, fix rounds, scoped re-review, one whole-branch review at the end. The process rules are in `specs/003-lessons-and-method.md` (sections 3 and "P2 lessons").
-4. Task 3 target check: `tests/checks/61_scaffold.lua` (fails now, 3/14). Task 4: `tests/checks/62_refactor.lua` (fails now, 5 cases: package rename, entry points; `change_signature` flaked once, see below).
+1. `cd ~/Documents/projects/Nv4J && git status --short . && git log --oneline -12`.
+2. Check `uptime` and `ps` for leftover java/nvim (load average above about 4 makes the 2 s refactor budgets flake). Then run `tests/run.sh` in the background three times in a row, one after the other. Logs in `/tmp/nv4j/logs/`.
+3. Whole-branch review: `bash <skill-dir>/scripts/review-package PLAN MERGE_BASE HEAD`, most capable model, point it at the ledger's deferred minors and parked items.
+
 
 ## Rules that must be kept (also in memory and specs)
 
@@ -24,12 +23,12 @@ Read this first when resuming (same session or a new agent). The SDD ledger and 
 - Maven first-class, Gradle second, never hardcode a JDK (SDKMAN): use `nv4j.jdk`.
 - Logs and test output in `/tmp/nv4j`. Test cleanup never uses broad `pkill -f` patterns.
 - Every new check case needs a negative control with a cited log path; race-prone cases need a deterministic twin; every delay or pin that deviates from D13 is documented.
-- Do not weaken budgets (plan header): accept inserts <= 100 ms and import <= 1.5 s (done), nearest test <= 10 s (done, 0.7-0.9 s), scaffold file <= 300 ms, refactor applied <= 2 s with build clean and one `u` per buffer.
+- Do not weaken budgets (plan header): accept inserts <= 100 ms and import <= 1.5 s, nearest test <= 10 s, scaffold file <= 300 ms, refactor applied <= 2 s with build clean and one `u` per buffer. The only exception is the user-overturnable 5 s ceiling for change signature of a method with implementations (`001` budgets).
 - Shell `python3` is a broken pyenv shim: use `/usr/bin/python3`.
 
 ## Decisions and key rulings in force (confirm with the user)
 
-- Nearest test is `<leader>tr` (not `<leader>tn`, which is "New terminal in a tab"). Refactor keys go under a new `<leader>j` group (not `<leader>cr`, which is Rename). **`<leader>tp` replaces the old `mvn test` terminal key**: the user has not confirmed this yet.
+- Nearest test is `<leader>tr` (not `<leader>tn`, which is "New terminal in a tab"). Refactor keys go under a new `<leader>j` group (not `<leader>cr`, which is Rename). **`<leader>tp` replaces the old `mvn test` terminal key** (confirmed by the user 2026-10-26, no old key wanted back).
 - D21 deviation: `nv4j/tests.lua` calls the java-test commands directly (own RemoteTestRunner parser) instead of `jdtls.dap.experimental.run`, which would show two result sets.
 - D24 changed: a late import is placed by Nv4J (by `java.completion.importOrder`), never applied from jdt.ls ranges; this fixed a real bug where jdt.ls's HashMap edit replaced an existing `import java.util.List;` line in 36 of 50 runs.
 - `vim.g.nv4j_async_debug = true` turns on debug toasts for async-import outcomes (off by default).
@@ -56,4 +55,12 @@ P2 leftovers still open (see README Known limitations): real `mvn spring-boot:ru
 
 ## Task 5 reminder
 
-Docs (README capabilities, keymaps, Not yet, Known limitations, `specs/001` status/decisions/budgets, `specs/003` "P3 lessons", memory file `nv4j-project.md`), three consecutive full runs recorded with every `DONE` line, whole-branch review on the most capable model, one fix wave, scoped re-review, push `main`, final wrap-up to the user with the rulings and gaps.
+Docs are done (see Where things stand). Remaining: three consecutive full runs recorded with every `DONE` line, whole-branch review on the most capable model, one fix wave, scoped re-review, push `main`, final wrap-up to the user with the rulings and gaps.
+
+## Still open for the user
+
+- Confirm or overturn D23 move via `workspace/willRenameFiles` (instead of the code action).
+- Confirm or overturn the 5 s ceiling for change signature of a method with implementations.
+- The 2 GB jdt.ls RSS budget stays "proposed" (not applied, user's choice).
+- Optional: a command or key that creates `.nv4j` (today: `touch .nv4j` in the project's top folder, restart Neovim).
+- Unexplained jdt.ls flakes: `INVALID_SERVER_JSON` at about 64 KB, `rename_class_errors` late errors in about 2 of 11 runs, one jdt.ls stall.

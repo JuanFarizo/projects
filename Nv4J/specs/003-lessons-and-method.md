@@ -89,6 +89,22 @@ Autonomous rulings (decisions taken without asking) are listed in the final repo
 
 P2 rulings (costs in `specs/004-p2-spring-run-debug.md`): debug before the Spring LS (blocker first); D14 `spring-boot.nvim` pinned over own client; D15 run via `java -cp` over `mvn spring-boot:run`; build with compile errors warns and launches; JUnit launcher replaced from `~/.m2`; Spring client keeps full capabilities on Java buffers; one Boot detector, memoized per session; `<leader>sp` instead of `<leader>ss`; 1.0 s pins for first Spring requests; `hover_yml` budgeted on `logging.level` with `server.port` as a 1 s regression case; `@Value` project keys first by a fixed Boot namespace list; no `/people` mapping in the fixture.
 
+## 3c. P3 lessons (tests runner, scaffolding, refactors, `.nv4j`)
+
+What cost time or was caught in review during P3, and the rule that fixes it. Details: task reports in the SDD ledger and `specs/features/*.md`.
+
+| Problem seen in P3 | Rule for next plans |
+|--------------------|---------------------|
+| A budget could not be met by the engine (change signature on an interface method: jdt.ls alone takes 3.7 to 4.0 s cold, budget 2 s). A weakened budget or a permanent red check were the two bad options | The implementer never weakens a budget: the case stays red and visible. The controller (or the user) writes a separate, named ceiling with the measurement, in `001` budgets, the feature spec and the README, and marks it a ruling the user can overturn |
+| 2 s refactor budgets flaked at load average 9 to 15 (`DONE 92 12`, `DONE 101 3`) | Check `uptime` and leftover `java`/`nvim` processes before a timed run. Record the load with the result. A budget failing only under load is rerun idle, not loosened |
+| Task 2 left minor review items (socket not closed, double run, no discovery bound, private which-key queue hack) that were "fix later" and nearly shipped | Minor review findings get a ledger line and are fixed before the final runs, not after. Priority order for the last task: code changes first, then docs, then the final runs (so the runs measure the final code) |
+| Fix rounds found real bugs in every refactor: stale `package` line, pending refactors hidden by a flag, stale edits applied to a changed buffer, no busy guard, a whole-file delete with no undo, overrides without `@Override` not detected | A refactor that edits files asks: what if the buffer changed while the server computed the edit, what if a second refactor starts, how does the user undo it. Each answer is a case with a negative control |
+| A refactor reported "done" while jdt.ls was still computing or had sent an error late (`rename_class_errors`) | `follow_up` waits and warns at 3 s and 8 s; errors after the answer end the refactor with `on_done(false)`, never a hang |
+| Move had two engines (code action UI, `workspace/willRenameFiles`); the code action needs a UI | Prefer the request that takes arguments (`willRenameFiles`, `getRefactorEdit`) over a code action that asks questions. Write the deviation next to the decision text |
+| One `jdt.ls` per loose-file directory used 1.3 GB each, 4 GB for a practice folder | The project root needs an explicit marker (`.nv4j`) with a fixed lookup order; warn once per root; never advise a marker at or above `$HOME` |
+| A summary of my own earlier work contained a wrong log path | Quote log paths from the tool output, not from memory |
+| The user checks the token budget between steps | Split big tasks (Task 4 into 4a to 4e) and stop for a summary and a go/no-go after each, when the user asks for it |
+
 ## 4. Checklist for starting a new plan
 
 - [ ] Update `001` status, `README` Not yet list, and this file at the end, not at the start.
