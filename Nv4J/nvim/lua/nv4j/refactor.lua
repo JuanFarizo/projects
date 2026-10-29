@@ -82,6 +82,21 @@ local function src_root_of(dir)
   return require("nv4j.scaffold").source_root(dir)
 end
 
+--- The module a path belongs to: the parent of its `src/<set>/java` root (where the module's own main and test
+--- roots live), else the nearest folder above it holding a pom.xml / build.gradle(.kts), else the project
+--- root. In a multi-module repo this is the module, not `root.project` (the repo: a git root with a build
+--- file wins there), so `src/*/java` globs find the module's own roots. Same folder as the nearest build file
+--- in every standard layout.
+local MODULE_MARKERS = { "pom.xml", "build.gradle", "build.gradle.kts" }
+local function module_root(path)
+  local start = vim.fn.isdirectory(path) == 1 and path or vim.fs.dirname(path)
+  local sr = src_root_of(start)
+  local m = sr and sr:match("^(.*)/src/[^/]+/java$")
+  m = m or vim.fs.root(start, MODULE_MARKERS)
+  return vim.fs.normalize(m or require("nv4j.root").project(path))
+end
+M._module_root = module_root -- checks
+
 -- ── strings and config that still name the old class/package (warn only, never rewritten) ────────
 
 local SCAN_EXT = { java = true, properties = true, yml = true, yaml = true, xml = true }
@@ -745,11 +760,11 @@ function M.rename_paths(moves, label, client, opts)
 end
 
 --- Moves for renaming package `pkg` to `name`: its folder in `src_root` and the namesake folders in the
---- project's other source roots (`src/*/java`), src/main/java first (see M.rename_paths).
-local function namesake_moves(project, src_root, pkg, name)
+--- MODULE's other source roots (`src/*/java`), src/main/java first (see M.rename_paths).
+local function namesake_moves(module, src_root, pkg, name)
   local pkg_path, new_path = pkg:gsub("%.", "/"), name:gsub("%.", "/")
   local roots = { src_root }
-  for _, r in ipairs(vim.fn.glob(project .. "/src/*/java", false, true)) do
+  for _, r in ipairs(vim.fn.glob(module .. "/src/*/java", false, true)) do
     r = vim.fs.normalize(r)
     if r ~= src_root and vim.fn.isdirectory(r .. "/" .. pkg_path) == 1 then roots[#roots + 1] = r end
   end
@@ -760,6 +775,8 @@ local function namesake_moves(project, src_root, pkg, name)
   end)
   return vim.tbl_map(function(r) return { r .. "/" .. pkg_path, r .. "/" .. new_path } end, roots)
 end
+
+M._namesake_moves = namesake_moves -- checks
 
 --- Package of the current buffer from its `package` line.
 local function current_package(buf)
@@ -796,7 +813,7 @@ function M.rename_package(opts)
         return false
       end
     end
-    local moves = namesake_moves(require("nv4j.root").project(path), src_root, pkg, name)
+    local moves = namesake_moves(module_root(path), src_root, pkg, name)
     local ok = M.rename_paths(moves, ("Renamed package %s -> %s"):format(pkg, name), nil,
       { stale = { names = package_names(pkg), old = pkg } })
     if opts.on_done then opts.on_done(ok) end
@@ -903,10 +920,10 @@ local function movable_type(buf, client, path)
   return own
 end
 
---- The project's source roots (`src/*/java`), `first` (the current file's) first.
-local function source_roots(project, first)
+--- The module's source roots (`src/*/java`), `first` (the current file's) first.
+local function source_roots(module, first)
   local roots = { first }
-  for _, r in ipairs(vim.fn.glob(project .. "/src/*/java", false, true)) do
+  for _, r in ipairs(vim.fn.glob(module .. "/src/*/java", false, true)) do
     r = vim.fs.normalize(r)
     if r ~= first then roots[#roots + 1] = r end
   end
@@ -934,7 +951,7 @@ local STEREOTYPES = { "RestController", "Controller", "Service", "Component", "R
 
 --- Spring Boot: a component (stereotype annotation) moved out of every @SpringBootApplication package is
 --- no longer found by component scanning. Returns a warning, or nil.
-local function spring_scan_warning(path, project, name, target)
+local function spring_scan_warning(path, module, name, target)
   local ann
   for _, l in ipairs(lines_of(path)) do
     for _, a in ipairs(STEREOTYPES) do
@@ -943,7 +960,7 @@ local function spring_scan_warning(path, project, name, target)
   end
   if not ann then return nil end
   local bases, n = {}, 0
-  for _, r in ipairs(vim.fn.glob(project .. "/src/main/java", false, true)) do
+  for _, r in ipairs(vim.fn.glob(module .. "/src/main/java", false, true)) do
     r = vim.fs.normalize(r)
     for rel_path, kind in vim.fs.dir(r, { depth = 32 }) do
       if kind == "file" and rel_path:match("%.java$") then
@@ -1003,7 +1020,8 @@ function M.move(opts)
   local symbols_ms = (vim.uv.hrtime() - t_sym) / 1e6
   if not name then return refuse(why .. "; nothing changed") end
   local project = require("nv4j.root").project(path)
-  local roots = source_roots(project, src_root)
+  local modroot = module_root(path)
+  local roots = source_roots(modroot, src_root)
   local function run(target)
     if target == nil then return done(false) end -- cancelled
     target = vim.trim(target)
@@ -1057,7 +1075,7 @@ function M.move(opts)
         end
       end
     end
-    local sw = spring_scan_warning(path, project, name, target)
+    local sw = spring_scan_warning(path, modroot, name, target)
     if sw then warn[#warn + 1] = sw end
     local label = ("Moved class %s to package %s"):format(name, target)
     local ok = M.rename_paths({ { path, to } }, label, client,
@@ -2683,7 +2701,7 @@ function M.neotree_before(args)
     local r1, p1 = src_root_of(src)
     local r2, p2 = src_root_of(dest)
     if r1 and r1 == r2 and p1 ~= "" and p2 ~= "" then
-      moves = namesake_moves(require("nv4j.root").project(src), r1, p1, p2)
+      moves = namesake_moves(module_root(src), r1, p1, p2)
       opts.stale = { names = package_names(p1), old = p1 }
     end
   elseif src:match("%.java$") then

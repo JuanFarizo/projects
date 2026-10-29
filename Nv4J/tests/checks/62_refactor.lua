@@ -3333,6 +3333,90 @@ case("rename_class_case_only", function()
   }, ok_clean, why)
 end)
 
+-- multi_module_roots (fix wave R-I3; no jdt.ls round trip, a throwaway layout under /tmp/nv4j/mm62, the fixture is
+-- not touched). Layout: repo/.git + repo/pom.xml (so root.project is the REPO), repo/mod (pom, main and test roots:
+-- demo.billing in both, demo.invoicing/A.java in test, an @SpringBootApplication in demo), repo/mod2 (a namesake
+-- demo.billing of ANOTHER module), repo/g (build.gradle.kts, main and test demo.billing). Checks:
+--  (a) module_root = the module, not the repo (and root.project IS the repo: the old base); gradle module too;
+--  (b) rename_package from mod's A.java (rename_paths stubbed, its moves captured): the main folder then the TEST
+--      namesake of the same module, nothing of mod2 or g;
+--  (c) move A to demo.invoicing: refused, the class exists in mod's TEST root;
+--  (d) move A to demo.other: the note says ATest stays in demo.billing (mod's test root);
+--  (e) move Ctl (@RestController) to package web: the Spring scan warning is there (mod's @SpringBootApplication found).
+-- A full jdt.ls multi-module project is not built here (the Maven import alone is minutes); jdt.ls's side is the same
+-- willRenameFiles call per root as on the fixture (rename_package_imports).
+case("multi_module_roots", function()
+  vim.fn.delete("/tmp/nv4j/mm62", "rf")
+  vim.fn.mkdir("/tmp/nv4j/mm62", "p")
+  local R = vim.uv.fs_realpath("/tmp/nv4j/mm62") -- buffers carry the real path (/tmp is a symlink on macOS)
+  local function put(rel_path, text)
+    local abs = R .. "/" .. rel_path
+    vim.fn.mkdir(vim.fs.dirname(abs), "p")
+    local f = assert(io.open(abs, "w")); f:write(text); f:close()
+    return abs
+  end
+  vim.fn.mkdir(R .. "/.git", "p")
+  put("pom.xml", "<project/>\n"); put("mod/pom.xml", "<project/>\n"); put("mod2/pom.xml", "<project/>\n")
+  put("g/build.gradle.kts", "\n")
+  local A = put("mod/src/main/java/demo/billing/A.java", "package demo.billing;\n\npublic class A {}\n")
+  local CTL = put("mod/src/main/java/demo/billing/Ctl.java", "package demo.billing;\n\n@RestController\npublic class Ctl {}\n")
+  put("mod/src/main/java/demo/App.java", "package demo;\n\n@SpringBootApplication\npublic class App {}\n")
+  put("mod/src/test/java/demo/billing/ATest.java", "package demo.billing;\n\nclass ATest {}\n")
+  put("mod/src/test/java/demo/invoicing/A.java", "package demo.invoicing;\n\nclass A {}\n")
+  put("mod2/src/main/java/demo/billing/B.java", "package demo.billing;\n\npublic class B {}\n")
+  local G = put("g/src/main/java/demo/billing/G.java", "package demo.billing;\n\npublic class G {}\n")
+  put("g/src/test/java/demo/billing/GTest.java", "package demo.billing;\n\nclass GTest {}\n")
+  local real_paths, real_clients, real_last = refactor.rename_paths, vim.lsp.get_clients, refactor.last
+  local ok, err = pcall(function()
+    -- (a)
+    local project = require("nv4j.root").project(A)
+    local m_mod, m_g = refactor._module_root(A), refactor._module_root(G)
+    local a_ok = project == R and m_mod == R .. "/mod" and m_g == R .. "/g"
+    -- (b)
+    local captured
+    refactor.rename_paths = function(moves, label, c, o) captured = { moves = moves, label = label, opts = o }; return true end
+    vim.cmd.edit(vim.fn.fnameescape(A))
+    local rp = refactor.rename_package({ name = "demo.invoicing2" })
+    local mv = captured and captured.moves or {}
+    local b_ok = rp == true and #mv == 2 and mv[1][1] == R .. "/mod/src/main/java/demo/billing" and mv[1][2] == R .. "/mod/src/main/java/demo/invoicing2"
+      and mv[2][1] == R .. "/mod/src/test/java/demo/billing" and mv[2][2] == R .. "/mod/src/test/java/demo/invoicing2"
+    -- move: a fake jdtls client rooted at the repo (no round trip: single-type files; rename_paths stubbed)
+    local fake = { name = "jdtls", id = 99, config = { root_dir = R }, root_dir = R, notify = function() end,
+      request_sync = function() return nil, "not asked" end, offset_encoding = "utf-16" }
+    vim.lsp.get_clients = function(f)
+      local out = real_clients(f)
+      if f and f.name == "jdtls" then out[#out + 1] = fake end
+      return out
+    end
+    local function move_to(file, pkg)
+      vim.cmd.edit(vim.fn.fnameescape(file))
+      captured = nil
+      local got, stop = capture()
+      local r = refactor.move({ package = pkg })
+      stop()
+      return r, got, captured
+    end
+    -- (c)
+    local rc, gotc = move_to(A, "demo.invoicing")
+    local c_ok = rc == false and find_msg(gotc, "demo.invoicing.A already exists") ~= nil
+    -- (d)
+    local rd, gotd, capd = move_to(A, "demo.other")
+    local d_ok = rd == true and capd ~= nil and table.concat(capd.opts.info or {}, " | "):find("ATest.java stays in package demo.billing", 1, true) ~= nil
+    -- (e)
+    local re, gote, cape = move_to(CTL, "web")
+    local e_ok = re == true and cape ~= nil and table.concat(cape.opts.warn or {}, " | "):find("Spring: Ctl (@RestController) is now in web", 1, true) ~= nil
+    lsp.report(P .. "multi_module_roots", a_ok and b_ok and c_ok and d_ok and e_ok,
+      ("(a) module_root %s (root.project %s), gradle %s; (b) rename_package moves %s; (c) move into demo.invoicing: %s; (d) test-stays note: %s; (e) Spring warning: %s"):format(
+        vim.fs.basename(m_mod), vim.fs.basename(project), vim.fs.basename(m_g), vim.inspect(vim.tbl_map(function(m) return m[1]:sub(#R + 2) end, mv)),
+        c_ok and "refused" or ("NOT refused (" .. tostring(rc) .. "): " .. table.concat(vim.tbl_map(function(g) return g.msg end, gotc), " || ")),
+        d_ok and "yes" or ("NO: " .. vim.inspect(capd and capd.opts.info)), e_ok and "yes" or ("NO: " .. vim.inspect(cape and cape.opts.warn))))
+  end)
+  refactor.rename_paths, vim.lsp.get_clients, refactor.last = real_paths, real_clients, real_last
+  pcall(vim.cmd, "silent! %bwipeout!")
+  vim.fn.delete(R, "rf")
+  if not ok then error(err) end
+end)
+
 local left = F.diff(snap)
 lsp.report(P .. "fixture_restored", #left.added + #left.changed + #left.missing == 0, "left: " .. F.fmt(left))
 lsp.finish()
