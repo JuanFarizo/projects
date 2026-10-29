@@ -12,7 +12,7 @@ D1 to D6 are confirmed by P1 (nothing was reversed). D7 to D13 are decisions tak
 
 | # | Decision | Owner | Status |
 |---|----------|-------|--------|
-| D1 | Start from the existing LazyVim-based config, keep only what Java/Spring needs. No rewrite from scratch. | Claude (user agreed to approach) | Confirmed. `lazyvim.json` dropped `lang.typescript.vtsls` and `formatting.prettier` (nothing used them). |
+| D1 | Start from the existing LazyVim-based config, keep only what Java/Spring needs. No rewrite from scratch. | Claude (user agreed to approach) | Confirmed. `lazyvim.json` dropped `lang.typescript.vtsls` and `formatting.prettier` (nothing used them). Later: D26 added `formatting.prettier` back (with `lang.markdown`) by the user's ruling; `lang.typescript.vtsls` stays dropped. |
 | D2 | Maven is first-class. Gradle is supported but second. | User | Confirmed. Gradle is untested (P4). |
 | D3 | The existing `~/.config/nvim` is never modified. | User | Confirmed. |
 | D4 | Config lives in this repo under `nvim/` and runs as a separate Neovim app named `nv4j`. | User | Confirmed. `~/.config/nv4j` is a symlink to `nvim/`. |

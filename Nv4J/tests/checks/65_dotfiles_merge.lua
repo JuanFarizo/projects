@@ -1,6 +1,6 @@
 -- D26 dotfiles merge. Run via tests/run.sh. Spec: specs/001-architecture.md D26. Code: nvim/lua/config/keymaps.lua,
 -- config/autocmds.lua, util/ai.lua, plugins/{ai,claudecode,sidekick,hlchunk,markdown,mini-align,ts-autotag,which_key}.lua,
--- lazyvim.json (extras markdown, prettier). Deterministic and headless; no jdt.ls, no network, no real Claude.
+-- lazyvim.json (extras markdown, prettier). Deterministic and headless; no jdt.ls (the startup case opens a plain text file), no network, no real Claude.
 --  terminal_key   : <C-/> and <C-_> (n and t) are LazyVim core's terminal toggle (map defined in lazyvim/config/keymaps.lua,
 --                   not a comment); <C-j> is window navigation (LazyVim), no Nv4J map; the terminal "tabs" keys (<C-t>,
 --                   <D-]>, <D-[> in terminal mode) are still there.
@@ -16,7 +16,7 @@
 --                   buffer, extras markdown + prettier in lazyvim.json, vim.g.autoformat still false.
 --  not_ported     : smear-cursor, mini.animate, vtsls, snacks image, nvim-lint luacheck are not in the plugin list / spec;
 --                   no lang.typescript extra; ts-autotag only for html and xml.
---  startup        : REPORT-ONLY: median of 3 `nvim --startuptime` runs on a Java file (PASS with the ms; FAIL only if
+--  startup        : REPORT-ONLY: median of 3 `nvim --startuptime` runs on a plain text file, so no jdt.ls (PASS with the ms; FAIL only if
 --                   the time cannot be read). The new plugins must not be loaded in it.
 --  claude_restore : VimLeavePre autocmd registered (group nv4j_claude_panel) and writes the state file under
 --                   stdpath("state"); a state file with cwd=true makes restore_panel call ClaudeCodeOpen (command stubbed),
@@ -263,7 +263,9 @@ end
 
 -- ── startup (report-only) ────────────────────────────────────────────────────────────────────────
 do
-  local file = ROOT .. "/tests/fixtures/demo/src/main/java/demo/CustomerRepository.java"
+  -- a plain text file: a Java file would start jdt.ls in each child nvim and could leave a process behind
+  local file = "/tmp/nv4j/65-startup-" .. vim.fn.getpid() .. ".txt"
+  vim.fn.writefile({ "startup probe" }, file)
   local out = "/tmp/nv4j/logs/65-startuptime-" .. vim.fn.getpid() .. ".txt"
   local ms = {}
   for _ = 1, 3 do
@@ -276,6 +278,7 @@ do
     end
   end
   vim.fn.delete(out)
+  vim.fn.delete(file)
   table.sort(ms)
   local med = ms[2]
   lsp.report(P .. "startup", med ~= nil and #ms == 3,
@@ -290,7 +293,12 @@ do
     local ai = require("util.ai")
     local sf = ai.state_file()
     local under_state = vim.startswith(sf, vim.fn.stdpath("state") .. "/")
-    local saved = vim.fn.filereadable(sf) == 1 and vim.fn.readfile(sf) or nil
+    -- the user's real state file is never touched: the state path is moved to a temp dir under /tmp/nv4j
+    local tmpdir = "/tmp/nv4j/65-state-" .. vim.fn.getpid()
+    vim.fn.mkdir(tmpdir, "p")
+    ai.state_path = tmpdir .. "/claudecode_sessions.json"
+    local real_sf = sf
+    sf = ai.state_file()
     local au = vim.api.nvim_get_autocmds({ event = "VimLeavePre", group = "nv4j_claude_panel" })
     local cwd = vim.fn.getcwd()
     local function state() return ai.read_state()[cwd] end
@@ -314,11 +322,19 @@ do
     ai.restore_panel()
     vim.wait(200)
     local with_false = calls - with_true
-    -- put the state file back as it was
-    if saved then vim.fn.writefile(saved, sf) else vim.fn.delete(sf) end
-    local detail = ("autocmd nv4j_claude_panel VimLeavePre registered %s; state file %s (under stdpath state %s); saved open=%s closed=%s; restore with cwd=true calls ClaudeCodeOpen %d x (want 1), cwd=false %d x (want 0)")
-      :format(tostring(#au == 1), sf, tostring(under_state), tostring(s_open), tostring(s_closed), with_true, with_false)
-    lsp.report(P .. "claude_restore", #au == 1 and under_state and s_open == true and s_closed == false and with_true == 1 and with_false == 0, detail)
+    -- a failing :ClaudeCodeOpen (plugin missing) must not raise at startup
+    vim.api.nvim_create_user_command("ClaudeCodeOpen", function() error("boom") end, { force = true })
+    ai.write_state({ [cwd] = true })
+    vim.v.errmsg = ""
+    local raised_ok = pcall(ai.restore_panel)
+    vim.wait(300)
+    local quiet = raised_ok and vim.v.errmsg == ""
+    local temp_ok = vim.startswith(sf, "/tmp/nv4j/") and sf ~= real_sf
+    ai.state_path = nil
+    vim.fn.delete(tmpdir, "rf")
+    local detail = ("autocmd nv4j_claude_panel VimLeavePre registered %s; default state file %s (under stdpath state %s), test used %s; saved open=%s closed=%s; restore with cwd=true calls ClaudeCodeOpen %d x (want 1), cwd=false %d x (want 0)")
+      :format(tostring(#au == 1), real_sf, tostring(under_state), sf, tostring(s_open), tostring(s_closed), with_true, with_false)
+    lsp.report(P .. "claude_restore", #au == 1 and under_state and s_open == true and s_closed == false and with_true == 1 and with_false == 0 and quiet and temp_ok, detail .. ("; failing ClaudeCodeOpen raises nothing %s (errmsg %q)"):format(tostring(quiet), vim.v.errmsg))
   end)
   if not ok_all then lsp.report(P .. "claude_restore", false, "error: " .. tostring(err)) end
 end

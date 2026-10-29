@@ -172,7 +172,7 @@ If the Claude panel was open when you left a folder, it opens again next time yo
 
 | Key | Does |
 |-----|------|
-| `<leader>uI` | Toggle indent guides (hlchunk; off at start, the chunk border and the current line number highlight are on). snacks.nvim's indent and scope are disabled, so there is never a second set of guides |
+| `<leader>uI` | Toggle indent guides (replaces LazyVim's "Inspect Tree" on this key, still `:InspectTree`; hlchunk; off at start, the chunk border and the current line number highlight are on). snacks.nvim's indent and scope are disabled, so there is never a second set of guides |
 | `<leader>cp` / `<leader>um` (Markdown buffers) | Toggle the in-buffer Markdown rendering (render-markdown.nvim) |
 
 ## Not a key, but good to know

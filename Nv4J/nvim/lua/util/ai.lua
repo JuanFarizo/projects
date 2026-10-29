@@ -36,8 +36,10 @@ M.providers = {
 }
 
 -- Per-project "Claude panel was open" memory (config/autocmds.lua writes it on VimLeavePre).
+M.state_path = nil -- override of the state file path (tests point it at a temp dir)
+
 function M.state_file()
-  return vim.fn.stdpath("state") .. "/claudecode_sessions.json"
+  return M.state_path or (vim.fn.stdpath("state") .. "/claudecode_sessions.json")
 end
 
 function M.read_state()
@@ -57,7 +59,8 @@ end
 function M.restore_panel()
   if M.read_state()[vim.fn.getcwd()] then
     vim.schedule(function()
-      vim.cmd("ClaudeCodeOpen")
+      -- never raise at startup (plugin missing, e.g. offline first start)
+      pcall(vim.cmd, "ClaudeCodeOpen")
     end)
   end
 end
