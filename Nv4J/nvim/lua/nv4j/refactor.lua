@@ -371,9 +371,27 @@ local function type_position(buf)
   return nil, nil, name
 end
 
---- Renames the class at the cursor (or the file's class) to opts.name (prompted when missing): the file
---- is renamed, references and imports in every file updated. opts.on_done(ok) is called afterwards.
-function M.rename_class(opts)
+--- True when `path`'s file system treats names that differ only by case as one file (macOS default):
+--- the same file answers to the name with every letter's case swapped.
+local function case_insensitive_at(path)
+  local base = vim.fs.basename(path)
+  local alt = vim.fs.dirname(path) .. "/" .. base:gsub("%a", function(ch) return ch == ch:lower() and ch:upper() or ch:lower() end)
+  local a, b = vim.uv.fs_stat(path), vim.uv.fs_stat(alt)
+  return alt ~= path and a ~= nil and b ~= nil and a.ino == b.ino
+end
+M._case_insensitive_at = case_insensitive_at -- checks
+
+--- A name that differs from `old` only by case, on a case-insensitive file system, for the class in the file
+--- named after it: jdt.ls's own answer is then one text edit on the declaration and a RenameFile that Neovim
+--- skips ("already exists"; the references are not updated either), so the file stays `Old.java` holding
+--- `class NEW` and the summary still says renamed. Done in two real renames through a temporary name instead.
+local TMP_SUFFIX = "__Nv4jTmp"
+
+local rename_class_impl
+
+--- opts._quiet: step 1 of a case-only rename (no summary, scan or follow-up); opts._shown_old: the name the
+--- user sees in step 2's label and string scan; opts._tmp_from = { tmp_path = original_path }.
+function rename_class_impl(opts)
   opts = opts or {}
   local buf = vim.api.nvim_get_current_buf()
   local path = vim.api.nvim_buf_get_name(buf)
@@ -404,8 +422,34 @@ function M.rename_class(opts)
       notify(("Rename class: '%s' is not a valid Java class name; nothing changed"):format(name), vim.log.levels.ERROR)
       return done(false)
     end
+    if not opts._quiet and not opts._shown_old and name:lower() == old:lower() and vim.fn.fnamemodify(path, ":t:r") == old
+        and case_insensitive_at(path) then
+      -- 1. Old -> Old__Nv4jTmp (a real rename: file, references, imports), 2. that -> New (the file name is free)
+      local dir = vim.fs.dirname(path)
+      local tmp = old .. TMP_SUFFIX
+      local tmp_path = dir .. "/" .. tmp .. ".java"
+      if vim.uv.fs_stat(tmp_path) then
+        notify(("Rename class: %s exists; it is the temporary name for a case-only rename (%s -> %s); nothing changed"):format(tmp_path, old, name),
+          vim.log.levels.ERROR)
+        return done(false)
+      end
+      local function step2(ok)
+        if not ok then
+          notify(("Rename class %s -> %s: the first step (via %s) did not complete; see the message above. The class may be named %s now: rename it back with the same key"):format(
+            old, name, tmp, tmp), vim.log.levels.ERROR)
+          return done(false)
+        end
+        local nb = vim.fn.bufnr(tmp_path)
+        if nb == -1 or not vim.api.nvim_buf_is_loaded(nb) then nb = vim.fn.bufadd(tmp_path); vim.fn.bufload(nb) end
+        vim.api.nvim_set_current_buf(nb)
+        vim.api.nvim_win_set_cursor(0, { 1, 0 })
+        rename_class_impl({ name = name, on_done = opts.on_done, _shown_old = old, _tmp_from = { [tmp_path] = path } })
+      end
+      return rename_class_impl({ name = tmp, _quiet = true, on_done = step2 })
+    end
+    local shown = opts._shown_old or old
     -- an existing class of that name: jdt.ls refuses ("Compilation unit 'X.java' already exists"), shown below
-    local label = ("Renamed class %s -> %s"):format(old, name)
+    local label = ("Renamed class %s -> %s"):format(shown, name)
     local params = { textDocument = { uri = vim.uri_from_bufnr(buf) }, position = { line = l, character = c }, newName = name }
     if busy then -- another refactor started while the name was being typed
       notify("Rename class: " .. busy_msg() .. "; nothing changed", vim.log.levels.WARN)
@@ -436,11 +480,15 @@ function M.rename_class(opts)
         failed_part_way(label, why, files, root_of(client))
         return done(false)
       end
+      if opts._quiet then return done(true) end -- step 1 of a case-only rename: step 2 reports
+      for _, f in ipairs(files) do -- step 2: the file came from the user's name, not from the temporary one
+        if f.from and opts._tmp_from and opts._tmp_from[f.from] then f.from = opts._tmp_from[f.from] end
+      end
       local t_scan = vim.uv.hrtime()
       local _, pkg = src_root_of(vim.fs.dirname(path))
-      local stale, cut, unread = M.stale_refs(require("nv4j.root").project(path), class_names(old, pkg ~= "" and pkg or nil))
+      local stale, cut, unread = M.stale_refs(require("nv4j.root").project(path), class_names(shown, pkg ~= "" and pkg or nil))
       M.last = { label = label, files = files, ok = true, stale = stale, scan_ms = (vim.uv.hrtime() - t_scan) / 1e6, truncated = cut, unread = unread }
-      notify(summary(label, files, root_of(client)) .. stale_note(stale, old, cut, unread), (#stale > 0 or cut or #unread > 0) and vim.log.levels.WARN or nil)
+      notify(summary(label, files, root_of(client)) .. stale_note(stale, shown, cut, unread), (#stale > 0 or cut or #unread > 0) and vim.log.levels.WARN or nil)
       follow_up(label, before, vim.tbl_map(function(f) return f.path end, files))
       done(true)
     end
@@ -457,6 +505,13 @@ function M.rename_class(opts)
   end
   if opts.name then return run(opts.name) end
   vim.ui.input({ prompt = ("Rename class %s to: "):format(old), default = old }, run)
+end
+
+--- Renames the class at the cursor (or the file's class) to opts.name (prompted when missing): the file
+--- is renamed, references and imports in every file updated. opts.on_done(ok) is called afterwards.
+--- A rename that only changes the case of the name is done in two steps on a case-insensitive file system.
+function M.rename_class(opts)
+  return rename_class_impl(opts)
 end
 
 -- ── rename/move files and folders (package rename, neo-tree) ─────────────────────────────────────

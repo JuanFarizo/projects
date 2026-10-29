@@ -124,7 +124,14 @@
 --                       declarators, enum constant: refused with the reason, nothing changed.
 --  safe_delete_no_answer (stub), safe_delete_busy (stub): references timeout/error refused; a pending change
 --                       signature refuses it.
+--  Fix wave after the P3 final review (see specs/features/refactors.md "Fix wave"):
+--  safe_delete_throw (stub), safe_delete_unreadable (stub + a real mode 000 file): an error after the delete leaves
+--                       busy clear; an unreadable file is skipped and named in the warning.
+--  rename_class_busy, _stale, _finish_error (stubs): the rename's own busy / stale-buffer refusal / error exit.
+--  rename_class_case_only: Invoice -> INVOICE really renames the file (case-insensitive FS only; SKIP printed otherwise).
 -- The fixture is snapshot before and restored after every case (tests/lib/fixture.lua), jdt.ls told.
+-- Development: NV4J_CASE=<Lua pattern> runs only the matching cases. jdt.ls answers a very first rename with
+-- the declaration only (no references) when nothing warmed it: run a group (e.g. '^rename_class_[uc]'), not a single case.
 -- Timings: /tmp/nv4j/logs/latency.jsonl (refactor_*).
 vim.o.confirm = false
 local lsp = require("lsp")
@@ -3261,6 +3268,69 @@ case("rename_class_finish_error", function()
   end)
   refactor.stale_refs = real
   if not ok then error(err) end
+end)
+
+--- True when the file system treats names that differ only by case as one (macOS default).
+local function case_insensitive_fs()
+  local probe = "/tmp/nv4j/CaseProbe62.tmp"
+  os.remove(probe)
+  local f = io.open(probe, "w")
+  if not f then return nil end
+  f:close()
+  local same = vim.uv.fs_stat("/tmp/nv4j/caseprobe62.tmp") ~= nil
+  os.remove(probe)
+  return same
+end
+
+--- File names in `dir` (as listed on disk, case as stored).
+local function names_in(dir)
+  local out = {}
+  for name in vim.fs.dir(dir) do out[name] = true end
+  return out
+end
+
+-- rename_class_case_only (fix wave R-I1): Invoice -> INVOICE. On a case-insensitive file system (macOS default)
+-- jdt.ls answers with one text edit on the declaration (no reference updated) and a RenameFile that Neovim skips
+-- ("already exists"): INVOICE.java never existed, Invoice.java held `class INVOICE`, Checkout kept
+-- `import demo.billing.Invoice`, and the summary still said renamed (reproduced, log in refactors.md). Expected: done in
+-- two real renames through a temporary name: the directory lists INVOICE.java only (no temporary file left), it
+-- declares INVOICE, Checkout and PriceCalculator use INVOICE, the summary is true (INVOICE.java (from Invoice.java)),
+-- the build is clean. SKIPPED (printed, not a PASS) on a case-sensitive file system, where the problem cannot exist.
+case("rename_class_case_only", function()
+  local ci = case_insensitive_fs()
+  if ci ~= true then
+    return print("SKIP " .. P .. "rename_class_case_only " .. (ci == false and "this file system is case-sensitive: the case-only rename problem cannot occur here"
+      or "cannot create a probe file in /tmp/nv4j"))
+  end
+  local inv, chk = lsp.open(INVOICE), lsp.open(CHECKOUT)
+  lsp.open(CALC)
+  local billing = main .. "demo/billing"
+  local NEW = billing .. "/INVOICE.java"
+  vim.api.nvim_set_current_buf(inv)
+  local l, c = pos(inv, "^public class Invoice", "Invoice")
+  vim.api.nvim_win_set_cursor(0, { l + 1, c })
+  local got, stop = capture()
+  local t0, res = E.now(), {}
+  refactor.rename_class({ name = "INVOICE", on_done = function(ok) res.done = ok end })
+  local applied, ms = until_ms(t0, function() return res.done ~= nil end)
+  stop()
+  local names = names_in(billing)
+  local sum = find_msg(got, "Renamed class Invoice -> INVOICE") or ""
+  local on_disk = disk(NEW) or ""
+  local ct, pt = disk(CHECKOUT) or "", disk(CALC) or ""
+  local ok_clean, why = clean({ NEW, CHECKOUT }, t0)
+  local tmp_left = false
+  for n in pairs(names) do if n:find("Nv4jTmp", 1, true) then tmp_left = true end end
+  report_apply("rename_class_case_only", "nv4j.refactor.rename_class Invoice -> INVOICE", applied and res.done == true, ms, {
+    { "directory lists INVOICE.java and not Invoice.java, no temporary file", names["INVOICE.java"] == true and names["Invoice.java"] == nil and not tmp_left },
+    { "INVOICE.java declares INVOICE on disk", on_disk:find("public class INVOICE", 1, true) ~= nil and on_disk:find("class Invoice", 1, true) == nil },
+    { ("Checkout imports demo.billing.INVOICE, no Invoice token left (Checkout %d, PriceCalculator %d; INVOICE tokens in PriceCalculator %d)"):format(
+      word_count(ct, "Invoice"), word_count(pt, "Invoice"), word_count(pt, "INVOICE")), ct:find("import demo.billing.INVOICE;", 1, true) ~= nil
+      and word_count(ct, "Invoice") == 0 and word_count(pt, "Invoice") == 0 and word_count(pt, "INVOICE") > 0 },
+    { "summary says INVOICE.java (from Invoice.java)", sum:find("INVOICE.java (from src/main/java/demo/billing/Invoice.java", 1, true) ~= nil
+      or sum:find("INVOICE.java (from Invoice.java", 1, true) ~= nil },
+    { "no ERROR or 'already exists' notification", find_msg(got, "FAILED", vim.log.levels.ERROR) == nil and find_msg(got, "already exists") == nil },
+  }, ok_clean, why)
 end)
 
 local left = F.diff(snap)
