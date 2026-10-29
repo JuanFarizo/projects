@@ -213,10 +213,12 @@ So the one-JVM-per-directory behaviour is a consequence of an intentional root r
 | Metric | Budget | Result | Check |
 |--------|--------|--------|-------|
 | jdt.ls clients for files in 3 sibling dirs under one `.nv4j` | 1 (max jdt.ls processes per `.nv4j` project) | 1, one `-data` workspace | `64_project_marker` `single_client`, `one_workspace` |
-| RSS of that single jdt.ls (3 small files, JDK 25 server) | <= 2 GB (proposed from the measurement, about 1.6x; developer to confirm) | 1257 to 1294 MB (5 runs) | `64_project_marker` `rss` |
+| RSS of that single jdt.ls (3 small files, JDK 25 server) | <= 2 GB PROPOSED (from the measurement, about 1.6x), not applied: `rss` is report-only (PASS with the MB; FAIL only if the process or its RSS cannot be read) | 1257 to 1294 MB (5 runs) | `64_project_marker` `rss` |
 | Warning for a second loose-file jdt.ls | exactly once per root, start not blocked | 1 warning, 2 clients | `64_project_marker` `warn`, `warn_unit` |
 
 Negative controls (product or check patched for one run, reverted): n64a no `.nv4j` in the check's project -> `single_client` FAIL (3 clients at `alpha`, `beta`, `gamma`, `B cannot be resolved to a type`) and `one_workspace` FAIL (3 workspaces), log `/tmp/nv4j/logs/test-20261027-092744.log`; n64b `warn_loose` call removed from `java.lua` -> `warn` FAIL (0 warnings), log `/tmp/nv4j/logs/test-20261027-092901.log`; n64c once-only guard removed -> `warn_unit` FAIL (2 notifications) and `warn` FAIL (4 warnings for one start), log `/tmp/nv4j/logs/test-20261027-092940.log`. `warn_unit` (stub clients) is the deterministic twin of `warn`.
+
+Fix wave (2026-10-29, final review S-I2): `rss` became report-only per the user's ruling (the 2 GB stays proposed). Controls: n64c (`rss_kb(nil)`: the process RSS cannot be read) -> `rss` FAIL, log `/tmp/nv4j/logs/test-20261029-095537.log`; n64d (proposed figure set to 1 MB, i.e. the measured 1.3 GB is far over) -> `rss` still PASS ("OVER" in the detail), `DONE 64_project_marker 17 0`, log `/tmp/nv4j/logs/test-20261029-095616.log`.
 
 ### Alternatives considered
 
@@ -236,7 +238,7 @@ Done (see "Built (D25)"): marker lookup with a unit check of the order, the sing
 
 Carried to P3 or later (each also in README Not yet or Known limitations):
 
-- D25 (`.nv4j` project marker): built with the warning, no `-Xmx` (developer's decision). Open: the `.nv4j` format and settings, the 2 GB RSS budget to confirm, a `.nv4j` above several Maven projects. Details in "Problem: one jdt.ls per loose-file directory".
+- D25 (`.nv4j` project marker): built with the warning, no `-Xmx` (developer's decision). Open: the `.nv4j` format and settings, the 2 GB RSS figure (proposed, report-only, not applied), a `.nv4j` above several Maven projects. Details in "Problem: one jdt.ls per loose-file directory".
 
 - Async import apply on accept (removes the up to 0.8 s wait), and project ranking weighted above blink's frecency (P1 follow-ups): built in P3 Task 1 (D24, `63_async_import`).
 - Saved run configurations (profile, env, VM args per project); `<leader>rp` asks each time.

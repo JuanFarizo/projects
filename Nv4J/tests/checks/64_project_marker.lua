@@ -19,12 +19,14 @@
 --                   `.nv4j` dir, cross-directory reference resolves (no error in alpha/A.java using
 --                   beta/B.java), the planted error in gamma/C.java is reported.
 --  one_workspace  : one -data dir among the jdtls-data dirs of the 4 candidate roots (project + 3 subdirs).
---  rss            : RSS of that jdt.ls process <= RSS_BUDGET_KB.
+--  rss            : RSS of that jdt.ls process, REPORT-ONLY: PASS with the measured MB in the detail; FAIL only when the pid
+--                   cannot be found or its RSS cannot be read. The 2 GB figure is a proposal (specs/001 D25), not a budget
+--                   (user ruling: stays "proposed", not applied).
 --  warn           : without `.nv4j`, two sibling loose dirs -> two clients and exactly one WARN (title
 --                   Nv4J, both roots, common parent, ".nv4j"); opening more files in both dirs adds none.
 local lsp = require("lsp")
 local P = "64_project_marker."
-local RSS_BUDGET_KB = 2048 * 1024 -- 2 GB, proposed from 1257 to 1294 MB measured for this project (specs/001 D25)
+local RSS_PROPOSED_KB = 2048 * 1024 -- 2 GB, proposed from 1257 to 1294 MB measured for this project (specs/001 D25): printed, never enforced
 
 local TMP = "/tmp/nv4j/d25-" .. vim.fn.getpid()
 vim.fn.delete(TMP, "rf")
@@ -239,9 +241,10 @@ local ok_all, err = pcall(function()
 
   local pid = clients[1] and pid_of(clients[1])
   local rss = rss_kb(pid)
-  lsp.report(P .. "rss", rss ~= nil and rss <= RSS_BUDGET_KB,
-    rss and ("jdt.ls pid %s RSS %.0f MB (budget %d MB) for 3 files in 3 dirs"):format(pid, rss / 1024, RSS_BUDGET_KB / 1024)
-      or ("jdt.ls process not found (pid %s)"):format(tostring(pid)))
+  lsp.report(P .. "rss", rss ~= nil,
+    rss and ("jdt.ls pid %s RSS %.0f MB for 3 files in 3 dirs (report-only; proposed 2 GB, %s it)"):format(pid, rss / 1024,
+      rss <= RSS_PROPOSED_KB and "under" or "OVER")
+      or ("jdt.ls process or its RSS not found (pid %s)"):format(tostring(pid)))
 end)
 if not ok_all then lsp.report(P .. "single_client", false, "error: " .. tostring(err)) end
 stop_all()
