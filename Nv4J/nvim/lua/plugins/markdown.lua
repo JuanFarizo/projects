@@ -48,26 +48,8 @@ return {
       },
     },
   },
-  -- Diagnostics (markdownlint and any future markdown linter) render as
-  -- a gutter sign + underline only, not inline virtual text — prose notes
-  -- get unreadable fast with an error message appended after every line.
-  -- Full message still available on hover / Space cd. Every other
-  -- filetype (Java, TS, etc.) keeps LazyVim's normal icon-prefixed inline
-  -- virtual text unchanged — the original table is captured and returned
-  -- as-is for those, only markdown gets `false`.
-  {
-    "neovim/nvim-lspconfig",
-    opts = function(_, opts)
-      local default_virtual_text = opts.diagnostics.virtual_text
-      opts.diagnostics.virtual_text = function(namespace, bufnr)
-        if vim.bo[bufnr].filetype == "markdown" then
-          return false
-        end
-        if type(default_virtual_text) == "function" then
-          return default_virtual_text(namespace, bufnr)
-        end
-        return default_virtual_text
-      end
-    end,
-  },
+  -- The dotfiles also wrap diagnostics.virtual_text in a function here (markdown: no inline text, other
+  -- filetypes: LazyVim's). Not ported: Nv4J turns built-in virtual text off for every filetype
+  -- (plugins/diagnostics.lua, tiny-inline-diagnostic draws instead), so the wrapper changed nothing visible
+  -- and made the setting a function, which 30_diagnostics one_renderer cannot read as "off".
 }
