@@ -437,7 +437,7 @@ end
 --- One JVM: launch args, TCP server for the runner's stream, dap.run (P2's adapter builds first).
 --- done(parser|nil, err|nil) once: the stream ended (%RUNTIME + EOF), or the session closed (a short
 --- grace for the stream), or the run was cancelled.
-local function launch_one(run, launch, done)
+local function launch_one(run, launch, done, idx)
   local client = run.client
   launch_args(client, launch, function(la, err)
     if run.finished then return end
@@ -460,8 +460,10 @@ local function launch_one(run, launch, done)
       done(parser, e)
     end
     run.cancel_launch = function() finish("cancelled") end
-    -- the JVM of a finished stream must not linger: its session is closed 3 s after the results
-    local name = "Nv4J tests: " .. launch.label .. " #" .. run.id
+    -- the JVM of a finished stream must not linger: its session is closed 3 s after the results. The name is
+    -- per LAUNCH (#<run>.<n>): the reap of launch n must not match launch n+1's session, which has usually
+    -- registered by then (a project run has one launch per Java project and test kind)
+    local name = ("Nv4J tests: %s #%d.%d"):format(launch.label, run.id, idx or 1)
     local function reap()
       vim.defer_fn(function()
         for _, sess in pairs(require("dap").sessions()) do
@@ -572,6 +574,7 @@ local function finish_run(run, r)
       end, discovery_ms()) -- signs only: a timeout just leaves the method lines unsigned
     end
   end
+  run.on_done_called = true
   if run.on_done then pcall(run.on_done, r) end
 end
 
@@ -607,13 +610,27 @@ local function start(req, opts)
   run.timer:start(timeout_ms(), 0, vim.schedule_wrap(function()
     if run.finished then return end
     local cancel = run.cancel_launch
-    local r = collect(run.parsers or {}, run.ctx)
-    r.error = ("no result within %g s (build, launch or test JVM stuck): run stopped"):format(timeout_ms() / 1000)
-    finish_run(run, r)
+    -- the backstop must always release the lock: whatever fails in it (collect on odd runner output, the
+    -- result layer), the run ends with the error and `running` is cleared
+    local ok, e = pcall(function()
+      local r = collect(run.parsers or {}, run.ctx)
+      r.error = ("no result within %g s (build, launch or test JVM stuck): run stopped"):format(timeout_ms() / 1000)
+      finish_run(run, r)
+    end)
+    if not ok then
+      local r = empty_result("run timeout handler failed: " .. tostring(e))
+      if not run.finished then pcall(finish_run, run, r) end
+      -- finish_run itself can throw (it marks the run finished first): on_done was then not reached
+      if not run.on_done_called and run.on_done then run.on_done_called = true; pcall(run.on_done, r) end
+      run.finished = true
+      if running == run then running = nil end
+      notify("Test run timed out and its result could not be collected: " .. tostring(e), vim.log.levels.ERROR)
+    end
     if cancel then pcall(cancel) end
     pcall(function()
       for _, s in pairs(require("dap").sessions()) do
-        if s.config and type(s.config.name) == "string" and s.config.name:find("#" .. run.id .. "$") then s:disconnect({ terminateDebuggee = true }) end
+        -- every launch of this run: "...#<run>.<n>"
+        if s.config and type(s.config.name) == "string" and s.config.name:find("#" .. run.id .. "%.%d+$") then s:disconnect({ terminateDebuggee = true }) end
       end
     end)
   end))
@@ -634,7 +651,7 @@ local function start(req, opts)
       if parser then run.parsers[#run.parsers + 1] = parser end
       if err then errors[#errors + 1] = launch.label .. ": " .. err end
       step()
-    end)
+    end, i)
   end
   step()
 end

@@ -40,6 +40,11 @@
 --  discovery_timeout: jdt.ls never answers the discovery commands (client.request stubbed for them),
 --                     discovery bound 500 ms: nearest and project end with "no answer from jdt.ls within",
 --                     a visible message, the lock released, the next real run works.
+--  launch_names     : one run with two launches (dap.run / dap.sessions stubbed, launch 2's stream held open): each launch
+--                     has its own session name (#<run>.<n>); 3.8 s after launch 1's results its session was reaped and
+--                     launch 2's is still connected.
+--  timeout_handler_error: the run timeout backstop with collect made to throw: the run ends with "run timeout handler
+--                     failed", the lock is released.
 --  class_counts     : PriceCalculatorTest: 5/0/1, the 3 parameterized invocations, the nested test, notYet skipped.
 --  file_scope       : scope "file" on the same file: 5/0/1.
 --  nearest_param    : cursor in the parameterized method: 3 passed.
@@ -329,6 +334,81 @@ local ok_all, err = pcall(function()
       ("nearest %.0f ms (%s), project %.0f ms (%s), messages %d/2, lock %s; next run %.0f ms, %s"):format(msn,
         rn and tostring(rn.error) or "no result", msp2, rp2 and tostring(rp2.error) or "no result", seen,
         (busy_after_nearest == nil and busy_after == nil) and "released" or "HELD", msr, fmt(rr, evr)))
+  end
+
+  -- two launches in one run: each launch has its own dap session name, so the 3 s reap of launch 1 cannot
+  -- disconnect launch 2's session (deterministic: dap.run / dap.sessions stubbed, launch 2's stream held open
+  -- past launch 1's reap)
+  do
+    local base = tests.last_request
+    local fake_sessions, release2 = {}, nil
+    local real_run, real_sessions = dap.run, dap.sessions
+    dap.sessions = function() return fake_sessions end
+    dap.run = function(config)
+      local sess = { config = config, disconnected = false }
+      function sess:disconnect() self.disconnected = true end
+      fake_sessions[#fake_sessions + 1] = sess
+      local idx = #fake_sessions
+      local port = tonumber((config.args or ""):match("%-port (%d+)"))
+      local sock = vim.uv.new_tcp()
+      local function send()
+        sess.sent_at = vim.uv.hrtime()
+        sock:write("%RUNTIME5\n", function() if not sock:is_closing() then sock:close() end end)
+      end
+      sock:connect("127.0.0.1", port or 0, function(cerr)
+        if cerr then return end
+        if idx == 1 then send() else release2 = send end
+      end)
+    end
+    local result
+    local ok_names, e_names = pcall(function()
+      tests.last_request = vim.tbl_extend("force", {}, base, { launches = { base.launches[1], base.launches[1] } })
+      tests.run({ scope = "last", on_done = function(r) result = r end })
+      vim.wait(30000, function() return #fake_sessions == 2 end, 20)
+      local s1, s2 = fake_sessions[1], fake_sessions[2]
+      if s1 and s1.sent_at then
+        vim.wait(math.max(0, 3800 - (vim.uv.hrtime() - s1.sent_at) / 1e6)) -- past launch 1's reap (3 s)
+      end
+      fake_sessions.snapshot = { s1 and s1.disconnected, s2 and s2.disconnected }
+      if release2 then release2() end
+      vim.wait(20000, function() return result ~= nil end, 20)
+    end)
+    dap.run, dap.sessions = real_run, real_sessions
+    tests.last_request = base
+    local snap2 = fake_sessions.snapshot or {}
+    local n1 = fake_sessions[1] and fake_sessions[1].config.name
+    local n2 = fake_sessions[2] and fake_sessions[2].config.name
+    lsp.report(P .. "launch_names", ok_names and #fake_sessions == 2 and n1 ~= n2 and snap2[1] == true and snap2[2] == false
+      and result ~= nil and tests._busy() == nil,
+      ("%s; sessions %d, names '%s' / '%s'; 3.8 s after launch 1's results: launch 1 reaped %s, launch 2 %s; run result %s, lock %s"):format(
+        ok_names and "ok" or ("error: " .. tostring(e_names)), #fake_sessions, tostring(n1), tostring(n2), tostring(snap2[1]),
+        snap2[2] == false and "still connected" or ("DISCONNECTED (" .. tostring(snap2[2]) .. ")"), result and "yes" or "NONE",
+        tests._busy() == nil and "released" or "HELD"))
+    vim.wait(300)
+  end
+
+  -- the run timeout backstop must release the lock whatever fails in it (collect on odd runner output)
+  do
+    vim.g.nv4j_test_timeout_ms = 700
+    local got
+    vim.api.nvim_set_current_buf(buf)
+    vim.api.nvim_win_set_cursor(0, { l, 0 })
+    local t0 = vim.uv.hrtime()
+    tests.run({ scope = "nearest", bufnr = buf, lnum = l, on_done = function(r) got = r end })
+    -- the run exists once discovery ended (its parsers table is there): a number in it makes collect throw
+    local injected = vim.wait(10000, function()
+      local r = tests._busy()
+      if r and r.parsers then r.parsers = { 42 }; return true end
+      return false
+    end, 2)
+    vim.wait(8000, function() return got ~= nil end, 20)
+    vim.g.nv4j_test_timeout_ms = nil
+    local ms_t = (vim.uv.hrtime() - t0) / 1e6
+    lsp.report(P .. "timeout_handler_error", injected and got ~= nil and (got.error or ""):find("run timeout handler failed", 1, true) ~= nil
+      and tests._busy() == nil,
+      ("collect made to throw: %s; result %s after %.0f ms; lock %s"):format(injected and "injected" or "NOT injected",
+        got and tostring(got.error):gsub("\n.*", ""):sub(1, 90) or "NONE", ms_t, tests._busy() == nil and "released" or "HELD"))
+    vim.wait(1500) -- the cancelled launch's JVM is torn down
   end
 
   -- class with parameterized, nested and disabled tests

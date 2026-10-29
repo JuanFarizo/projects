@@ -87,7 +87,7 @@ Results: `%TSTTREE`/`%TESTS`/`%TESTE`/`%FAILED`/`%ERROR`/`%TRACES` by test id; `
 
 Keys (D21/005): `<leader>tr` nearest, `<leader>tt` class, `<leader>tp` project (replaces the `mvn test` terminal), `<leader>tf` failed, `<leader>tl` last, `<leader>to` results (quickfix), `<leader>td` debug nearest; global from `config/keymaps.lua`, per Java buffer from `plugins/java.lua` on attach (t2-j). `<leader>tT` stays LazyVim's (nvim-jdtls's pick, its own result layer).
 
-### Cases (`60_tests_runner`, 27)
+### Cases (`60_tests_runner`, 29)
 
 `attached`, `api`, `keys` (8 keys bound in the buffer with Nv4J's desc, no LazyVim test key in the buffer or globally; `<leader>tn` still the terminal), `test_bundle`, `pick_key`, `raw_cap`, `nearest_warm`, `stream_closed`, `lock_quick_press`, `stream_bind_error`, `discovery_timeout`, `class_counts`, `file_scope`, `nearest_param`, `nearest_nested`, `failure_shown`, `project_counts`, `failed_only`, `last_again`, `results_panel`, `debug_nearest`, `broken_class`, `no_tests_file`, `no_junit_project`, `timeout_bounded`, `keys_after_whichkey`, `fixture_restored` (details in the check header). Every run case asserts, besides the counts, a RemoteTestRunner launch seen by nvim-dap's `on_config` during the run and Nv4J's quickfix title with the same counts (carried review item a): a stub cannot pass them.
 
@@ -106,8 +106,12 @@ Keys (D21/005): `<leader>tr` nearest, `<leader>tt` class, `<leader>tp` project (
 | n60s | discovery bound ignored | `discovery_timeout` (no result in 5 s, lock held) and every later run case ("A test run is in progress (finding the tests)"): the bug itself | `-203701.log` |
 | n60g (t2-n) | `opts.test = false` removed (LazyVim's test keys back) | `keys_after_whichkey`: `<leader>tr=Run Nearest Test`, `<leader>tt=Run All Test`, `<leader>tT=Run Test` (the headless `keys` case runs before which-key creates its queued keys) | `-203755.log` |
 | n60u | java-test jars not added back in `opts.jdtls` | `test_bundle` (0 java-test jars), `no_junit_project` | `-203855.log` |
+| n60w (fix wave S-I1) | dap session name per run again (`#<run>`), not per launch (`#<run>.<n>`) | `launch_names` (both sessions named `... #6`; launch 2 DISCONNECTED by launch 1's reap, as the reviewer described) | `/tmp/nv4j/logs/test-20261029-095300.log` |
+| n60x (fix wave S-M3) | the run timeout backstop's body without `pcall` | `timeout_handler_error` (lock HELD, no result) and every later run case ("A test run is in progress"): the bug itself | `-095300.log` |
 
 Deterministic twins: `stream_closed` reads the handles inside `on_done`, which runs in the same callback that read `%RUNTIME` (before the JVM's EOF can be read); `lock_quick_press` makes both calls synchronously, so the second always lands while the first is in its asynchronous discovery; `stream_bind_error` and `discovery_timeout` stub the failure (`vim.uv.new_tcp`, `client.request`) instead of waiting for a real one. `timeout_bounded` forces the bound with a 300 ms product timeout (instead of a stuck JVM); `keys_after_whichkey` replays the which-key load order headless (lazy load + VimEnter) instead of waiting for a real VeryLazy.
+
+Fix wave after the final review (2026-10-29): (S-I1) the dap session of a launch is named `Nv4J tests: <label> #<run>.<n>` (n = the launch's index in the run); the reap of launch n (3 s after its stream ended) matches that exact name, the run timeout handler matches `#<run>.<digits>`. Before, every launch of a run (a project run with several Java projects or test kinds, a failed rerun with a method and a class group) had the same name, and the reap of launch n could terminate launch n+1's test JVM if its session had registered by then. Case `launch_names`: one run with two launches (`dap.run` and `dap.sessions` stubbed, a fake JVM connecting to the stream server; launch 2's stream is held open past launch 1's reap): names differ, launch 1 reaped, launch 2 still connected 3.8 s after launch 1's results. (S-M3) the run timeout callback runs its body under `pcall`: on an error the run ends with "run timeout handler failed: ..." (on_done still called, also when `finish_run` itself throws part-way: `run.on_done_called`), `running` is cleared, an ERROR notification names it. Case `timeout_handler_error` (collect made to throw by putting a number in the run's parsers; timeout 700 ms).
 
 ### Final runs
 
