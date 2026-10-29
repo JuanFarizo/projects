@@ -315,6 +315,8 @@ local function report_apply(name, how, applied, ms, checks, clean_ok, clean_deta
 end
 
 local function case(name, fn)
+  -- development only: NV4J_CASE=<Lua pattern> runs just the matching cases (a full run is the real result)
+  if vim.env.NV4J_CASE and not name:find(vim.env.NV4J_CASE) then return end
   local ok, err = pcall(fn)
   if not ok then lsp.report(P .. name, false, "error: " .. tostring(err)) end
   vim.cmd.stopinsert()
@@ -3097,6 +3099,68 @@ case("safe_delete_busy", function()
         msg and "yes" or "NONE", kept and "kept" or "DELETED", tostring(a.done), vim.inspect(refactor._busy())))
   end)
   undo()
+  if not ok then error(err) end
+end)
+
+-- safe_delete_throw (stub, fix wave R-I4): an error thrown after the declaration was deleted (refactor.stale_refs
+-- made to throw): safe delete returns false, on_done(false) once, an ERROR names it, and `busy` is clear, so
+-- a refactor started right after is not refused.
+case("safe_delete_throw", function()
+  local calc = lsp.open(CALC)
+  local real = refactor.stale_refs
+  refactor.stale_refs = function() error("injected stale_refs error") end
+  local ok, err = pcall(function()
+    local calls_done, last = 0, nil
+    local r = sd_at(calc, "public int legacyTotal%(", "legacyTotal", { on_done = function(x) calls_done, last = calls_done + 1, x end })
+    local m = find_msg(r.got, "injected stale_refs error", vim.log.levels.ERROR)
+    local busy1 = refactor._busy()
+    refactor.stale_refs = real
+    F.restore(snap, client)
+    calc = lsp.open(CALC)
+    local r2 = sd_at(calc, "public int legacyTotal%(", "legacyTotal")
+    local refused = find_msg(r2.got, "a refactor is in progress")
+    lsp.report(P .. "safe_delete_throw", r.ret == false and calls_done == 1 and last == false and m ~= nil and busy1 == nil
+      and r2.ret == true and refused == nil and refactor._busy() == nil,
+      ("thrown: returned %s, on_done x%d (%s), ERROR %s, busy after %s; next safe delete returned %s%s"):format(tostring(r.ret), calls_done,
+        tostring(last), m and "yes" or "NONE", vim.inspect(busy1), tostring(r2.ret), refused and (" REFUSED: " .. refused) or ""))
+  end)
+  refactor.stale_refs = real
+  if not ok then error(err) end
+end)
+
+-- safe_delete_unreadable (stub + real file): (a) stub: reading application-dev.yml throws; safe delete of
+-- legacyTotal still deletes and the result warns "could not read 1 file(s)"; (b) real: stale_refs on a
+-- /tmp/nv4j directory holding a mode 000 file returns it as unread and still finds the hit in the readable one.
+case("safe_delete_unreadable", function()
+  local calc = lsp.open(CALC)
+  local real = refactor._readfile
+  refactor._readfile = function(p, ...)
+    if p:find("application-dev.yml", 1, true) then error("Vim:E484: Can't open file " .. p) end
+    return real(p, ...)
+  end
+  local ok, err = pcall(function()
+    local r = sd_at(calc, "public int legacyTotal%(", "legacyTotal")
+    local m = find_msg(r.got, "could not read 1 file(s), so they were not checked for `legacyTotal`: src/main/resources/application-dev.yml", vim.log.levels.WARN)
+    refactor._readfile = real
+    local dir = "/tmp/nv4j/unreadable62"
+    vim.fn.delete(dir, "rf")
+    vim.fn.mkdir(dir, "p")
+    vim.fn.writefile({ "key: legacyTotal" }, dir .. "/seen.yml")
+    vim.fn.writefile({ "key: legacyTotal" }, dir .. "/hidden.yml")
+    vim.uv.fs_chmod(dir .. "/hidden.yml", 0)
+    local sok, stale, _, unread = pcall(function() local a, b, c = refactor.stale_refs(dir, { java = { "legacyTotal" }, config = { "legacyTotal" } }); return a, b, c end)
+    vim.uv.fs_chmod(dir .. "/hidden.yml", 420)
+    vim.fn.delete(dir, "rf")
+    local real_unread = sok and type(unread) == "table" and #unread == 1 and unread[1] == "hidden.yml"
+    -- running as root, a mode 000 file is still readable: the real half then proves nothing; say so
+    local as_root = vim.uv.getuid and vim.uv.getuid() == 0
+    lsp.report(P .. "safe_delete_unreadable", r.ret == true and m ~= nil and refactor._busy() == nil
+      and sok and #stale == 1 and (real_unread or as_root),
+      ("stub: returned %s, warning %s, busy %s; real mode 000 file: stale_refs %s, hits %s, unread %s%s"):format(tostring(r.ret), m and "yes" or "NONE",
+        vim.inspect(refactor._busy()), sok and "returned" or ("THREW " .. tostring(stale)), sok and #stale or "?", vim.inspect(unread),
+        as_root and " (root: not a real test of the chmod half)" or ""))
+  end)
+  refactor._readfile = real
   if not ok then error(err) end
 end)
 

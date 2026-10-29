@@ -100,11 +100,18 @@ end
 --- jdt.ls's rename does not touch these (IntelliJ offers "search in strings"); Nv4J warns, nothing more.
 --- Second value: true when the scan stopped at M.scan_max_files scannable files (said in the warning).
 function M.stale_refs(root, names)
-  local out, n, truncated = {}, 0, false
+  local out, n, truncated, unread = {}, 0, false, {}
   local function scan(path, ext)
     local b = vim.fn.bufnr(path)
-    local lines = (b ~= -1 and vim.api.nvim_buf_is_loaded(b)) and vim.api.nvim_buf_get_lines(b, 0, -1, false)
-      or (vim.fn.getfsize(path) < 1048576 and vim.fn.readfile(path)) or {}
+    local lines
+    if b ~= -1 and vim.api.nvim_buf_is_loaded(b) then
+      lines = vim.api.nvim_buf_get_lines(b, 0, -1, false)
+    elseif vim.fn.getfsize(path) < 1048576 then
+      -- an unreadable file (mode 000, a root-owned bind mount) must not abort the scan: skipped and said
+      local ok, got = pcall(M._readfile, path)
+      if ok then lines = got else unread[#unread + 1] = rel(path, root) end
+    end
+    lines = lines or {}
     for i, l in ipairs(lines) do
       local hit = false
       if ext == "java" then
@@ -147,8 +154,10 @@ function M.stale_refs(root, names)
     end
   end
   if root then walk(root) end
-  return out, truncated
+  return out, truncated, unread
 end
+
+M._readfile = vim.fn.readfile -- checks stub it
 
 --- Patterns for a renamed class `old` in package `pkg` (nil = default package).
 local function class_names(old, pkg)
@@ -164,9 +173,13 @@ local function package_names(pkg)
     imports = { "^%s*import%s+" .. vim.pesc(pkg) .. "%.", "^%s*import%s+static%s+" .. vim.pesc(pkg) .. "%." } }
 end
 
-local function stale_note(stale, old, truncated)
+local function stale_note(stale, old, truncated, unread)
   local cut = truncated and (". The strings/config scan stopped after %d files: the rest of the project was not checked")
     :format(M.scan_max_files) or ""
+  if unread and #unread > 0 then
+    cut = cut .. (". WARNING: could not read %d file(s), so they were not checked for %s: %s"):format(#unread, old or "the old name",
+      table.concat(vim.list_slice(unread, 1, 5), ", "))
+  end
   if not stale or #stale == 0 then return cut end
   return (". NOT rewritten, still naming %s (strings, config, or imports jdt.ls did not update; check them): %s%s"):format(old,
     table.concat(vim.list_slice(stale, 1, 8), ", "), #stale > 8 and (", +" .. (#stale - 8) .. " more") or "") .. cut
@@ -385,9 +398,9 @@ function M.rename_class(opts)
       end
       local t_scan = vim.uv.hrtime()
       local _, pkg = src_root_of(vim.fs.dirname(path))
-      local stale, cut = M.stale_refs(require("nv4j.root").project(path), class_names(old, pkg ~= "" and pkg or nil))
-      M.last = { label = label, files = files, ok = true, stale = stale, scan_ms = (vim.uv.hrtime() - t_scan) / 1e6, truncated = cut }
-      notify(summary(label, files, root_of(client)) .. stale_note(stale, old, cut), (#stale > 0 or cut) and vim.log.levels.WARN or nil)
+      local stale, cut, unread = M.stale_refs(require("nv4j.root").project(path), class_names(old, pkg ~= "" and pkg or nil))
+      M.last = { label = label, files = files, ok = true, stale = stale, scan_ms = (vim.uv.hrtime() - t_scan) / 1e6, truncated = cut, unread = unread }
+      notify(summary(label, files, root_of(client)) .. stale_note(stale, old, cut, unread), (#stale > 0 or cut or #unread > 0) and vim.log.levels.WARN or nil)
       follow_up(label, before, vim.tbl_map(function(f) return f.path end, files))
       done(true)
     end, buf)
@@ -419,7 +432,9 @@ end
 local function lines_of(p)
   local b = vim.fn.bufnr(p)
   if b ~= -1 and vim.api.nvim_buf_is_loaded(b) then return vim.api.nvim_buf_get_lines(b, 0, -1, false) end
-  return vim.uv.fs_stat(p) and vim.fn.readfile(p) or {}
+  if not vim.uv.fs_stat(p) then return {} end
+  local ok, got = pcall(M._readfile, p) -- unreadable (mode 000): treated as empty, never thrown
+  return ok and got or {}
 end
 
 --- True when the .java file declares a top-level type named like the file (the case where jdt.ls's
@@ -610,15 +625,15 @@ function M.rename_paths(moves, label, client, opts)
     end
   end
   local moved = table.concat(vim.tbl_map(function(m) return rel(m[1], root) .. " -> " .. rel(m[2], root) end, moves), ", ")
-  local stale, cut = {}, false
-  if opts.stale then stale, cut = M.stale_refs(root, opts.stale.names) end
+  local stale, cut, unread = {}, false, {}
+  if opts.stale then stale, cut, unread = M.stale_refs(root, opts.stale.names) end
   M.last = { label = label, files = files, ok = true, moves = moves, tries = tries_by, notes = notes, ms = ms, stale = stale,
-    truncated = cut, info = opts.info }
+    truncated = cut, unread = unread, info = opts.info }
   -- opts.warn: caller's warnings (WARN level); opts.info: caller's notes (level unchanged)
   vim.list_extend(notes, opts.warn or {})
-  local warn = #notes > 0 or #stale > 0 or cut
+  local warn = #notes > 0 or #stale > 0 or cut or #unread > 0
   notify(summary(("%s (moved %s)"):format(label, moved), files, root) .. (#notes > 0 and (". NOTE: " .. table.concat(notes, "; ")) or "")
-    .. stale_note(stale, opts.stale and opts.stale.old, cut) .. ((opts.info and #opts.info > 0) and (". " .. table.concat(opts.info, "; ")) or ""),
+    .. stale_note(stale, opts.stale and opts.stale.old, cut, unread) .. ((opts.info and #opts.info > 0) and (". " .. table.concat(opts.info, "; ")) or ""),
     warn and vim.log.levels.WARN or nil)
   follow_up(label, before, vim.tbl_map(function(f) return f.path end, files))
   return true
@@ -2139,13 +2154,13 @@ end
 --- Deletes the method, field, constant or type at the cursor (its declaration name, or a reference to it)
 --- when nothing uses it; otherwise nothing is deleted and the usages are listed in the quickfix list.
 --- See the section comment above. opts.on_done(ok) afterwards. Returns ok (true = deleted).
-function M.safe_delete(opts)
-  opts = opts or {}
+local function safe_delete_body(opts, st)
   local buf = vim.api.nvim_get_current_buf()
   local path = vim.api.nvim_buf_get_name(buf)
   local mine = false
   local function done(ok)
     if mine then busy, mine = nil, false end
+    st.finished = true
     if opts.on_done then opts.on_done(ok) end
     return ok
   end
@@ -2164,6 +2179,7 @@ function M.safe_delete(opts)
     return refuse(("%s is outside jdt.ls's project (%s): its usages cannot be searched; nothing deleted"):format(path, tostring(root)))
   end
   busy, mine = { label = "safe delete" }, true
+  st.busy = busy
   local ms, t = {}, vim.uv.hrtime()
   local function lap(k)
     local n = vim.uv.hrtime()
@@ -2424,7 +2440,11 @@ function M.safe_delete(opts)
   local _, pkg = src_root_of(vim.fs.dirname(decl_path))
   local names = is_type and class_names(name, pkg ~= "" and pkg or nil) or { java = { word(name) }, config = { word(name) },
     bean = vim.tbl_contains(entry, "Bean") and word(name) or nil }
-  local stale, cut = M.stale_refs(require("nv4j.root").project(decl_path), names)
+  local stale, cut, unread = M.stale_refs(require("nv4j.root").project(decl_path), names)
+  if #unread > 0 then
+    warn[#warn + 1] = ("could not read %d file(s), so they were not checked for `%s`: %s"):format(#unread, name,
+      table.concat(vim.list_slice(unread, 1, 5), ", "))
+  end
   if #stale > 0 then
     warn[#warn + 1] = ("still named in strings/config (reflection, JPQL, bean names, properties: not code usages, check them): %s%s"):format(
       table.concat(vim.list_slice(stale, 1, 8), ", "), #stale > 8 and (", +" .. (#stale - 8) .. " more") or "")
@@ -2436,6 +2456,20 @@ function M.safe_delete(opts)
     .. (#warn > 0 and (". WARNING: " .. table.concat(warn, "; ")) or ""), #warn > 0 and vim.log.levels.WARN or nil)
   follow_up(label, before, whole_file and {} or vim.tbl_map(function(f) return f.path end, files))
   return done(true)
+end
+
+function M.safe_delete(opts)
+  opts = opts or {}
+  local st = {}
+  local ok, res = pcall(safe_delete_body, opts, st)
+  if ok then return res end
+  -- whatever threw, `busy` must not stay set (it would refuse every refactor until Neovim restarts)
+  if st.busy and busy == st.busy then busy = nil end
+  local msg = "Safe delete: an error stopped it part-way (" .. tostring(res):gsub("\n.*", "") .. "); check the file and the build with u / git diff"
+  M.last = { label = "Safe delete", files = {}, ok = false, err = tostring(res) }
+  notify(msg, vim.log.levels.ERROR)
+  if not st.finished and opts.on_done then pcall(opts.on_done, false) end
+  return false
 end
 
 -- ── neo-tree (plugins/neo-tree.lua) ──────────────────────────────────────────────────────────────

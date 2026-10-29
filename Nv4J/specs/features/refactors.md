@@ -389,6 +389,17 @@ Open items (4e):
 - Possible-usage text scan can block on a same-named local/field in an unsaved or broken file (safe side; save/fix and run again).
 - Not checked: Gradle, files outside the root with usages, a usage only through a method reference, annotation types.
 
+## Fix wave after the P3 final review
+
+Findings of the two final reviewers (R = refactor report, S = other report), fixed in this order. Controls are exact-text patches run on `62_refactor` with `NV4J_CASE=<pattern>` (development filter in `case()`: only the matching cases run; the real result is always a full run), reverted after each run.
+
+**R-I4 (safe delete leaves `busy` set; unreadable file).** `M.safe_delete` is now a wrapper: the body runs under `pcall`; on an error `busy` is cleared (only if still the one this call took), an ERROR names the error, `M.last.ok = false`, `on_done(false)` once (unless the body already called it). `stale_refs` and `lines_of` read through `pcall(M._readfile, path)`: an unreadable file is skipped; `stale_refs` returns it as a third value (`unread`, project-relative paths) and every caller says so in its warning ("could not read N file(s), so they were not checked for X: ..."). Cases `safe_delete_throw` (stub: `refactor.stale_refs` throws after the delete: false, `on_done` once, ERROR, busy clear, next safe delete runs) and `safe_delete_unreadable` (stub: reading `application-dev.yml` throws: deleted, warning names the file; real: `stale_refs` on a `/tmp/nv4j/unreadable62` directory holding a mode 000 file).
+
+| Control | Patch | Fails | Log |
+|---------|-------|-------|-----|
+| n62CB | `pcall(safe_delete_body, opts, st)` -> direct call | `safe_delete_throw` (error escapes; busy left set, so `safe_delete_unreadable` fails too) | `/tmp/nv4j/logs/test-20261029-093026.log` |
+| n62CC + n62CD | the two `pcall(M._readfile, ...)` -> direct calls | `safe_delete_unreadable` (returned false / stale_refs THREW E484) | `/tmp/nv4j/logs/test-20261029-093042.log` |
+
 ## Trial log
 
 | # | Change | Effect | Kept |
