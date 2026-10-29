@@ -226,7 +226,7 @@ Code: `nvim/lua/nv4j/completion.lua` (server order kept for Spring items, snippe
 
 ### Also available (from LazyVim, not covered by the checks)
 
-Telescope, neo-tree, git signs, `lemminx` for XML (`pom.xml` formatting and validation). They are here because the base config had them, they are not part of P1's measured work.
+Telescope, neo-tree, git signs, `lemminx` for XML (`pom.xml` formatting and validation), and from the user's dotfiles (D26) the AI agent keys, hlchunk indent guides, Markdown rendering, Prettier on demand, `mini.align` and tag editing for HTML/XML. They are here because the base config had them, they are not part of P1's measured work.
 
 ## Not yet
 
@@ -370,6 +370,19 @@ Generate getters, constructors, `toString`, `equals`/`hashCode`: put the cursor 
 | `<leader>jd` | safe delete the method, field, constant or type under the cursor: with usages nothing is deleted and they are listed in the quickfix; without, the declaration goes (the file, for the only type of its file) |
 | neo-tree `r` on a `.java` file or package folder | same rename with the code updated (`m`, move, goes the same way, not checked) |
 
+### Terminal, comments, AI agents, guides, Markdown (merged from the user's dotfiles, D26)
+
+| Key | Does |
+|-----|------|
+| `<C-/>` (`<C-_>` in terminals that send that) | toggle the terminal (LazyVim core). `<C-t>` inside it opens a new terminal tab, `<D-]>` / `<D-[>` go to the next / previous; `<C-j>` is window navigation again |
+| `<D-/>` (normal, visual, insert) | toggle comment (`gcc` / `gc` work too). `<C-/>` no longer comments |
+| `<leader>a` group "AI agents" | `ac` Claude, `ak` Cursor, `aa` toggle the active one, `ap` pick, `ab` add buffer, `as` send selection (visual), `ar` / `aC` resume / continue, `am` model, `af` focus Claude, `ay` / `an` accept / deny the Claude diff. Nothing loads at startup. If the Claude panel was open when you left a folder, it reopens on the next `nvim` / `nvim .` there |
+| `<leader>uI` | toggle indent guides (hlchunk; snacks indent and scope are disabled, one provider only) |
+| `<leader>cp` / `<leader>um` (Markdown) | toggle the in-buffer rendering (render-markdown.nvim) |
+| `ga` / `gA` | align text (mini.align) |
+
+`<leader>co` (organize imports), `<leader>cO` (outgoing calls) and `<leader>tp` (project tests) stay Nv4J's. Checked by `65_dotfiles_merge`; the agents themselves (`claude`, `cursor-agent`) are not run by any check.
+
 ### Projects without a build file (`.nv4j`)
 
 jdt.ls takes the project root from the nearest `pom.xml`/`build.gradle*` (or the repo root when that has one). A folder of plain `.java` files with no build file has no such marker, so every folder you open a file in becomes its own project and gets its own jdt.ls (about 1.3 GB each). Mark the project instead: put an empty file named `.nv4j` in its top folder.
@@ -421,7 +434,7 @@ Checked: the resulting list has `javax.swing.*` added and `java.awt.List` remove
 ```
 nvim/
   init.lua                 sets up the nv4j paths (/tmp/nv4j, ~/.cache/nv4j) and the LSP log, then lazy.nvim
-  lazyvim.json             LazyVim extras: telescope, neo-tree, blink, mini-surround, dap.core, lang.java
+  lazyvim.json             LazyVim extras: telescope, neo-tree, blink, mini-surround, dap.core, formatting.prettier, lang.markdown, lang.java
   lazy-lock.json           pinned plugin versions
   lua/config/              options.lua, keymaps.lua, autocmds.lua, lazy.lua
   lua/plugins/
@@ -431,6 +444,7 @@ nvim/
     lsp.lua, xml.lua       code lens on, inlay hints off, lemminx
     spring.lua             spring-boot.nvim (pinned) + Mason vscode-spring-boot-tools
     neo-tree, telescope, gitsigns, noice, which_key, theme, treesitter, expand-region
+    ai, claudecode, sidekick, hlchunk, markdown, mini-align, ts-autotag   from the user's dotfiles (D26)
   lua/nv4j/                Nv4J's own small Lua modules
     jdk.lua                JDK discovery and runtimes
     completion.lua         Java ranking, filtered types, snippet rules
@@ -447,7 +461,7 @@ nvim/
     tests.lua              test runner (<leader>tr/tt/tp/tf/tl/td/to)
     scaffold.lua           new class/package/test (<leader>jn/jt), the :e and neo-tree templates
     refactor.lua           rename class/package, move class, inline, change signature, safe delete (<leader>jr/jp/jm/ji/js/jd), neo-tree renames through jdt.ls
-  lua/util/                profile.lua (:CompletionProfile)
+  lua/util/                profile.lua (:CompletionProfile), ai.lua (<leader>a agents: Claude, Cursor; Claude panel per folder)
 specs/                     001 architecture, 002 P1 numbers and trial log, features/*.md
 tests/                     run.sh, checks/, fixtures/, lib/
 ```
@@ -483,6 +497,7 @@ The checks (each file lists its cases at the top):
 | `52_spring_nav` | Spring hover, `@Value` go to definition, beans and request mappings, `<leader>sp` picker |
 | `60_tests_runner` | test runner: nearest/class/file/project/failed/last, counts with parameterized, nested, `@Disabled`, failure in quickfix and diagnostics, debug, non-compiling class, no JUnit, bounded time, keys, one session name per launch, timeout backstop (29 cases) |
 | `64_project_marker` | `.nv4j` project marker: root order (unit), one jdt.ls and one workspace for 3 sibling folders under one `.nv4j`, its memory, the once-only warning for a second loose-folder jdt.ls |
+| `65_dotfiles_merge` | the dotfiles merge (D26): `<C-/>` terminal and `<C-j>` window navigation, `<D-/>` comment, Nv4J keys kept (`<leader>co`, `<leader>cO`, `<leader>tp`), AI keys and lazy loading, one indent provider and the `<leader>uI` toggle, Markdown keys and extras, ported-not list, startup time (report-only), Claude panel restore |
 | `61_scaffold` | scaffolding: 9 type kinds, package, dotted name, test class, prompts, default package, test dir, `:e` and neo-tree templates on disk, refusals (existing file, invalid name, outside a source root, test of a test), every created file compiles, keys (27 cases) |
 
 Budgets: warm completion p95 at most 150 ms per case; first completion after ready at most 400 ms; expected item in the top 5 plus a relative rule per case; diagnostics at most 3 s from edit to screen; import accept at most 1.5 s (P3: item text in at most 100 ms after the accept, its import at most 1.5 s, `63_async_import`; nearest test result at most 10 s warm, `60_tests_runner`; new file on disk and opened at most 300 ms, no jdt.ls error within 3 s, `61_scaffold`); one code action round trip at most 1 s. P2: breakpoint hit at most 20 s from launch, no JVM 10 s after terminate, Spring LS initialized at most 10 s after jdt.ls is ready, `application.properties`/yml/`@Value` first completion at most 400 ms and warm p95 at most 150 ms, Spring hover and go to definition at most 500 ms, Spring LS memory at most 1 GB (hard limit 1.5 GB). D25: one jdt.ls per `.nv4j` project; its memory is measured and printed by `64_project_marker` `rss` (1257 to 1294 MB on the check's project), report-only: the proposed 2 GB is not applied as a budget. `NV4J_SPRING=0 tests/run.sh` starts every check with the Spring LS off (A/B timing). The fixture is `tests/fixtures/demo`, planted broken sources are in `tests/fixtures/planted/*.java.txt` and are loaded into a buffer in memory only, never written to disk.
@@ -536,7 +551,10 @@ The test run keeps its blink.cmp state in `/tmp/nv4j/state` so your own accepted
 - **Cosmetic gaps vs IntelliJ:** a blank line between every import group, `Objects.hash(name, Integer.valueOf(age))`, `toString` without quotes around strings, a numbered prompt for field selection.
 - **Cold request edge:** the 400 ms first-completion budget is measured 1 s after jdt.ls is ready. A completion in that first second, or right after a `pom.xml` change reloads the project in the same session, can still cost 0.7 to 0.9 s once. A first-ever import of a project takes longer (about 15 s).
 - **Only the project's own `pom.xml` and `.sdkmanrc` decide the project JDK.** A `release` inherited from a parent pom (not the Spring Boot starter parent) is not seen and falls back to `$JAVA_HOME` or the newest JDK.
-- **Format-on-save is off** (`vim.g.autoformat = false`), and the Prettier extra was dropped, so YAML/JSON/Markdown such as `application.yml` do not format on save. `<leader>cf` formats Java and XML through the language servers.
+- **Format-on-save is off** (`vim.g.autoformat = false`, kept). The Prettier extra is back (D26): `<leader>cf` formats YAML/JSON/Markdown/HTML/CSS through Prettier (Mason installs it at the first start); Java and XML still format through the language servers. Nothing formats on save.
+- **Mason installs more at the first start (D26):** `prettier`, `markdownlint-cli2`, `markdown-toc` and the `marksman` server, for the Markdown and Prettier extras. `tests/run.sh` never reaches Mason's `ensure_installed`, so they do not block a check.
+- **AI agents are not run by any check (D26):** `65_dotfiles_merge` checks the keys, the lazy loading and the Claude panel restore with a stubbed command. Claude needs the `claude` CLI, Cursor needs `cursor-agent`; neither is installed by Nv4J.
+- **`<leader>uI` differs from the dotfiles (D26):** there the first press ran `:DisableHLIndent`, which does not exist while hlchunk's indent module is off (its default), so the key errored. Here the first press switches the guides on.
 - **Plugin update check in the background:** lazy.nvim's update checker (`checker.enabled = true`, `notify = false`) periodically runs a background `git fetch` for every plugin. It only checks, it never installs or updates anything; updates happen only when you run `:Lazy update`. `nvim/lazy-lock.json` pins what the tests ran with.
 - **`<leader>rs` is not `mvn spring-boot:run`** (decision D15: faster, no network). It runs `java -cp` with jdt.ls's classpath and classes, so it skips the `spring-boot-maven-plugin` `<configuration>` (`jvmArguments`, `environmentVariables`, `profiles`, `mainClass`, `arguments`), a `spring.profiles.active` set by a pom profile, plugins bound to `process-classes` or earlier phases that jdt.ls does not run, and the plugin's `-XX:TieredStopAtLevel=1`. Resource filtering does happen: m2e inside jdt.ls replaced `@project.version@` in `application.properties` on the fixture (one probe, `specs/features/run.md`). Annotation processors (Lombok, MapStruct) were not verified for this path. If your project relies on any of that, use `<leader>rS` or set `vim.g.nv4j_run_tool = "maven"`.
 - **Spring Boot language server limits:** the first second after it starts, a properties completion can come back empty (its index is still loading; the check sends its first request 1 s after start). Boot detection reads the build files once per session: adding Spring Boot to a `pom.xml` needs a restart. With two Spring Boot projects open, the server's Java questions go to the first jdt.ls. `vim.g.nv4j_spring = false` in `options.lua` keeps the plugin from loading; set later in a session it only stops new buffers from attaching (a running server stays). The Mason package stays installed unless the flag was false at the first start. Not detected as Spring Boot: modules deeper than 2 levels below the project root, and a project whose corporate parent pom (outside the repo) brings Boot while its own build files name no Boot groupId, starter, plugin or BOM: `<leader>rs` says "Not a Spring Boot project" and no Spring server starts. Adds about 400 MB of memory per Spring Boot project. The first `K` on some yml keys waits for the server once: `server.port` 202 to 286 ms (up to 516 ms seen), other keys 1 to 99 ms, then 1 ms (`52_spring_nav` `hover_yml_port` fails above 1 s). A `@Value("${` completion in the same instant the Java file opens can take about 0.5 s once, and `@Profile("")` can come back empty once (the checks send them 1 s after opening). In `@Value("${` the keys set in your own `application*.properties`/`yml` come first (your own namespaces before `spring.*`/`server.*`/`logging.*`); the rest of the about 1850 Boot keys follow in the server's alphabetical order and the menu shows 200, so with an empty prefix a Boot key late in the alphabet can be missing: type a prefix. New config files are seen within 10 s. No snippets inside a Java `"..."` string, judged on the current line only (inside a text block body they still show).
@@ -546,7 +564,7 @@ The test run keeps its blink.cmp state in `/tmp/nv4j/state` so your own accepted
 - **Run limits:** the real `mvn spring-boot:run` (and the kill of Maven's forked JVM) was never run by the checks here (Maven could not resolve the plugin through an unreachable company mirror): `<leader>rS` is checked as a command, the process-tree stop on a synthetic tree whose processes ignore SIGTERM. `<leader>rd`'s Started and failure notifications are read from nvim-dap's terminal buffer, whose width is unknown (a pooled or hidden terminal is 80 columns or less): Started and the port are matched on the rows joined, the failure block row by row, so a Description or Action wrapped in the middle of a word shows a stray space (`41_run` `dap_scan`, `leave_stops_debug`). Children forked after the stop's process snapshot are only caught through the process group.
 - **Test runner limits:** only JUnit 5 is covered by a check (JUnit 4 takes the same path, TestNG is not run: use `<leader>tT`). Stack frames jump to files under `src/*/java` of the project root and one module level down. Test output (`System.out`) goes to the dap-repl, not into the results. One run at a time: a second key press while a run is going, or still finding its tests, says so. Finding the tests is bounded at 15 s (`vim.g.nv4j_test_discovery_timeout_ms`): a jdt.ls that never answers gives "no answer from jdt.ls within 15 s", the whole run at 120 s (`vim.g.nv4j_test_timeout_ms`). `require("nv4j.tests")._last_raw` keeps the last 500 lines of the runner stream (all of it with `vim.g.nv4j_tests_debug = true`). LazyVim's java extra test keys are off (`opts.test = false` in `plugins/java.lua`, which adds the java-test bundle back itself); every `<leader>t` test key, `<leader>tT` included, is Nv4J's.
 - **One jdt.ls per loose folder without `.nv4j`:** plain `.java` files with no build file and no `.nv4j` above them still get one jdt.ls per folder (about 1.3 GB each; nothing caps the number); Nv4J only warns once per folder when a second one starts. Add a `.nv4j` (How to use). jdt.ls has no `-Xmx` set by Nv4J (its launcher's `-Xms1G`; the JVM's default ceiling is 25% of RAM). The `.nv4j` file has no settings yet (format open), and adding or removing it needs a restart. A `.nv4j` above several Maven projects (none at its own level) makes them one jdt.ls root without Spring Boot server or `mvn` run (not checked).
-- **Terminal needs:** `<C-m>` needs the kitty keyboard protocol, `<D-Left>`/`<D-Right>` and Cmd+bracket terminal keys are for kitty on macOS.
+- **Terminal needs:** `<C-m>` needs the kitty keyboard protocol, `<D-Left>`/`<D-Right>`, `<D-/>` (comment) and the Cmd+bracket terminal keys are for kitty on macOS. `<C-/>` reaches Neovim as `<C-/>` or `<C-_>` depending on the terminal; both toggle the terminal.
 - **Test harness limits:** the latency checks type each case in one step, not key by key (two cases cover the typed path); `lsp.complete` in the harness sends no completion context, the ranking path uses blink's own.
 
 Each later plan (P3, P4, P5) updates the Capabilities and Not yet sections as its last task.

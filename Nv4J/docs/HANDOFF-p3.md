@@ -6,7 +6,7 @@ Read this first when resuming. The SDD ledger and reports live in `~/Documents/p
 
 - P1 and P2 are done and pushed. P3 Tasks 0 to 4 are done, plus the D25 `.nv4j` marker and the Task 2 minor fixes and the 5 s ceiling for interface-method change signature.
 - Task 5 status: docs pass done (README, `specs/001`, `003` "3c. P3 lessons", `005`, this file). NOT done yet: three consecutive full `tests/run.sh` runs recorded with every `DONE` line, whole-branch review on the most capable model, one fix wave plus scoped re-review, time-boxed look at the jdt.ls flakes, push to `main` (tell the user first), final wrap-up listing every "Ruling:" line of the ledger with the cost if wrong.
-- Checks added in P3: `60_tests_runner` 29, `61_scaffold` 27, `62_refactor` 118 (116 on a case-sensitive file system: two cases SKIP), `63_async_import` 28, `64_project_marker` 17.
+- Checks added in P3: `60_tests_runner` 29, `61_scaffold` 27, `62_refactor` 118 (116 on a case-sensitive file system: two cases SKIP), `63_async_import` 28, `64_project_marker` 17, `65_dotfiles_merge` 9 (D26 dotfiles merge, outside the P3 plan).
 - Several commits are not pushed (`git log origin/main..main`).
 
 ## How to resume
@@ -29,6 +29,7 @@ Read this first when resuming. The SDD ledger and reports live in `~/Documents/p
 ## Decisions and key rulings in force (confirm with the user)
 
 - Nearest test is `<leader>tr` (not `<leader>tn`, which is "New terminal in a tab"). Refactor keys go under a new `<leader>j` group (not `<leader>cr`, which is Rename). **`<leader>tp` replaces the old `mvn test` terminal key** (confirmed by the user 2026-10-26, no old key wanted back).
+- D26 (user rulings, `specs/001`): `<C-/>` is the terminal toggle (LazyVim) and `<C-j>` is window navigation again (no Nv4J terminal key on it); comment is `<D-/>` (n, x, i), `gcc` / `gc` stay, `<C-/>` / `<C-_>` no longer comment; AI agents under `<leader>a` (Claude `ac`, Cursor `ak`; Claude panel restored per folder); hlchunk indent guides with `<leader>uI` and snacks indent/scope disabled; Markdown (render-markdown, `<leader>cp`, `<leader>um`), Prettier extra, `mini.align`, ts-autotag for html/xml. `<leader>co`, `<leader>cO`, `<leader>tp` stay Nv4J's. Not ported: smear-cursor, mini.animate, image, lint, typescript/vtsls.
 - D21 deviation: `nv4j/tests.lua` calls the java-test commands directly (own RemoteTestRunner parser) instead of `jdtls.dap.experimental.run`, which would show two result sets.
 - D24 changed: a late import is placed by Nv4J (by `java.completion.importOrder`), never applied from jdt.ls ranges; this fixed a real bug where jdt.ls's HashMap edit replaced an existing `import java.util.List;` line in 36 of 50 runs.
 - `vim.g.nv4j_async_debug = true` turns on debug toasts for async-import outcomes (off by default).

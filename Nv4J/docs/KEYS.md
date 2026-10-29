@@ -125,7 +125,7 @@ Keys marked **Java buffer** exist only in a Java file after jdt.ls has attached.
 | `<Tab>` / `<S-Tab>` (normal mode) | Next / previous buffer |
 | `<C-q>` | Close the buffer |
 | `<leader>w` / `<leader>W` / `<leader>q` | Save / save all / quit |
-| `<C-j>` | Toggle terminal (`<C-t>` in it: new terminal tab, `<D-]>` / `<D-[>`: next / previous) |
+| `<C-/>` (or `<C-_>`, what terminals send for it) | Toggle terminal (LazyVim core; `<C-t>` in it: new terminal tab, `<D-]>` / `<D-[>`: next / previous). `<C-j>` is window navigation again (LazyVim) |
 | `<C-t>` | New scratch note (persistent) |
 
 ## Editing
@@ -134,7 +134,8 @@ Keys marked **Java buffer** exist only in a Java file after jdt.ls has attached.
 |-----|------|
 | `<A-Down>` / `<A-Up>` | Move line or selection down / up |
 | `<C-S-d>` | Duplicate line or selection |
-| `<C-/>` or `<C-_>` | Toggle comment |
+| `<D-/>` (normal, visual, insert; kitty on macOS) | Toggle comment (`gcc` / `gc` work everywhere; `<C-/>` is the terminal now) |
+| `ga` / `gA` | Align text (mini.align) |
 | `<C-z>` / `<C-S-z>` | Undo / redo |
 | `<C-d>` | Expand selection (in insert mode: leave insert and select the word) |
 | `<C-g>` | Go to line |
@@ -149,8 +150,34 @@ Keys marked **Java buffer** exist only in a Java file after jdt.ls has attached.
 | `]h` / `[h` | Next / previous hunk |
 | `<leader>ghi` | Toggle inline diff of the whole file |
 
+## AI agents (`<leader>a`, which-key group "AI agents")
+
+Claude (claudecode.nvim) and Cursor (sidekick.nvim terminal, `cursor-agent`). Nothing loads at startup; the first `<leader>a` key loads the plugin. `<leader>aa` and the keys below it act on the active agent (Claude at the start of every session); `<leader>ac` / `<leader>ak` start one and make it the active one. Code: `lua/plugins/ai.lua`, `claudecode.lua`, `sidekick.lua`, `lua/util/ai.lua`.
+
+| Key | Does |
+|-----|------|
+| `<leader>aa` | Toggle the active agent |
+| `<leader>ap` | Pick the agent (Claude or Cursor) |
+| `<leader>ac` / `<leader>ak` | Toggle Claude / toggle Cursor |
+| `<leader>as` (visual) | Send the selection (in neo-tree: add the file, Claude) |
+| `<leader>ab` | Add the current buffer |
+| `<leader>ar` / `<leader>aC` | Resume / continue the last session |
+| `<leader>am` | Select the model (Claude) |
+| `<leader>af` | Focus the Claude panel |
+| `<leader>ay` / `<leader>an` | Accept / deny the Claude diff |
+
+If the Claude panel was open when you left a folder, it opens again next time you start Neovim on that folder (`nvim` or `nvim .`; state in `~/.local/state/nv4j/claudecode_sessions.json`).
+
+## Indent guides and Markdown
+
+| Key | Does |
+|-----|------|
+| `<leader>uI` | Toggle indent guides (hlchunk; off at start, the chunk border and the current line number highlight are on). snacks.nvim's indent and scope are disabled, so there is never a second set of guides |
+| `<leader>cp` / `<leader>um` (Markdown buffers) | Toggle the in-buffer Markdown rendering (render-markdown.nvim) |
+
 ## Not a key, but good to know
 
+- Formatting is on demand only (`<leader>cf`; `vim.g.autoformat` is false): Java and XML through the language servers, Markdown/JSON/YAML/HTML/CSS through Prettier (Mason installs it).
 - `<leader>?` shows the keys of the current buffer; `<leader>sk` searches all keys.
 - Options such as `vim.g.nv4j_run_tool` and `vim.g.nv4j_spring`: README "Options".
 - To list every key of your own session: `:Telescope keymaps`.

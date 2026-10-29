@@ -113,9 +113,28 @@ do
           pcall(vim.api.nvim_buf_delete, b, {})
         end
       end
+
+      require("util.ai").restore_panel()
     end)
   end
 end
+
+-- ── Claude Code panel per project ─────────────────────────────────────────
+-- The panel is a terminal buffer, not a normal file buffer, so :mksession (persistence.nvim above) does
+-- not capture it. Remember on exit whether it was open for this cwd; util/ai.lua restore_panel() (called
+-- from the workspace restore above) reopens it. State: stdpath("state")/claudecode_sessions.json.
+vim.api.nvim_create_autocmd("VimLeavePre", {
+  group = vim.api.nvim_create_augroup("nv4j_claude_panel", { clear = true }),
+  callback = function()
+    local ai = require("util.ai")
+    -- not loaded = never opened this session: do not load (and auto-start) the plugin just to quit
+    local terminal = package.loaded["claudecode.terminal"]
+    local is_open = terminal ~= nil and terminal.get_active_terminal_bufnr() ~= nil
+    local state = ai.read_state()
+    state[vim.fn.getcwd()] = is_open
+    ai.write_state(state)
+  end,
+})
 
 -- ── Java scaffolding for `:e NewClass.java` / `gf` (nv4j/scaffold.lua, D22) ──
 -- Asks the kind, fills the buffer from the same templates as <leader>jn and writes it (so the file on

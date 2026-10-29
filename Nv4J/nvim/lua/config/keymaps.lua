@@ -130,12 +130,8 @@ map("n", "<D-Right>", "<C-i>", { desc = "Jump forward" })
 -- just adding the VS Code muscle-memory key on top.
 Snacks.toggle.option("wrap", { name = "Wrap" }):map("<A-z>")
 
--- ── Terminal (VS Code style; LazyVim core already binds <C-/> to the same fn) ──
-map({ "n", "t" }, "<C-j>", function()
-  Snacks.terminal.focus(nil, { cwd = LazyVim.root() })
-end, { desc = "Toggle terminal" })
-
--- Terminal "tabs": each session is its own float (same as <C-j> above, which
+-- ── Terminal (LazyVim core binds <C-/> (and <C-_>, what terminals send for it) to toggle it; <C-j> stays window nav) ──
+-- Terminal "tabs": each session is its own float (same as <C-/>, which
 -- is already a float, not a split), but only one is ever shown at a time —
 -- <C-t> hides the current one and opens a fresh one in its place; Cmd+]/
 -- Cmd+[ hide the current one and show the next/prev. Never touches the file
@@ -395,12 +391,38 @@ map("n", "<leader>cO", vim.lsp.buf.outgoing_calls, { desc = "Outgoing calls" })
 map("n", "<F8>", "]d", { desc = "Next diagnostic", remap = true })
 map("n", "<S-F8>", "[d", { desc = "Previous diagnostic", remap = true })
 
--- ── Comment toggle (VS Code style; LazyVim core already binds gcc/gc) ──────
--- Most terminals send <C-_> for Ctrl+/, map both to be safe
-map({ "n" }, "<C-_>", "gcc", { desc = "Toggle comment", remap = true })
-map({ "n" }, "<C-/>", "gcc", { desc = "Toggle comment", remap = true })
-map({ "x" }, "<C-_>", "gc", { desc = "Toggle comment", remap = true })
-map({ "x" }, "<C-/>", "gc", { desc = "Toggle comment", remap = true })
+-- ── Comment toggle (LazyVim core already binds gcc/gc) ──────────────
+-- Not <C-/> or <C-_>: LazyVim core uses them for the terminal. <C-o>gcc would jump the
+-- cursor to column 0, so restore it, shifted by the comment marker's length.
+local function toggle_comment_insert()
+  local row, col = unpack(vim.api.nvim_win_get_cursor(0))
+  local before = #vim.api.nvim_get_current_line()
+  vim.cmd("normal gcc")
+  local delta = #vim.api.nvim_get_current_line() - before
+  vim.api.nvim_win_set_cursor(0, { row, math.max(col + delta, 0) })
+end
+map("n", "<D-/>", "gcc", { desc = "Toggle comment", remap = true })
+map("x", "<D-/>", "gc", { desc = "Toggle comment", remap = true })
+map("i", "<D-/>", toggle_comment_insert, { desc = "Toggle comment" })
+
+-- ── Toggle hlchunk indent guides (lua/plugins/hlchunk.lua; snacks indent/scope are off) ──
+-- Off at start (hlchunk's indent module is not even created when enable = false, so there is no
+-- :EnableHLIndent yet: the first press sets it up from the plugin's own opts with enable = true).
+map("n", "<leader>uI", function()
+  if vim.g.hlchunk_indent_enabled == true then
+    vim.g.hlchunk_indent_enabled = false
+    vim.cmd("DisableHLIndent")
+    return
+  end
+  if vim.fn.exists(":EnableHLIndent") == 2 then
+    vim.cmd("EnableHLIndent")
+  else
+    require("lazy").load({ plugins = { "hlchunk.nvim" } })
+    local o = require("lazy.core.plugin").values(require("lazy.core.config").plugins["hlchunk.nvim"], "opts", false)
+    require("hlchunk").setup({ indent = vim.tbl_extend("force", o.indent or {}, { enable = true }) })
+  end
+  vim.g.hlchunk_indent_enabled = true
+end, { desc = "Toggle indent guides" })
 
 -- ── Undo / Redo (VS Code style) ──────────────────────────────────────
 -- Ctrl+Z natively suspends nvim (job control) — remap it to undo instead,
