@@ -351,9 +351,14 @@ local function summary(label, files, root)
   return ("%s: %d file(s): %s"):format(label, #files, table.concat(parts, ", "))
 end
 
-local function failed_part_way(label, why, files, root)
-  local msg = ("%s FAILED part-way (%s). %s. Undo with `u` in each file listed."):format(label, why,
-    summary("Changed so far", files, root))
+--- `moved`: { { from, to } } folders/files already moved when it failed (`u` does not move those back).
+local function failed_part_way(label, why, files, root, moved)
+  local undo = " Undo with `u` in each file listed."
+  if moved and #moved > 0 then
+    undo = (" Already moved, and `u` does NOT move them back: %s. Put them back by renaming each back (<leader>jp, or neo-tree), then `u` in each file listed undoes the text edits."):format(
+      table.concat(vim.tbl_map(function(m) return rel(m[1], root) .. " -> " .. rel(m[2], root) end, moved), ", "))
+  end
+  local msg = ("%s FAILED part-way (%s). %s."):format(label, why, summary("Changed so far", files, root)) .. undo
   M.last = { label = label, files = files, ok = false, err = msg }
   notify(msg, vim.log.levels.ERROR)
   return false, msg
@@ -655,6 +660,9 @@ function M.rename_paths(moves, label, client, opts)
   -- are dropped (that root's own rename follows and puts its files in the same package again).
   -- Callers put src/main/java first (tests depend on main, not the other way round).
   local files, changes, tries_by, notes = {}, { files = {} }, {}, {}
+  local function done_moves() -- the moves completed so far, as { from, to }
+    return vim.tbl_map(function(c) return { vim.uri_to_fname(c.oldUri), vim.uri_to_fname(c.newUri) } end, changes.files)
+  end
   -- per-step ms (M.last.ms, profiling): will = willRenameFiles, apply = edit + writes, move = folder + :saveas
   local ms, t = { will = 0, apply = 0, move = 0 }, vim.uv.hrtime()
   local function lap(k)
@@ -690,7 +698,7 @@ function M.rename_paths(moves, label, client, opts)
     end
     if edit == nil then
       if i == 1 then return fail(err) end
-      return failed_part_way(label, err .. " for " .. rel(from, root), files, root)
+      return failed_part_way(label, err .. " for " .. rel(from, root), files, root, done_moves())
     end
     if edit and edit.documentChanges then
       edit.documentChanges = vim.tbl_filter(function(ch)
@@ -713,7 +721,7 @@ function M.rename_paths(moves, label, client, opts)
         local dup = vim.iter(files):find(function(g) return g.path == f.path end)
         if not dup then files[#files + 1] = f end
       end
-      if not ok then return failed_part_way(label, why, files, root) end
+      if not ok then return failed_part_way(label, why, files, root, done_moves()) end
     end
     lap("apply")
     -- the edit may have moved it already (a RenameFile in jdt.ls's answer)
@@ -721,7 +729,7 @@ function M.rename_paths(moves, label, client, opts)
       local mok, merr = pcall(vim.lsp.util.rename, from, to, { overwrite = false })
       if not mok or vim.uv.fs_stat(from) or not vim.uv.fs_stat(to) then
         return failed_part_way(label, ("moving %s to %s failed: %s; the edits above are applied"):format(rel(from, root),
-          rel(to, root), tostring(merr or "not moved")), files, root)
+          rel(to, root), tostring(merr or "not moved")), files, root, done_moves())
       end
     end
     lap("move")
@@ -2215,7 +2223,11 @@ local function to_trash(path, project)
   local bytes = f:read("*a")
   f:close()
   trash_seq = trash_seq + 1
-  local dir = ("%s/%s-%06d-%03d"):format(M.trash_root(), os.date("%Y%m%d-%H%M%S"), math.floor(vim.uv.hrtime() / 1e3) % 1000000, trash_seq % 1000)
+  -- the name sorts in creation order (restore takes the last, pruning drops the first): the wall clock's
+  -- seconds and microseconds from ONE reading, then the sequence (a monotonic counter's microseconds wrap
+  -- at its own second boundary, not the wall clock's, so two entries of one second could sort reversed)
+  local sec, usec = vim.uv.gettimeofday()
+  local dir = ("%s/%s-%06d-%03d"):format(M.trash_root(), os.date("%Y%m%d-%H%M%S", sec), usec, trash_seq % 1000)
   local copy = dir .. "/" .. ((project and under(path, project)) and path:sub(#project + 2) or vim.fs.basename(path))
   if vim.fn.mkdir(vim.fs.dirname(copy), "p") == 0 then return nil, nil, "cannot create " .. dir end
   local w = io.open(copy, "wb")
@@ -2232,6 +2244,9 @@ local function to_trash(path, project)
   for i = 1, #all - M.trash_keep do vim.fn.delete(M.trash_root() .. "/" .. all[i], "rf") end
   return dir, copy
 end
+
+M._to_trash = to_trash -- checks
+M._trash_entries = trash_entries -- checks
 
 --- Puts the newest trash entry back at its original path (refused when that path exists), opens it,
 --- tells jdt.ls, removes the entry. Returns ok, message.
@@ -2250,13 +2265,21 @@ function M.restore_deleted()
   if vim.uv.fs_stat(dest) then
     return say(("%s exists again; the copy stays in %s"):format(dest, copy), vim.log.levels.WARN)
   end
-  local f = assert(io.open(copy, "rb"))
+  local f = io.open(copy, "rb")
+  if not f then return say("cannot read the copy " .. copy, vim.log.levels.ERROR) end
   local bytes = f:read("*a")
   f:close()
   vim.fn.mkdir(vim.fs.dirname(dest), "p")
   local w = io.open(dest, "wb")
   if not w then return say("cannot write " .. dest .. "; the copy stays in " .. copy, vim.log.levels.ERROR) end
-  w:write(bytes); w:close()
+  -- the trash entry is the only copy: it is deleted only after the write and the close both succeeded
+  local wok, werr = w:write(bytes)
+  local cok, cerr = w:close()
+  local st = vim.uv.fs_stat(dest)
+  if not (wok and cok and st and st.size == #bytes) then
+    os.remove(dest) -- never leave a partial file behind
+    return say(("writing %s failed (%s); the copy stays in %s"):format(dest, tostring(werr or cerr or "short write"), copy), vim.log.levels.ERROR)
+  end
   local client = jdtls_for(dest)
   if client then client:notify("workspace/didChangeWatchedFiles", { changes = { { uri = vim.uri_from_fname(dest), type = 1 } } }) end
   vim.fn.delete(dir, "rf")

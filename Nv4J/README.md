@@ -481,7 +481,7 @@ The checks (each file lists its cases at the top):
 | `50_spring_ls` | Spring Boot language server: attach, properties completion and hover, memory, gating, server JDK, off switch |
 | `51_spring_completion` | Spring completion in blink: properties, yml, `@Value`, `@Profile`, broken files, latency, `@` regression |
 | `52_spring_nav` | Spring hover, `@Value` go to definition, beans and request mappings, `<leader>sp` picker |
-| `60_tests_runner` | test runner: nearest/class/file/project/failed/last, counts with parameterized, nested, `@Disabled`, failure in quickfix and diagnostics, debug, non-compiling class, no JUnit, bounded time, keys (20 cases) |
+| `60_tests_runner` | test runner: nearest/class/file/project/failed/last, counts with parameterized, nested, `@Disabled`, failure in quickfix and diagnostics, debug, non-compiling class, no JUnit, bounded time, keys, one session name per launch, timeout backstop (29 cases) |
 | `64_project_marker` | `.nv4j` project marker: root order (unit), one jdt.ls and one workspace for 3 sibling folders under one `.nv4j`, its memory, the once-only warning for a second loose-folder jdt.ls |
 | `61_scaffold` | scaffolding: 9 type kinds, package, dotted name, test class, prompts, default package, test dir, `:e` and neo-tree templates on disk, refusals (existing file, invalid name, outside a source root, test of a test), every created file compiles, keys (27 cases) |
 

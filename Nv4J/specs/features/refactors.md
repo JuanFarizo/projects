@@ -417,6 +417,13 @@ Findings of the two final reviewers (R = refactor report, S = other report), fix
 | Control | Patch | Fails | Log |
 |---------|-------|-------|-----|
 | n62CI | `module_root` returns `root.project` again | `multi_module_roots` ((b) only the main folder moves, (c) not refused, (d) no note, (e) no warning: the reviewer's reproduction) | `/tmp/nv4j/logs/test-20261029-094744.log` (base run green: `-094619.log`) |
+**Small items (R-m1, R-m3, R-m4, R-m5).**
+- R-m3 `inline_errors` passed on any refusal (`r.ret == true and (...) or r.ret == false`); it now requires `r.ret == true` and the reference inlined or named (3 runs green: 25 cases each in the filtered group). Control n62CJ (`refactor.inline` stubbed to refuse): FAIL `returned false` (the old condition passed it), log `/tmp/nv4j/logs/test-20261029-095853.log`.
+- R-m4 trash entry order: the name is `date-HHMMSS` + wall-clock microseconds (one `gettimeofday` reading for both) + sequence; before, the microseconds came from the monotonic `hrtime` which wraps at its own second, so two deletes of one wall-clock second could sort reversed (restore took the older one, pruning dropped the newer). Case `safe_delete_trash_order` (hrtime stubbed to wrap between entries 2 and 3, six entries sort in creation order, `restore_deleted` puts back the newest only). Control n62CK (old name): FAIL (`F3,F4,F5,F6,F1,F2`; an older entry restored).
+- R-m5 `restore_deleted`: `assert(io.open(copy))` replaced by a message; the write and the close are checked (and the size) BEFORE the trash entry is deleted; a failed write removes the partial destination and keeps the entry (the only copy). Case `safe_delete_restore_failed` (io.open stubbed: "No space left on device"). Control n62CL (check off): FAIL (restore reports success, the entry is LOST). It still restores the newest entry of ANY project (not changed).
+- R-m1 part-way message: `failed_part_way` takes the moves already completed; the ERROR says "Already moved, and `u` does NOT move them back: a -> b. Put them back by renaming each back (<leader>jp, or neo-tree), then `u` in each file listed undoes the text edits" instead of promising `u` undoes everything. Case `rename_package_part_way_message` (willRenameFiles refused for the test root). Control n62CM (old message): FAIL. Not changed: `apply()` still lists every file of the edit in "Changed so far" after a failed apply.
+
+Logs of the new controls: n62CK, n62CL, n62CM in one run `/tmp/nv4j/logs/test-20261029-100133.log` (3 FAIL, the three cases above).
 
 ## Trial log
 

@@ -30,7 +30,7 @@ Keys marked **Java buffer** exist only in a Java file after jdt.ls has attached.
 | `<leader>tl` | Run the last test run again | Java buffer and global | same |
 | `<leader>to` | Open the results (quickfix list) | Java buffer and global | same |
 | `<leader>td` | Debug the nearest test (breakpoints stop) | Java buffer and global | same |
-| `<leader>tT` | Pick a test of the file (nvim-jdtls picker; also runs TestNG) | Java buffer | `plugins/java.lua` |
+| `<leader>tT` | Pick a test of the file (nvim-jdtls picker; also runs TestNG). Outside a Java file with jdt.ls it only says so | Java buffer and global | `config/keymaps.lua`, `plugins/java.lua` (`nv4j.tests.bind()`) |
 | `<leader>tn` | New terminal in a tab (use it for `mvn test` by hand) | global | `config/keymaps.lua` |
 
 ## Run and debug a Spring Boot app (`<leader>r`)

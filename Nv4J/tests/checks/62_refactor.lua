@@ -129,6 +129,8 @@
 --                       busy clear; an unreadable file is skipped and named in the warning.
 --  rename_class_busy, _stale, _finish_error (stubs): the rename's own busy / stale-buffer refusal / error exit.
 --  rename_class_case_only: Invoice -> INVOICE really renames the file (case-insensitive FS only; SKIP printed otherwise).
+--  multi_module_roots: module_root / rename_package moves / move conflict, test-stays note and Spring warning on a /tmp/nv4j layout.
+--  safe_delete_trash_order, _restore_failed; rename_package_part_way_message; inline_errors now requires ret == true.
 -- The fixture is snapshot before and restored after every case (tests/lib/fixture.lua), jdt.ls told.
 -- Development: NV4J_CASE=<Lua pattern> runs only the matching cases. jdt.ls answers a very first rename with
 -- the declaration only (no references) when nothing warmed it: run a group (e.g. '^rename_class_[uc]'), not a single case.
@@ -1890,7 +1892,7 @@ case("inline_errors", function()
   local ct = E.text(chk)
   local updated = ct:find("return 99 - 1;", 1, true) ~= nil
   local named = find_msg(r.got, "src/main/java/demo/shop/Checkout.java:" .. ref_line, vim.log.levels.WARN) ~= nil
-  lsp.report(P .. "inline_errors", r.ms <= APPLY_MS and (r.ret == true and (updated or named) or r.ret == false) and ct:find("int broken = ;", 1, true) ~= nil,
+  lsp.report(P .. "inline_errors", r.ms <= APPLY_MS and r.ret == true and (updated or named) and ct:find("int broken = ;", 1, true) ~= nil,
     ("returned %s after %.0f ms; Checkout's reference %s by jdt.ls; warning %s; Checkout's syntax error kept; messages: %s"):format(tostring(r.ret), r.ms,
       updated and "inlined" or "NOT inlined", named and ("names Checkout.java:" .. ref_line) or "does not name Checkout",
       table.concat(vim.tbl_map(function(m) return m.msg end, r.got), " || ")))
@@ -3414,6 +3416,111 @@ case("multi_module_roots", function()
   refactor.rename_paths, vim.lsp.get_clients, refactor.last = real_paths, real_clients, real_last
   pcall(vim.cmd, "silent! %bwipeout!")
   vim.fn.delete(R, "rf")
+  if not ok then error(err) end
+end)
+
+-- safe_delete_trash_order (fix wave R-m4; deterministic: vim.uv.hrtime stubbed so its microseconds WRAP between the
+-- 2nd and 3rd entry, the wall clock stubbed increasing, trash dir under /tmp/nv4j): six entries made in a row sort in
+-- creation order (their .origin lines are F1..F6), and restore_deleted puts back the NEWEST (F6) only. The old name
+-- (date + hrtime microseconds mod 1e6) sorted the entries after the wrap before the earlier ones.
+case("safe_delete_trash_order", function()
+  local dir = "/tmp/nv4j/trash62-order"
+  vim.fn.delete(dir, "rf")
+  vim.fn.mkdir(dir .. "/src", "p")
+  local real_root, real_hr, real_gt = refactor.trash_dir, vim.uv.hrtime, vim.uv.gettimeofday
+  refactor.trash_dir = dir .. "/trash"
+  local ok, err = pcall(function()
+    local files = {}
+    for i = 1, 6 do
+      files[i] = ("%s/src/F%d.txt"):format(dir, i)
+      vim.fn.writefile({ "content " .. i }, files[i])
+    end
+    local hr_us, k, g = { 999900, 999950, 100, 150, 200, 250 }, 0, 0
+    vim.uv.hrtime = function() k = k + 1; return (hr_us[k] or 300) * 1000 end
+    vim.uv.gettimeofday = function() g = g + 1; return 1800000000, 1000 * g end
+    for i = 1, 6 do assert(refactor._to_trash(files[i], dir)) end
+    vim.uv.hrtime, vim.uv.gettimeofday = real_hr, real_gt
+    local order = {}
+    for _, name in ipairs(refactor._trash_entries()) do
+      order[#order + 1] = vim.fs.basename(vim.fn.readfile(refactor.trash_root() .. "/" .. name .. "/.origin")[1])
+    end
+    for i = 1, 6 do os.remove(files[i]) end
+    local rok, rmsg = refactor.restore_deleted()
+    local back6 = vim.uv.fs_stat(files[6]) ~= nil and table.concat(vim.fn.readfile(files[6]), "") == "content 6"
+    local only6 = true
+    for i = 1, 5 do if vim.uv.fs_stat(files[i]) then only6 = false end end
+    vim.cmd("silent! %bwipeout!")
+    lsp.report(P .. "safe_delete_trash_order", table.concat(order, ",") == "F1.txt,F2.txt,F3.txt,F4.txt,F5.txt,F6.txt" and rok == true and back6 and only6
+      and #refactor._trash_entries() == 5,
+      ("entries in order %s; restore_deleted %s: F6 back %s, nothing else %s; %d entries left"):format(table.concat(order, ","), tostring(rok),
+        back6 and "yes" or "NO", only6 and "yes" or "NO (an older one was restored)", #refactor._trash_entries()))
+  end)
+  vim.uv.hrtime, vim.uv.gettimeofday, refactor.trash_dir = real_hr, real_gt, real_root
+  vim.fn.delete(dir, "rf")
+  if not ok then error(err) end
+end)
+
+-- safe_delete_restore_failed (fix wave R-m5; deterministic: io.open stubbed so the write to the destination fails with
+-- "No space left on device"): restore_deleted says so, returns false, leaves no partial file, and KEEPS the trash entry
+-- (the only copy). The old code deleted the entry after a failed write.
+case("safe_delete_restore_failed", function()
+  local dir = "/tmp/nv4j/trash62-restore"
+  vim.fn.delete(dir, "rf")
+  vim.fn.mkdir(dir .. "/src", "p")
+  local real_root, real_open = refactor.trash_dir, io.open
+  refactor.trash_dir = dir .. "/trash"
+  local ok, err = pcall(function()
+    local f = dir .. "/src/Keep.txt"
+    vim.fn.writefile({ "precious" }, f)
+    assert(refactor._to_trash(f, dir))
+    os.remove(f)
+    local got, stop = capture()
+    io.open = function(p, mode)
+      if p == f and mode == "wb" then
+        return { write = function() return nil, "No space left on device (stub)" end, close = function() return true end }
+      end
+      return real_open(p, mode)
+    end
+    local rok, rmsg = refactor.restore_deleted()
+    io.open = real_open
+    stop()
+    local entries = refactor._trash_entries()
+    local copy_kept = #entries == 1 and table.concat(vim.fn.readfile(refactor.trash_root() .. "/" .. entries[1] .. "/src/Keep.txt"), "") == "precious"
+    local says = (rmsg or ""):find("No space left on device (stub)", 1, true) ~= nil and find_msg(got, "the copy stays in", vim.log.levels.ERROR) ~= nil
+    lsp.report(P .. "safe_delete_restore_failed", rok == false and says and copy_kept and vim.uv.fs_stat(f) == nil,
+      ("restore_deleted returned %s, message %s; trash entry %s; destination %s"):format(tostring(rok), tostring(rmsg):sub(1, 110),
+        copy_kept and "kept" or "LOST", vim.uv.fs_stat(f) and "PARTIAL FILE LEFT" or "absent"))
+  end)
+  io.open, refactor.trash_dir = real_open, real_root
+  vim.fn.delete(dir, "rf")
+  if not ok then error(err) end
+end)
+
+-- rename_package_part_way_message (fix wave R-m1; deterministic: willRenameFiles refused for the second root): demo.billing ->
+-- demo.invoicing moves src/main/java first, then fails on src/test/java. The ERROR names the folder that ALREADY moved and
+-- says `u` does not move it back (it used to promise `u` undoes the files listed, which leaves main and test in different packages).
+case("rename_package_part_way_message", function()
+  local calc = lsp.open(CALC)
+  lsp.open(INVOICE)
+  vim.api.nvim_set_current_buf(calc); vim.api.nvim_win_set_cursor(0, { 1, 0 })
+  local real = client.request_sync
+  client.request_sync = function(self, m, params, t, b)
+    if m == "workspace/willRenameFiles" and params.files[1].oldUri:find("/src/test/java/", 1, true) then
+      return { err = { code = -32603, message = "stubbed refusal for the test root" } }
+    end
+    return real(self, m, params, t, b)
+  end
+  local ok, err = pcall(function()
+    local got, stop = capture()
+    local r = refactor.rename_package({ name = "demo.invoicing" })
+    stop()
+    local msg = find_msg(got, "FAILED part-way", vim.log.levels.ERROR) or ""
+    lsp.report(P .. "rename_package_part_way_message", r == false and msg:find("stubbed refusal for the test root", 1, true) ~= nil
+      and msg:find("Already moved, and `u` does NOT move them back: src/main/java/demo/billing -> src/main/java/demo/invoicing", 1, true) ~= nil
+      and not msg:find("Undo with `u` in each file listed.", 1, true),
+      ("returned %s; message: %s"):format(tostring(r), msg ~= "" and msg:sub(1, 400) or "NONE"))
+  end)
+  client.request_sync = real
   if not ok then error(err) end
 end)
 
