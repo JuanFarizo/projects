@@ -3360,6 +3360,9 @@ case("multi_module_roots", function()
   vim.fn.mkdir(R .. "/.git", "p")
   put("pom.xml", "<project/>\n"); put("mod/pom.xml", "<project/>\n"); put("mod2/pom.xml", "<project/>\n")
   put("g/build.gradle.kts", "\n")
+  -- nearest build file wins whatever the marker (no src root: the fallback path): repo/k2/pom.xml above repo/k2/sub/build.gradle.kts
+  put("k2/pom.xml", "<project/>\n"); put("k2/sub/build.gradle.kts", "\n")
+  local K2 = put("k2/sub/Bar.java", "class Bar {}\n")
   local A = put("mod/src/main/java/demo/billing/A.java", "package demo.billing;\n\npublic class A {}\n")
   local CTL = put("mod/src/main/java/demo/billing/Ctl.java", "package demo.billing;\n\n@RestController\npublic class Ctl {}\n")
   put("mod/src/main/java/demo/App.java", "package demo;\n\n@SpringBootApplication\npublic class App {}\n")
@@ -3373,7 +3376,8 @@ case("multi_module_roots", function()
     -- (a)
     local project = require("nv4j.root").project(A)
     local m_mod, m_g = refactor._module_root(A), refactor._module_root(G)
-    local a_ok = project == R and m_mod == R .. "/mod" and m_g == R .. "/g"
+    local m_k2 = refactor._module_root(K2)
+    local a_ok = project == R and m_mod == R .. "/mod" and m_g == R .. "/g" and m_k2 == R .. "/k2/sub"
     -- (b)
     local captured
     refactor.rename_paths = function(moves, label, c, o) captured = { moves = moves, label = label, opts = o }; return true end
@@ -3408,8 +3412,8 @@ case("multi_module_roots", function()
     local re, gote, cape = move_to(CTL, "web")
     local e_ok = re == true and cape ~= nil and table.concat(cape.opts.warn or {}, " | "):find("Spring: Ctl (@RestController) is now in web", 1, true) ~= nil
     lsp.report(P .. "multi_module_roots", a_ok and b_ok and c_ok and d_ok and e_ok,
-      ("(a) module_root %s (root.project %s), gradle %s; (b) rename_package moves %s; (c) move into demo.invoicing: %s; (d) test-stays note: %s; (e) Spring warning: %s"):format(
-        vim.fs.basename(m_mod), vim.fs.basename(project), vim.fs.basename(m_g), vim.inspect(vim.tbl_map(function(m) return m[1]:sub(#R + 2) end, mv)),
+      ("(a) module_root %s (root.project %s), gradle %s, nearest build file (no src root) %s; (b) rename_package moves %s; (c) move into demo.invoicing: %s; (d) test-stays note: %s; (e) Spring warning: %s"):format(
+        vim.fs.basename(m_mod), vim.fs.basename(project), vim.fs.basename(m_g), m_k2:sub(#R + 2), vim.inspect(vim.tbl_map(function(m) return m[1]:sub(#R + 2) end, mv)),
         c_ok and "refused" or ("NOT refused (" .. tostring(rc) .. "): " .. table.concat(vim.tbl_map(function(g) return g.msg end, gotc), " || ")),
         d_ok and "yes" or ("NO: " .. vim.inspect(capd and capd.opts.info)), e_ok and "yes" or ("NO: " .. vim.inspect(cape and cape.opts.warn))))
   end)
@@ -3522,6 +3526,116 @@ case("rename_package_part_way_message", function()
   end)
   client.request_sync = real
   if not ok then error(err) end
+end)
+
+-- rename_class_no_answer / _not_sent (re-review N1; deterministic stubs on client.request): a class rename whose request never
+-- gets an answer (refactor.rename_ms 400 ms) ends with a visible ERROR, on_done(false) once and `busy` cleared; an answer
+-- arriving later is ignored (nothing applied); a request that returns false (jdt.ls stopped) or throws ends at once the same way.
+case("rename_class_no_answer", function()
+  local inv = lsp.open(INVOICE)
+  lsp.open(CHECKOUT)
+  local real, real_ms = client.request, refactor.rename_ms
+  local late
+  client.request = function(self, m, params, handler, b)
+    if m ~= "textDocument/rename" then return real(self, m, params, handler, b) end
+    late = handler
+    return true, 1
+  end
+  refactor.rename_ms = 400
+  local ok, err = pcall(function()
+    local calls_done, last = 0, nil
+    vim.api.nvim_set_current_buf(inv)
+    local l, c = pos(inv, "^public class Invoice", "Invoice")
+    vim.api.nvim_win_set_cursor(0, { l + 1, c })
+    local got, stop = capture()
+    refactor.rename_class({ name = "Bill", on_done = function(x) calls_done, last = calls_done + 1, x end })
+    local busy_during = refactor._busy()
+    vim.wait(3000, function() return calls_done > 0 end, 10)
+    local busy_after = refactor._busy()
+    -- the answer that comes too late: a text edit that must NOT be applied
+    if late then late(nil, { changes = { [vim.uri_from_fname(INVOICE)] = { { range = { start = { line = 0, character = 0 }, ["end"] = { line = 0, character = 0 } }, newText = "// LATE\n" } } } }) end
+    stop()
+    local msg = find_msg(got, "jdt.ls did not answer in 400 ms", vim.log.levels.ERROR)
+    local d = F.diff(snap)
+    lsp.report(P .. "rename_class_no_answer", busy_during ~= nil and calls_done == 1 and last == false and msg ~= nil and busy_after == nil
+      and not E.text(inv):find("// LATE", 1, true) and #d.added + #d.changed + #d.missing == 0,
+      ("busy while pending %s; on_done x%d (%s); ERROR %s; busy after %s; late answer %s; disk %s"):format(vim.inspect(busy_during), calls_done, tostring(last),
+        msg and "yes" or "NONE", vim.inspect(busy_after), E.text(inv):find("// LATE", 1, true) and "APPLIED" or "ignored", F.fmt(d)))
+  end)
+  client.request, refactor.rename_ms = real, real_ms
+  if not ok then error(err) end
+end)
+
+case("rename_class_not_sent", function()
+  local inv = lsp.open(INVOICE)
+  local real = client.request
+  local ok, err = pcall(function()
+    local results = {}
+    for _, how in ipairs({ "false", "throws" }) do
+      client.request = function(self, m, params, handler, b)
+        if m ~= "textDocument/rename" then return real(self, m, params, handler, b) end
+        if how == "throws" then error("stub: client is gone") end
+        return false
+      end
+      local n, last = 0, nil
+      vim.api.nvim_set_current_buf(inv)
+      local l, c = pos(inv, "^public class Invoice", "Invoice")
+      vim.api.nvim_win_set_cursor(0, { l + 1, c })
+      local got, stop = capture()
+      refactor.rename_class({ name = "Bill", on_done = function(x) n, last = n + 1, x end })
+      stop()
+      results[#results + 1] = { how = how, n = n, last = last, busy = refactor._busy(), msg = find_msg(got, "the request could not be sent to jdt.ls", vim.log.levels.ERROR) }
+    end
+    client.request = real
+    local good = true
+    for _, r in ipairs(results) do good = good and r.n == 1 and r.last == false and r.busy == nil and r.msg ~= nil end
+    lsp.report(P .. "rename_class_not_sent", good, table.concat(vim.tbl_map(function(r)
+      return ("request %s: on_done x%d (%s), busy %s, message %s"):format(r.how, r.n, tostring(r.last), vim.inspect(r.busy), r.msg and "yes" or "NONE") end, results), "; "))
+  end)
+  client.request = real
+  if not ok then error(err) end
+end)
+
+-- rename_class_on_done_throws (re-review N4): a caller's on_done that throws after a successful rename is not called a second time.
+case("rename_class_on_done_throws", function()
+  local inv = lsp.open(INVOICE)
+  lsp.open(CHECKOUT)
+  vim.api.nvim_set_current_buf(inv)
+  local l, c = pos(inv, "^public class Invoice", "Invoice")
+  vim.api.nvim_win_set_cursor(0, { l + 1, c })
+  local n, args = 0, {}
+  local got, stop = capture()
+  refactor.rename_class({ name = "Bill", on_done = function(x) n = n + 1; args[#args + 1] = tostring(x); error("on_done boom") end })
+  vim.wait(4000, function() return n > 0 end, 10)
+  vim.wait(500)
+  stop()
+  lsp.report(P .. "rename_class_on_done_throws", n == 1 and args[1] == "true" and refactor._busy() == nil,
+    ("on_done called %d time(s) (%s); busy %s"):format(n, table.concat(args, ","), vim.inspect(refactor._busy())))
+end)
+
+-- rename_class_case_only_undo (re-review Q1): the two renames of a case-only rename (via the temporary name) form ONE undo step in each
+-- touched buffer: one `u` gives back the text from before (the file keeps its new name, as with any rename). SKIP on a case-sensitive FS.
+case("rename_class_case_only_undo", function()
+  if case_insensitive_fs() ~= true then return print("SKIP " .. P .. "rename_class_case_only_undo case-sensitive file system") end
+  local inv, chk, calc = lsp.open(INVOICE), lsp.open(CHECKOUT), lsp.open(CALC)
+  local before = { Checkout = E.text(chk), PriceCalculator = E.text(calc), Invoice = E.text(inv) }
+  vim.api.nvim_set_current_buf(inv)
+  local l, c = pos(inv, "^public class Invoice", "Invoice")
+  vim.api.nvim_win_set_cursor(0, { l + 1, c })
+  local res = {}
+  refactor.rename_class({ name = "INVOICE", on_done = function(ok) res.done = ok end })
+  vim.wait(8000, function() return res.done ~= nil end, 10)
+  local bad = {}
+  for name, path in pairs({ Checkout = CHECKOUT, PriceCalculator = CALC, Invoice = main .. "demo/billing/INVOICE.java" }) do
+    local b = vim.fn.bufnr(path)
+    if b == -1 or not vim.api.nvim_buf_is_loaded(b) then bad[#bad + 1] = name .. " (no buffer)"
+    else
+      vim.api.nvim_buf_call(b, function() vim.cmd("silent! undo") end)
+      if E.text(b) ~= before[name] then bad[#bad + 1] = name end
+    end
+  end
+  lsp.report(P .. "rename_class_case_only_undo", res.done == true and #bad == 0,
+    res.done == true and (#bad == 0 and "one u restored every touched buffer" or ("not restored by one u: " .. table.concat(bad, ", "))) or "rename not done")
 end)
 
 local left = F.diff(snap)

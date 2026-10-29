@@ -92,7 +92,10 @@ local function module_root(path)
   local start = vim.fn.isdirectory(path) == 1 and path or vim.fs.dirname(path)
   local sr = src_root_of(start)
   local m = sr and sr:match("^(.*)/src/[^/]+/java$")
-  m = m or vim.fs.root(start, MODULE_MARKERS)
+  if not m then -- nearest directory first, then any marker within it
+    local hit = vim.fs.find(MODULE_MARKERS, { upward = true, path = start, limit = 1 })[1]
+    m = hit and vim.fs.dirname(hit)
+  end
   return vim.fs.normalize(m or require("nv4j.root").project(path))
 end
 M._module_root = module_root -- checks
@@ -407,6 +410,7 @@ M._case_insensitive_at = case_insensitive_at -- checks
 --- `class NEW` and the summary still says renamed. Done in two real renames through a temporary name instead.
 local TMP_SUFFIX = "__Nv4jTmp"
 
+M.rename_ms = 10000 -- textDocument/rename: 0.4-1 s normally (19.7 s once, a jdt.ls stall); no answer by then ends it
 local rename_class_impl
 
 --- opts._quiet: step 1 of a case-only rename (no summary, scan or follow-up); opts._shown_old: the name the
@@ -417,9 +421,13 @@ function rename_class_impl(opts)
   local path = vim.api.nvim_buf_get_name(buf)
   local client = jdtls_for(path)
   local mine = false -- this call set `busy`: only it clears it
+  local called = false -- on_done once, even when it throws (the error handler below calls done again)
   local function done(ok)
     if mine then busy, mine = nil, false end
-    if opts.on_done then opts.on_done(ok) end
+    if opts.on_done and not called then
+      called = true
+      opts.on_done(ok)
+    end
     return ok
   end
   if busy then
@@ -495,6 +503,16 @@ function rename_class_impl(opts)
         return done(false)
       end
       local before = M.error_counts()
+      if opts._tmp_from then
+        -- step 2 of a case-only rename: its edits join step 1's undo block in each buffer they touch, so one
+        -- `u` per buffer gives back the text from before the whole rename
+        for _, f in ipairs(edit_files(edit)) do
+          local b = vim.fn.bufnr(f.from or f.path)
+          if b ~= -1 and vim.api.nvim_buf_is_loaded(b) then
+            pcall(vim.api.nvim_buf_call, b, function() vim.cmd("undojoin") end)
+          end
+        end
+      end
       local ok, files, why = apply(client, edit, dirty_buffers())
       if not ok then
         failed_part_way(label, why, files, root_of(client))
@@ -512,7 +530,10 @@ function rename_class_impl(opts)
       follow_up(label, before, vim.tbl_map(function(f) return f.path end, files))
       done(true)
     end
-    client:request("textDocument/rename", params, function(err, edit)
+    local settled = false
+    local pok, sent = pcall(client.request, client, "textDocument/rename", params, function(err, edit)
+      if settled then return end -- after the time limit (the rename was reported as not done): ignored
+      settled = true
       -- whatever goes wrong after the answer, the caller hears of it (on_done) and `busy` is cleared
       local ok, e = pcall(answered, err, edit)
       if not ok then
@@ -522,6 +543,23 @@ function rename_class_impl(opts)
         done(false)
       end
     end, buf)
+    -- the request was not sent (jdt.ls stopped, or the call threw): nothing will ever answer
+    if not pok or not sent then
+      settled = true
+      M.last = { label = label, files = {}, ok = false, err = "request not sent" }
+      notify(("Rename class %s -> %s: the request could not be sent to jdt.ls (%s); nothing changed"):format(old, name,
+        pok and "it is not running" or tostring(sent)), vim.log.levels.ERROR)
+      return done(false)
+    end
+    -- jdt.ls never answers (died, hung): `busy` must not stay set until Neovim restarts
+    vim.defer_fn(function()
+      if settled then return end
+      settled = true
+      M.last = { label = label, files = {}, ok = false, err = "no answer" }
+      notify(("Rename class %s -> %s: jdt.ls did not answer in %d ms; nothing changed (an answer arriving later is ignored)"):format(
+        old, name, M.rename_ms), vim.log.levels.ERROR)
+      done(false)
+    end, M.rename_ms)
   end
   if opts.name then return run(opts.name) end
   vim.ui.input({ prompt = ("Rename class %s to: "):format(old), default = old }, run)

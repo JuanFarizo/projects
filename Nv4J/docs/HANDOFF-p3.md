@@ -6,7 +6,7 @@ Read this first when resuming. The SDD ledger and reports live in `~/Documents/p
 
 - P1 and P2 are done and pushed. P3 Tasks 0 to 4 are done, plus the D25 `.nv4j` marker and the Task 2 minor fixes and the 5 s ceiling for interface-method change signature.
 - Task 5 status: docs pass done (README, `specs/001`, `003` "3c. P3 lessons", `005`, this file). NOT done yet: three consecutive full `tests/run.sh` runs recorded with every `DONE` line, whole-branch review on the most capable model, one fix wave plus scoped re-review, time-boxed look at the jdt.ls flakes, push to `main` (tell the user first), final wrap-up listing every "Ruling:" line of the ledger with the cost if wrong.
-- Checks added in P3: `60_tests_runner` 29, `61_scaffold` 27, `62_refactor` 114, `63_async_import` 28, `64_project_marker` 17.
+- Checks added in P3: `60_tests_runner` 29, `61_scaffold` 27, `62_refactor` 118 (116 on a case-sensitive file system: two cases SKIP), `63_async_import` 28, `64_project_marker` 17.
 - Several commits are not pushed (`git log origin/main..main`).
 
 ## How to resume
