@@ -400,6 +400,14 @@ Findings of the two final reviewers (R = refactor report, S = other report), fix
 | n62CB | `pcall(safe_delete_body, opts, st)` -> direct call | `safe_delete_throw` (error escapes; busy left set, so `safe_delete_unreadable` fails too) | `/tmp/nv4j/logs/test-20261029-093026.log` |
 | n62CC + n62CD | the two `pcall(M._readfile, ...)` -> direct calls | `safe_delete_unreadable` (returned false / stale_refs THREW E484) | `/tmp/nv4j/logs/test-20261029-093042.log` |
 
+**R-I2 (rename class async without `busy` or a stale check).** `rename_class` now takes `busy` ("rename class X") for the pending request and clears it on every exit (`done` owns it; the callback body runs under `pcall`, an error ends in `on_done(false)` and an ERROR). The changedtick snapshot (`tick_snapshot`) and the check (`stale_buffers`) are shared with change signature: a touched buffer that changed while jdt.ls computed the edit refuses the whole rename ("... changed while jdt.ls computed the edit; nothing changed (run it again)"). Cases (deterministic: jdt.ls's rename answer delayed by a stub): `rename_class_busy` (600 ms: a second rename, change signature, inline and safe delete refused while it is pending; the first completes), `rename_class_stale` (400 ms, Checkout typed into: refused whole, nothing on disk), `rename_class_finish_error` (stale_refs throws: on_done(false), ERROR, busy clear).
+
+| Control | Patch | Fails | Log |
+|---------|-------|-------|-----|
+| n62CE | `busy, mine = { label = ("rename class %s"):format(old) }, true` -> `mine = false` | `rename_class_busy` (safe delete / change signature went through: the case errors on the deleted `legacyTotal`) | `/tmp/nv4j/logs/test-20261029-093302.log` |
+| n62CF | stale check off (`local moved = {}`) | `rename_class_stale` (Bill.java created, PriceCalculator changed, Checkout edited, on_done true) | same |
+| n62CG | callback body without `pcall` | `rename_class_finish_error` (on_done never called) | same |
+
 ## Trial log
 
 | # | Change | Effect | Kept |

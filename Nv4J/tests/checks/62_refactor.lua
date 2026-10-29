@@ -3164,6 +3164,105 @@ case("safe_delete_unreadable", function()
   if not ok then error(err) end
 end)
 
+--- Delays jdt.ls's answer to `method` by `ms` (a deterministic window for a request in flight); returns the restore function.
+local function delay_request(method, ms)
+  local real = client.request
+  client.request = function(self, m, params, handler, b)
+    if m ~= method then return real(self, m, params, handler, b) end
+    return real(self, m, params, function(err, result, ctx) vim.defer_fn(function() handler(err, result, ctx) end, ms) end, b)
+  end
+  return function() client.request = real end
+end
+
+--- rename_class from Invoice's declaration, asynchronous: { ret, done = ok once on_done ran, got }.
+local function rc_async(inv, name)
+  vim.api.nvim_set_current_buf(inv)
+  local l, c = pos(inv, "^public class Invoice", "Invoice")
+  vim.api.nvim_win_set_cursor(0, { l + 1, c })
+  local res = {}
+  res.got, res.stop = capture()
+  res.ret = refactor.rename_class({ name = name, on_done = function(ok) res.done = ok end })
+  return res
+end
+
+-- rename_class_busy (deterministic: jdt.ls's rename answer delayed 600 ms): while a class rename is pending,
+-- a second rename, a change signature, an inline and a safe delete are refused ("a refactor is in
+-- progress (rename class Invoice)"); the first one then completes (Bill.java) and `busy` is cleared.
+case("rename_class_busy", function()
+  local inv, calc = lsp.open(INVOICE), lsp.open(CALC)
+  lsp.open(CHECKOUT)
+  local undo = delay_request("textDocument/rename", 600)
+  local ok, err = pcall(function()
+    local a = rc_async(inv, "Bill")
+    local busy_during = refactor._busy()
+    local want = "a refactor is in progress (rename class Invoice)"
+    local b = cs_at(calc, "public int legacyTotal%(", "legacyTotal", { name = "oldTotal" })
+    local c = inline_at(calc, "int gross = gross%(invoice%);", "gross(")
+    local d = sd_at(calc, "public int legacyTotal%(", "legacyTotal")
+    vim.api.nvim_set_current_buf(inv)
+    local got2, stop2 = capture()
+    local e = refactor.rename_class({ name = "Bill2" })
+    stop2()
+    local refused = b.ret == false and find_msg(b.got, want) ~= nil and c.ret == false and find_msg(c.got, want) ~= nil
+      and d.ret == false and find_msg(d.got, want) ~= nil and e == false and find_msg(got2, want) ~= nil
+    vim.wait(3000, function() return a.done ~= nil end, 5)
+    a.stop()
+    local after = a.done == true and vim.uv.fs_stat(BILL) ~= nil and vim.uv.fs_stat(INVOICE) == nil and refactor._busy() == nil
+      and vim.uv.fs_stat(main .. "demo/billing/Bill2.java") == nil
+    lsp.report(P .. "rename_class_busy", busy_during ~= nil and refused and after,
+      ("while pending: busy %s; change signature %s, inline %s, safe delete %s, second rename %s; first one: on_done %s, Bill.java %s, busy after %s"):format(
+        vim.inspect(busy_during), tostring(b.ret), tostring(c.ret), tostring(d.ret), tostring(e), tostring(a.done),
+        vim.uv.fs_stat(BILL) and "there" or "MISSING", vim.inspect(refactor._busy())))
+  end)
+  undo()
+  if not ok then error(err) end
+end)
+
+-- rename_class_stale (deterministic: the answer delayed 400 ms): Checkout (which the rename touches) is typed into
+-- while jdt.ls computes the edit: refused whole ("changed while jdt.ls computed the edit"), nothing applied
+-- (Invoice.java still there, no Bill.java, PriceCalculator untouched), the typed line kept, disk unchanged, busy clear.
+case("rename_class_stale", function()
+  local inv, chk, calc = lsp.open(INVOICE), lsp.open(CHECKOUT), lsp.open(CALC)
+  local before_calc = E.text(calc)
+  local undo = delay_request("textDocument/rename", 400)
+  local ok, err = pcall(function()
+    local a = rc_async(inv, "Bill")
+    append_line(chk, "// typed while jdt.ls works")
+    local typed = E.text(chk)
+    vim.wait(3000, function() return a.done ~= nil end, 5)
+    a.stop()
+    local msg = find_msg(a.got, "src/main/java/demo/shop/Checkout.java changed while jdt.ls computed the edit; nothing changed", vim.log.levels.WARN)
+    local d = F.diff(snap)
+    local good = a.done == false and msg ~= nil and vim.uv.fs_stat(INVOICE) ~= nil and vim.uv.fs_stat(BILL) == nil
+      and E.text(calc) == before_calc and E.text(chk) == typed and #d.added + #d.changed + #d.missing == 0 and refactor._busy() == nil
+    lsp.report(P .. "rename_class_stale", good, ("on_done %s; message %s; Invoice.java %s, Bill.java %s; PriceCalculator %s, Checkout %s; disk %s; busy %s"):format(
+      tostring(a.done), tostring(msg), vim.uv.fs_stat(INVOICE) and "kept" or "GONE", vim.uv.fs_stat(BILL) and "CREATED" or "absent",
+      E.text(calc) == before_calc and "untouched" or "CHANGED", E.text(chk) == typed and "only the typed line" or "EDITED",
+      #d.changed == 0 and "unchanged" or F.fmt(d), vim.inspect(refactor._busy())))
+  end)
+  undo()
+  if not ok then error(err) end
+end)
+
+-- rename_class_finish_error (stub): an error after jdt.ls answered (refactor.stale_refs throws): on_done(false), an ERROR
+-- names it, `busy` cleared, the next refactor is not refused.
+case("rename_class_finish_error", function()
+  local inv = lsp.open(INVOICE)
+  lsp.open(CHECKOUT)
+  local real = refactor.stale_refs
+  refactor.stale_refs = function() error("injected rename error") end
+  local ok, err = pcall(function()
+    local a = rc_async(inv, "Bill")
+    vim.wait(5000, function() return a.done ~= nil end, 5)
+    a.stop()
+    local m = find_msg(a.got, "injected rename error", vim.log.levels.ERROR)
+    lsp.report(P .. "rename_class_finish_error", a.done == false and m ~= nil and refactor._busy() == nil,
+      ("on_done %s; ERROR %s; busy %s"):format(tostring(a.done), m and "yes" or "NONE", vim.inspect(refactor._busy())))
+  end)
+  refactor.stale_refs = real
+  if not ok then error(err) end
+end)
+
 local left = F.diff(snap)
 lsp.report(P .. "fixture_restored", #left.added + #left.changed + #left.missing == 0, "left: " .. F.fmt(left))
 lsp.finish()

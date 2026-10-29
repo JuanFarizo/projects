@@ -269,6 +269,31 @@ local function dirty_buffers()
   return out
 end
 
+--- changedtick of every loaded buffer now: { [path] = tick }. Taken when an edit is asked of jdt.ls.
+local function tick_snapshot()
+  local ticks = {}
+  for _, b in ipairs(vim.api.nvim_list_bufs()) do
+    if vim.api.nvim_buf_is_loaded(b) then ticks[vim.api.nvim_buf_get_name(b)] = vim.api.nvim_buf_get_changedtick(b) end
+  end
+  return ticks
+end
+
+--- Paths (project-relative) of the loaded buffers `edit` touches that changed since `ticks` (typed into while
+--- jdt.ls computed the edit; or loaded and modified since). The edit would land at stale positions there
+--- (Neovim version-checks only the first document change): the caller refuses it whole.
+local function stale_buffers(edit, ticks, root)
+  local moved = {}
+  for _, f in ipairs(edit_files(edit)) do
+    local p = f.from or f.path
+    local b = vim.fn.bufnr(p)
+    if b ~= -1 and vim.api.nvim_buf_is_loaded(b) then
+      local was = ticks[p]
+      if (was and vim.api.nvim_buf_get_changedtick(b) ~= was) or (not was and vim.bo[b].modified) then moved[#moved + 1] = rel(p, root) end
+    end
+  end
+  return moved
+end
+
 local function write(path)
   local b = vim.fn.bufnr(path)
   if b == -1 or not vim.api.nvim_buf_is_loaded(b) or not vim.bo[b].modified then return nil end
@@ -353,7 +378,9 @@ function M.rename_class(opts)
   local buf = vim.api.nvim_get_current_buf()
   local path = vim.api.nvim_buf_get_name(buf)
   local client = jdtls_for(path)
+  local mine = false -- this call set `busy`: only it clears it
   local function done(ok)
+    if mine then busy, mine = nil, false end
     if opts.on_done then opts.on_done(ok) end
     return ok
   end
@@ -380,7 +407,13 @@ function M.rename_class(opts)
     -- an existing class of that name: jdt.ls refuses ("Compilation unit 'X.java' already exists"), shown below
     local label = ("Renamed class %s -> %s"):format(old, name)
     local params = { textDocument = { uri = vim.uri_from_bufnr(buf) }, position = { line = l, character = c }, newName = name }
-    client:request("textDocument/rename", params, function(err, edit)
+    if busy then -- another refactor started while the name was being typed
+      notify("Rename class: " .. busy_msg() .. "; nothing changed", vim.log.levels.WARN)
+      return done(false)
+    end
+    local ticks = tick_snapshot()
+    busy, mine = { label = ("rename class %s"):format(old) }, true
+    local function answered(err, edit)
       if err then
         notify(("Rename class %s -> %s: jdt.ls refused (%s); nothing changed"):format(old, name, err.message or vim.inspect(err)),
           vim.log.levels.ERROR)
@@ -388,6 +421,13 @@ function M.rename_class(opts)
       end
       if not edit then
         notify(("Rename class %s -> %s: jdt.ls returned no change"):format(old, name), vim.log.levels.WARN)
+        return done(false)
+      end
+      -- the edit was computed on the buffers as they were when it was asked for (see change_signature)
+      local moved = stale_buffers(edit, ticks, root_of(client))
+      if #moved > 0 then
+        notify(("Rename class %s -> %s: %s changed while jdt.ls computed the edit; nothing changed (run it again)"):format(old, name,
+          table.concat(moved, ", ")), vim.log.levels.WARN)
         return done(false)
       end
       local before = M.error_counts()
@@ -403,6 +443,16 @@ function M.rename_class(opts)
       notify(summary(label, files, root_of(client)) .. stale_note(stale, old, cut, unread), (#stale > 0 or cut or #unread > 0) and vim.log.levels.WARN or nil)
       follow_up(label, before, vim.tbl_map(function(f) return f.path end, files))
       done(true)
+    end
+    client:request("textDocument/rename", params, function(err, edit)
+      -- whatever goes wrong after the answer, the caller hears of it (on_done) and `busy` is cleared
+      local ok, e = pcall(answered, err, edit)
+      if not ok then
+        M.last = { label = label, files = {}, ok = false, err = tostring(e) }
+        notify(("Rename class %s -> %s FAILED after jdt.ls answered (%s); files in an earlier summary line, if any, may be changed: undo with `u` there"):format(
+          old, name, tostring(e)), vim.log.levels.ERROR)
+        done(false)
+      end
     end, buf)
   end
   if opts.name then return run(opts.name) end
@@ -1835,15 +1885,7 @@ function M.change_signature(opts)
       -- the edit was computed on the buffers as they were when it was asked for: a buffer it touches that
       -- changed since (typed into while jdt.ls worked) would get it at stale positions (Neovim skips a
       -- versioned edit for a newer buffer, with only a message): refused whole, nothing applied
-      local moved = {}
-      for _, f in ipairs(edit_files(edit)) do
-        local p = f.from or f.path
-        local b = vim.fn.bufnr(p)
-        if b ~= -1 and vim.api.nvim_buf_is_loaded(b) then
-          local was = ticks[p]
-          if (was and vim.api.nvim_buf_get_changedtick(b) ~= was) or (not was and vim.bo[b].modified) then moved[#moved + 1] = rel(p, root) end
-        end
-      end
+      local moved = stale_buffers(edit, ticks, root)
       if #moved > 0 then
         return refuse(("%s changed while jdt.ls computed the edit; nothing changed (run it again)"):format(table.concat(moved, ", ")), vim.log.levels.WARN)
       end
@@ -1927,9 +1969,7 @@ function M.change_signature(opts)
       follow_up(label, before, paths)
       return done(true)
     end
-    for _, b in ipairs(vim.api.nvim_list_bufs()) do
-      if vim.api.nvim_buf_is_loaded(b) then ticks[vim.api.nvim_buf_get_name(b)] = vim.api.nvim_buf_get_changedtick(b) end
-    end
+    ticks = tick_snapshot()
     busy, mine = { label = ("change signature of %s"):format(name) }, true
     if async then
       notify(("Changing signature of %s... (jdt.ls is computing it; a method with implementations takes a few seconds)"):format(name))
