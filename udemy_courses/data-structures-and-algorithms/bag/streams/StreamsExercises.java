@@ -1,14 +1,5 @@
-import static java.util.Objects.compare;
 import static java.util.stream.Collectors.counting;
 import static java.util.stream.Collectors.groupingBy;
-
-import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.LinkedHashMap;
-import java.util.stream.Collector;
-import java.util.stream.Collector;
-import java.util.stream.Collectors;
-import java.util.stream.IntStream;
 
 void main() {
     String test = "The quick brown fox jumps over the lazy dog. The end!";

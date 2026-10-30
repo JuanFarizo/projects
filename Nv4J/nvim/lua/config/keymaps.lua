@@ -276,6 +276,7 @@ end, { desc = "Run Java main (terminal, no debugger)" })
 -- ── Run Spring Boot (nv4j/run.lua, check 41_run) ──────────────────────────
 -- Main class from jdt.ls, project JDK, build before launch. Output in a terminal split:
 -- <C-c> (normal mode) stops the app, q stops it and closes the split.
+require("nv4j.settings") -- :Nv4jMark
 map("n", "<leader>rs", function()
   require("nv4j.run").spring_boot()
 end, { desc = "Run Spring Boot app" })

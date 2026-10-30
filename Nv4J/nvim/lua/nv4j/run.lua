@@ -549,6 +549,8 @@ function M.spring_boot(opts)
   if opts.profile == "" then opts.profile = nil end
   local root, client = project_root()
   if not root then return notify("No pom.xml or build.gradle above this buffer", vim.log.levels.WARN) end
+  -- Saved defaults from `.nv4j` (D27). Caller's opts win; rp does not write the file.
+  opts = require("nv4j.settings").apply(opts, root)
   local bname = vim.api.nvim_buf_get_name(0)
   local module_root = bname ~= "" and not bname:find("^%a[%w+.-]*://") and vim.fs.root(0, BUILD_MARKERS) or nil
   if module_root and not (module_root == root or module_root:sub(1, #root + 1) == root .. "/") then module_root = nil end
