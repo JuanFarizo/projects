@@ -16,6 +16,7 @@
 --                   buffer, extras markdown + prettier in lazyvim.json, vim.g.autoformat still false.
 --  not_ported     : smear-cursor, mini.animate, vtsls, snacks image, nvim-lint luacheck are not in the plugin list / spec;
 --                   no lang.typescript extra; ts-autotag only for html and xml.
+--  os_keys        : with vim.g.nv4j_mod = "A" (Linux) the comment, jump and terminal-tab keys are on Alt and no <D-...> key exists; "D" (Mac) the reverse (child nvims, control n65j).
 --  startup        : REPORT-ONLY: median of 3 `nvim --startuptime` runs on a plain text file, so no jdt.ls (PASS with the ms; FAIL only if
 --                   the time cannot be read). The new plugins must not be loaded in it.
 --  claude_restore : VimLeavePre autocmd registered (group nv4j_claude_panel) and writes the state file under
@@ -93,7 +94,9 @@ end
 -- ── comment_key ──────────────────────────────────────────────────────────────────────────────────
 do
   local ok_all, err = pcall(function()
-    local kn, kx, ki = map("<D-/>", "n"), map("<D-/>", "x"), map("<D-/>", "i")
+    local APP = vim.g.nv4j_mod or (vim.uv.os_uname().sysname == "Darwin" and "D" or "A")
+    local CK = "<" .. APP .. "-/>"
+    local kn, kx, ki = map(CK, "n"), map(CK, "x"), map(CK, "i")
     local keys_ok = (kn.rhs or "") == "gcc" and (kx.rhs or "") == "gc" and ki.callback ~= nil
       and kn.desc == "Toggle comment" and kx.desc == "Toggle comment" and ki.desc == "Toggle comment"
     local buf = vim.api.nvim_create_buf(true, true)
@@ -107,7 +110,7 @@ do
     vim.cmd("normal gcc") -- back to plain
     -- <D-/> through its mapping (feedkeys with remap, "x" = execute now)
     vim.api.nvim_win_set_cursor(0, { 2, 0 })
-    vim.api.nvim_feedkeys(vim.keycode("<D-/>"), "mx", false)
+    vim.api.nvim_feedkeys(vim.keycode(CK), "mx", false)
     local nline = vim.api.nvim_buf_get_lines(buf, 1, 2, false)[1]
     local n_ok = nline:find("^//") ~= nil
     -- insert mode: the callback comments the line and keeps the cursor on the same character
@@ -120,14 +123,14 @@ do
     -- visual
     vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "int a = 1;", "int b = 2;" })
     vim.cmd("normal ggVj")
-    vim.api.nvim_feedkeys(vim.keycode("<D-/>"), "mx", false)
+    vim.api.nvim_feedkeys(vim.keycode(CK), "mx", false)
     local x_lines = vim.api.nvim_buf_get_lines(buf, 0, 2, false)
     local x_ok = x_lines[1]:find("^//") ~= nil and x_lines[2]:find("^//") ~= nil
     vim.cmd("stopinsert")
     pcall(vim.api.nvim_buf_delete, buf, { force = true })
     lsp.report(P .. "comment_key", keys_ok and gcc_ok and n_ok and i_ok and x_ok,
-      ("<D-/> n/x/i mapped %s (n=%s x=%s i=%s); gcc -> %q; <D-/> normal -> %q; insert -> %q cursor col %d on %q; visual -> %q / %q")
-        :format(tostring(keys_ok), tostring(kn.rhs), tostring(kx.rhs), kn.desc and "fn" or "nil", gcc, nline, iline, col,
+      ("%s n/x/i mapped %s (n=%s x=%s i=%s); gcc -> %q; <D-/> normal -> %q; insert -> %q cursor col %d on %q; visual -> %q / %q")
+        :format(CK, tostring(keys_ok), tostring(kn.rhs), tostring(kx.rhs), kn.desc and "fn" or "nil", gcc, nline, iline, col,
           iline:sub(col + 1, col + 1), x_lines[1], x_lines[2]))
   end)
   if not ok_all then lsp.report(P .. "comment_key", false, "error: " .. tostring(err)) end
@@ -259,6 +262,47 @@ do
   local ft_ok = #at_ft == 2 and vim.tbl_contains(at_ft, "html") and vim.tbl_contains(at_ft, "xml")
   lsp.report(P .. "not_ported", #found == 0 and ft_ok,
     ("found (want none): %s; nvim-ts-autotag ft = %s (want html, xml)"):format(#found == 0 and "none" or table.concat(found, ", "), table.concat(at_ft, ",")))
+end
+
+-- ── os_keys ──────────────────────────────────────────────────────────────────────────────────────
+-- Cmd keys exist on a Mac only: with vim.g.nv4j_mod = "A" (what Linux gets) comment, jump and terminal-tab keys sit on Alt and
+-- no <D-...> key is mapped; with "D" (Mac) the reverse. Each side is a child nvim that reads the real keymaps.
+do
+  local function probe(mod)
+    local out = "/tmp/nv4j/logs/65-oskeys-" .. mod .. "-" .. vim.fn.getpid() .. ".txt"
+    local script = "/tmp/nv4j/65-oskeys-" .. vim.fn.getpid() .. ".lua"
+    vim.fn.writefile({
+      "pcall(require, 'lazyvim.config.keymaps'); pcall(require, 'config.keymaps')",
+      "local function has(l, m) return vim.fn.maparg(l, m) ~= '' end",
+      "local r = {}",
+      "for _, p in ipairs({ { '<%s-/>', 'n' }, { '<%s-/>', 'x' }, { '<%s-/>', 'i' }, { '<%s-Left>', 'n' }, { '<%s-Right>', 'n' }, { '<%s-]>', 't' }, { '<%s-[>', 't' } }) do",
+      "  for _, k in ipairs({ 'A', 'D' }) do r[#r + 1] = k .. ':' .. p[1]:format(k):sub(4) .. ':' .. p[2] .. '=' .. tostring(has(p[1]:format(k), p[2])) end",
+      "end",
+      "vim.fn.writefile(r, '" .. out .. "')",
+    }, script)
+    pcall(vim.fn.system, { "nvim", "--headless", "--cmd", "let g:nv4j_mod='" .. mod .. "'", "-c", "luafile " .. script, "-c", "qa!" })
+    local lines = vim.fn.filereadable(out) == 1 and vim.fn.readfile(out) or {}
+    vim.fn.delete(out)
+    vim.fn.delete(script)
+    return lines
+  end
+  local function check(mod, lines)
+    local want, bad = mod, {}
+    if #lines ~= 14 then return false, { "no result (" .. #lines .. " lines)" } end
+    for _, l in ipairs(lines) do
+      local k, v = l:match("^(%u):.*=(%a+)$")
+      if (k == want) ~= (v == "true") then bad[#bad + 1] = l end
+    end
+    return #bad == 0, bad
+  end
+  local lines_a = probe("A")
+  local ok_a, bad_a = check("A", lines_a)
+  local ok_d, bad_d = check("D", probe("D"))
+  -- control (n65j): a probe that claims "A" but is judged as "D" must fail
+  local ctl = check("D", lines_a)
+  lsp.report(P .. "os_keys", ok_a and ok_d and not ctl,
+    ("A: %s %s; D: %s %s; control (A judged as D) fails: %s"):format(tostring(ok_a), table.concat(bad_a, ","), tostring(ok_d),
+      table.concat(bad_d, ","), tostring(not ctl)))
 end
 
 -- ── startup (report-only) ────────────────────────────────────────────────────────────────────────

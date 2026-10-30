@@ -77,7 +77,7 @@ Extract uses jdt.ls: `<leader>cxv` variable, `<leader>cxc` constant, `<leader>cx
 - Definition `gd`, references `gr`, implementation `gI`, hover `K`.
 - Hierarchy `<leader>cS` / `<leader>cP`, calls `<leader>ci` / `<leader>cO`.
 - Files `<C-p>`, grep `<C-o>`, methods in this file `<C-m>`, file tree `<C-b>`.
-- Terminal `<C-/>`, comment a line `<D-/>` (or `gcc`), AI agents `<leader>a` (Claude `<leader>ac`, Cursor `<leader>ak`).
+- Terminal `<C-/>`, comment a line `<D-/>` on a Mac, `<A-/>` on Linux (or `gcc` anywhere), AI agents `<leader>a` (Claude `<leader>ac`, Cursor `<leader>ak`).
 - Next problem `]d` or `<F8>`, all problems `<leader>xx`.
 
 ## 9. Switch the Java version

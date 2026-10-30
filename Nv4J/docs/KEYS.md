@@ -88,7 +88,7 @@ Keys marked **Java buffer** exist only in a Java file after jdt.ls has attached.
 | `]]` / `[[` | Next / previous reference | LazyVim |
 | `<C-m>` | Methods of the current file (needs the kitty keyboard protocol, else it acts as Enter) | `config/keymaps.lua` |
 | `<leader>ss` / `<leader>sS` | Symbols of the file / workspace | LazyVim |
-| `<D-Left>` / `<D-Right>` | Jump back / forward (kitty on macOS) | `config/keymaps.lua` |
+| `<D-Left>` / `<D-Right>` (Linux: `<A-Left>` / `<A-Right>`) | Jump back / forward | `config/keymaps.lua` |
 
 ## Diagnostics
 
@@ -125,7 +125,7 @@ Keys marked **Java buffer** exist only in a Java file after jdt.ls has attached.
 | `<Tab>` / `<S-Tab>` (normal mode) | Next / previous buffer |
 | `<C-q>` | Close the buffer |
 | `<leader>w` / `<leader>W` / `<leader>q` | Save / save all / quit |
-| `<C-/>` (or `<C-_>`, what terminals send for it) | Toggle terminal (LazyVim core; `<C-t>` in it: new terminal tab, `<D-]>` / `<D-[>`: next / previous). `<C-j>` is window navigation again (LazyVim) |
+| `<C-/>` (or `<C-_>`, what terminals send for it) | Toggle terminal (LazyVim core; `<C-t>` in it: new terminal tab, `<D-]>` / `<D-[>`, Linux `<A-]>` / `<A-[>`: next / previous). `<C-j>` is window navigation again (LazyVim) |
 | `<C-t>` | New scratch note (persistent) |
 
 ## Editing
@@ -134,7 +134,7 @@ Keys marked **Java buffer** exist only in a Java file after jdt.ls has attached.
 |-----|------|
 | `<A-Down>` / `<A-Up>` | Move line or selection down / up |
 | `<C-S-d>` | Duplicate line or selection |
-| `<D-/>` (normal, visual, insert; kitty on macOS) | Toggle comment (`gcc` / `gc` work everywhere; `<C-/>` is the terminal now) |
+| `<D-/>` on a Mac, `<A-/>` on Linux (normal, visual, insert) | Toggle comment (`gcc` / `gc` work everywhere; `<C-/>` is the terminal now) |
 | `ga` / `gA` | Align text (mini.align) |
 | `<C-z>` / `<C-S-z>` | Undo / redo |
 | `<C-d>` | Expand selection (in insert mode: leave insert and select the word) |

@@ -118,12 +118,19 @@ map("n", "<C-t>", function()
 end, { desc = "New scratch note (persistent)" })
 
 -- ── Navigation ────────────────────────────────────────────────────
--- Cmd+Left/Right jump the cursor history (macOS back/forward navigation style,
--- like browser back/forward — Option is left alone for macOS Unicode input).
+-- The "app" modifier: Cmd (<D-...>, kitty on macOS) on a Mac, Alt (<A-...>) everywhere else. macOS keeps Option
+-- free for Unicode input, and Linux has no Cmd key to forward. `vim.g.nv4j_mod = "D"` or "A" in init forces one.
+local MOD = vim.g.nv4j_mod or (vim.uv.os_uname().sysname == "Darwin" and "D" or "A")
+local function appkey(k)
+  return ("<%s-%s>"):format(MOD, k)
+end
+
+-- App+Left/Right jump the cursor history (back/forward navigation style,
+-- like browser back/forward).
 -- Ctrl+Left/Right left at LazyVim's default (window-resize) since terminals
 -- commonly reserve Ctrl+Left/Right for word-jump before nvim ever sees them.
-map("n", "<D-Left>", "<C-o>", { desc = "Jump backward" })
-map("n", "<D-Right>", "<C-i>", { desc = "Jump forward" })
+map("n", appkey("Left"), "<C-o>", { desc = "Jump backward" })
+map("n", appkey("Right"), "<C-i>", { desc = "Jump forward" })
 
 -- ── Toggles ────────────────────────────────────────────────────────
 -- Same mechanism LazyVim core already uses for <leader>uw (Snacks.toggle),
@@ -194,10 +201,10 @@ local function cycle_terminal(step)
   target:show():focus()
 end
 
-map("t", "<D-]>", function()
+map("t", appkey("]"), function()
   cycle_terminal(1)
 end, { desc = "Next terminal tab" })
-map("t", "<D-[>", function()
+map("t", appkey("["), function()
   cycle_terminal(-1)
 end, { desc = "Previous terminal tab" })
 
@@ -401,9 +408,9 @@ local function toggle_comment_insert()
   local delta = #vim.api.nvim_get_current_line() - before
   vim.api.nvim_win_set_cursor(0, { row, math.max(col + delta, 0) })
 end
-map("n", "<D-/>", "gcc", { desc = "Toggle comment", remap = true })
-map("x", "<D-/>", "gc", { desc = "Toggle comment", remap = true })
-map("i", "<D-/>", toggle_comment_insert, { desc = "Toggle comment" })
+map("n", appkey("/"), "gcc", { desc = "Toggle comment", remap = true })
+map("x", appkey("/"), "gc", { desc = "Toggle comment", remap = true })
+map("i", appkey("/"), toggle_comment_insert, { desc = "Toggle comment" })
 
 -- ── Toggle hlchunk indent guides (lua/plugins/hlchunk.lua; snacks indent/scope are off) ──
 -- Off at start (hlchunk's indent module is not even created when enable = false, so there is no
