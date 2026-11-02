@@ -10,7 +10,7 @@ Accepting a completion returns control with the item text inserted <= 100 ms; th
 
 The import is added synchronously by the insert handler (`java/java-impl/src/com/intellij/codeInsight/completion/JavaClassNameInsertHandler.java`: `PsiTypeLookupItem.addImportForItem`) because the PSI is in-process; javadoc for the popup is computed separately and lazily. Insert and import are one undoable command.
 
-## jdt.ls / blink mechanism (installed: jdt.ls 1.62.0; blink.cmp v1.10.2 `78336bc`)
+## jdt.ls / blink mechanism (installed: jdt.ls 1.63.0; blink.cmp v1.10.2 `78336bc`)
 
 - jdt.ls sends the import (`additionalTextEdits`) only in `completionItem/resolve`, the same request that renders the javadoc: 0.4 to 0.8 s for well documented types (P1, `specs/features/diagnostics-imports-actions.md`).
 - blink's accept (`lua/blink/cmp/completion/accept/init.lua`): `sources.resolve(ctx, item):timeout(resolve_timeout_ms):catch(return item)`, then `apply_item` (text edit + additionalTextEdits together), then `sources.execute` and only then the callback. Nv4J sets `resolve_timeout_ms = 1500` (`plugins/blink.lua`), so the text waits for resolve.

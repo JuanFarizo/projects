@@ -7,7 +7,7 @@ Priority: P2 (blocker for the rest of P2). Status: debug works (Task 1: `DONE 40
 - LazyVim `lang.java` extra (LazyVim `99970099`, 2026-09-08) passes `init_options.bundles` to jdt.ls: `$MASON/share/java-debug-adapter/com.microsoft.java.debug.plugin-*jar` (java-debug 0.53.2) plus every jar in `$MASON/share/java-test/` (java-test 0.43.1, 34 files: the plugin twice, the runner fat jar, jacoco agent, JUnit 5 and 6 jars, asm). On `LspAttach` it calls `jdtls.setup_dap()` and `jdtls.dap.setup_dap_main_class_configs()` (its `dap_main = {}` option).
 - nvim-jdtls (`6e9d953`, 2026-05-20) `jdtls.dap.fetch_main_configs` (used by `setup_dap_main_class_configs`, `:JdtUpdateDebugConfig` and nv4j's `<leader>rj`): `vscode.java.resolveMainClass`, then for every main class, in parallel, `vscode.java.checkProjectSettings` / java exec lookup and `vscode.java.resolveClasspath` (`lua/jdtls/dap.lua` 617-660). Each config is `request = launch`, `console = integratedTerminal`.
 - nvim-dap (`cfa2d58`, 2026-09-11) asks jdt.ls for a debug session port (`vscode.java.startDebugSession`) and runs the debuggee through `runInTerminal` in a terminal buffer. nvim-dap-ui (`cc9dd33`) opens its windows on start.
-- jdt.ls 1.62 (Mason `jdtls`, plugins dated 2026-09), m2e.jdt 2.5.300, jdt.launching 3.24.400. Reference clone `~/.cache/nv4j/eclipse.jdt.ls` at `b52e20aa46fa53e2372948aac26310597a78f25a` (sparse: read files with `git show HEAD:<path>`).
+- jdt.ls 1.63.0 (Mason `jdtls`, plugins dated 2026-09), m2e.jdt 2.5.300, jdt.launching 3.24.400. Reference clone `~/.cache/nv4j/eclipse.jdt.ls` at `b52e20aa46fa53e2372948aac26310597a78f25a` (sparse: read files with `git show HEAD:<path>`).
 
 ## Step 1: the reproduced warning
 

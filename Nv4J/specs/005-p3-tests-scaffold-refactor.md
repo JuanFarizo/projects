@@ -30,7 +30,7 @@ A daily workflow close to IntelliJ for tests (nearest, class, project, failed, r
 | `intellij-community` | `b633034bb` | `java/java-impl/src/com/intellij/ide/actions/`, `java/java-impl/resources/fileTemplates/`, `java/java-impl/src/com/intellij/testIntegration/`, `java/java-impl-refactorings/src/com/intellij/refactoring/{rename,move,inline,changeSignature,safeDelete}/`, `plugins/junit/src/com/intellij/execution/junit/`, `platform/smRunner/src/com/intellij/execution/testframework/sm/runner/` |
 | `eclipse.jdt.ls` | `b52e20a` | `org.eclipse.jdt.ls.core/src/org/eclipse/jdt/ls/core/internal/text/`, `.../internal/corext/` (handlers and corrections were already there) |
 | `eclipse.jdt.core` | `cd40048` | none: the refactoring engine (`org.eclipse.jdt.internal.corext.refactoring`) is in `org.eclipse.jdt.core.manipulation` (eclipse.jdt.ui repo); the installed jar `org.eclipse.jdt.core.manipulation_1.26.0` is what runs |
-| installed | jdt.ls 1.62.0, java-test bundle 0.43.1 (Mason), nvim-jdtls `6e9d953`, blink.cmp v1.10.2 `78336bc`, which-key `3aab214` | |
+| installed | jdt.ls 1.63.0, java-test bundle 0.43.1 (Mason), nvim-jdtls `6e9d953`, blink.cmp v1.10.2 `78336bc`, which-key `3aab214` | |
 
 Nothing copied from any of them.
 

@@ -35,8 +35,13 @@
 --                 block), never on a plain one; the answer is the Boot jdt.ls's.
 --  classpath_attach: late-starting Boot jdt.ls (LspAttach) registered once however many buffers attach, none for
 --                 plain or already registered; removeClasspathListener reaches every Boot jdt.ls and clears the state.
+--  classpath_retry: a Boot jdt.ls that rejects addClasspathListener (error reply) is retried on a timer (capped; not
+--                 after remove/stop/success); route_paths also covers the single-slash file:/ projectUri the Spring LS sends.
 --  two_boot_shared: real second Boot project: second jdt.ls, ONE Spring LS process and client on both, listener on the
 --                 second jdt.ls through the real LspAttach path.
+--  two_boot_index: the same Spring LS (workspace folder = project A only) answers for what exists only in B: B's request
+--                 mapping and bean (workspace/symbol) and B's configuration property key (completion in B's
+--                 application.properties), A's own still there. No workspace folder is needed: B arrives by jdt.ls classpath events.
 -- Timings: /tmp/nv4j/logs/latency.jsonl (spring_ready, spring_props_first, spring_props_warm_p95,
 -- spring_hover). The fixture file is only edited in memory and restored.
 vim.o.confirm = false
@@ -367,6 +372,11 @@ local function route_setup()
   vim.fn.writefile({ "<project><groupId>r</groupId><artifactId>C</artifactId></project>" }, ROUTE .. "/C/pom.xml")
   vim.uv.fs_symlink(ROUTE .. "/B", ROUTE .. "/linkB")
 end
+local function seen_for(seen, who)
+  local out = {}
+  for _, r in ipairs(seen) do if r.who == who then out[#out + 1] = r end end
+  return out
+end
 local function mk_stub(seen, label, id, root, opts)
   opts = opts or {}
   return {
@@ -374,7 +384,11 @@ local function mk_stub(seen, label, id, root, opts)
     is_stopped = function() return false end,
     request = function(_, _, params, cb)
       seen[#seen + 1] = { who = label, cmd = params and params.command, args = params and params.arguments }
-      if not opts.silent and cb then cb(nil, opts.answer or vim.NIL) end
+      if opts.fail and cb and (opts.fail == true or #seen_for(seen, label) <= opts.fail) then
+        cb({ code = -32603, message = "stub: command rejected" }) -- error reply (opts.fail = number of leading errors, true = always)
+      elseif not opts.silent and cb then
+        cb(nil, opts.answer or vim.NIL)
+      end
       return true
     end,
   }
@@ -448,6 +462,9 @@ local ok5, err5 = pcall(function()
   with_stubs(all, ROUTE .. "/A/src/Cur.java", function()
     local link = S.route_client({ projectUri = "file://" .. ROUTE .. "/linkB/src/X.java" }, all)
     if link ~= sB then bad[#bad + 1] = "symlink projectUri -> " .. tostring(link and link.label) .. " (want B)" end
+    -- the Spring LS writes projectUri as "file:/path" (one slash, Java File.toURI()): must match like "file:///path"
+    local one = S.route_client({ projectUri = "file:" .. ROUTE .. "/B" }, all)
+    if one ~= sB then bad[#bad + 1] = "single-slash file:/ projectUri -> " .. tostring(one and one.label) .. " (want B, not the current buffer's A)" end
     local pre = route_log_size()
     local un = S.route_client({ projectUri = "file:///nowhere/Z/x.java" }, all)
     local logged = route_log_tail(pre)
@@ -545,6 +562,50 @@ local ok5, err5 = pcall(function()
   lsp.report(P .. "classpath_attach", #bad4 == 0,
     #bad4 == 0 and "late Boot starter: 3 attaches -> 1 registration; fan-out-registered A: 0 extra; plain C: 0; remove: A and D, state cleared, no later send"
       or table.concat(bad4, "; "))
+
+  -- classpath_retry: a Boot jdt.ls that REJECTS addClasspathListener (error reply) would never send its classpath to
+  -- the Spring LS; the registration is retried on a timer (state.retry_ms shortened here), stops after the limit, stops
+  -- when the listener is removed, never retries a stopped client, never sends twice while one is accepted.
+  local bad5 = {}
+  local seen5 = {}
+  local e5 = mk_stub(seen5, "E", 131, ROUTE .. "/D", { fail = 2 }) -- two errors, then accepts
+  local f5 = mk_stub(seen5, "F", 132, ROUTE .. "/B", { fail = true }) -- always rejects
+  local g5 = mk_stub(seen5, "G", 133, ROUTE .. "/A", { fail = true }) -- rejects, then removed
+  local h5 = mk_stub(seen5, "H", 134, ROUTE .. "/D", { fail = true }) -- rejects, then stopped
+  local o_retry = S._state.retry_ms
+  S._state.retry_ms = 20
+  local function attach5(c) vim.api.nvim_exec_autocmds("LspAttach", { group = "nv4j_spring_route", data = { client_id = c.id } }) end
+  with_stubs({ e5, f5, g5, h5 }, ROUTE .. "/A/src/Cur.java", function()
+    S._state.classpath_args = { "cb5" }
+    attach5(e5)
+    vim.wait(3000, function() return count(seen5, "E", "sts.java.addClasspathListener") >= 3 end, 10)
+    vim.wait(300) -- no fourth send once accepted
+    local ne = count(seen5, "E", "sts.java.addClasspathListener")
+    if ne ~= 3 then bad5[#bad5 + 1] = "E (2 errors then ok) sent " .. ne .. " times (want 3)" end
+    if S._state.registered[e5] ~= "cb5" then bad5[#bad5 + 1] = "E not registered after the retries: " .. tostring(S._state.registered[e5]) end
+    attach5(e5)
+    if count(seen5, "E", "sts.java.addClasspathListener") ~= 3 then bad5[#bad5 + 1] = "attach after success sent again" end
+    attach5(f5)
+    vim.wait(3000, function() return count(seen5, "F", "sts.java.addClasspathListener") >= 5 end, 10)
+    vim.wait(600)
+    local nf = count(seen5, "F", "sts.java.addClasspathListener")
+    if nf ~= 5 then bad5[#bad5 + 1] = "F (always rejects) sent " .. nf .. " times (want 1 + 4 retries)" end
+    attach5(g5)
+    S._state.classpath_args = nil -- removeClasspathListener
+    vim.wait(300)
+    local ng = count(seen5, "G", "sts.java.addClasspathListener")
+    if ng ~= 1 then bad5[#bad5 + 1] = "G retried after the listener was removed (" .. ng .. " sends)" end
+    S._state.classpath_args = { "cb5" }
+    attach5(h5)
+    h5.is_stopped = function() return true end
+    vim.wait(300)
+    local nh = count(seen5, "H", "sts.java.addClasspathListener")
+    if nh ~= 1 then bad5[#bad5 + 1] = "H retried after it stopped (" .. nh .. " sends)" end
+  end)
+  S._state.retry_ms = o_retry
+  lsp.report(P .. "classpath_retry", #bad5 == 0,
+    #bad5 == 0 and "rejected addClasspathListener: retried until accepted (2 errors -> 3 sends), capped at 1+4, none after remove or stop, none after success"
+      or table.concat(bad5, "; "))
 end)
 if not ok5 then lsp.report(P .. "jdtls_route", false, "error: " .. tostring(err5)) end
 
@@ -561,10 +622,33 @@ local ok6, err6 = pcall(function()
     "<parent><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-parent</artifactId>",
     "<version>3.5.13</version><relativePath/></parent>",
     "<groupId>twob</groupId><artifactId>twob</artifactId><version>1</version>",
-    "<properties><maven.compiler.release>21</maven.compiler.release></properties></project>",
+    "<properties><maven.compiler.release>21</maven.compiler.release></properties>",
+    -- web starter: B's controller/bean annotations resolve; the configuration processor writes B's own
+    -- target/classes/META-INF/spring-configuration-metadata.json (the Spring LS reads property keys from there).
+    "<dependencies><dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-web</artifactId></dependency>",
+    "<dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-configuration-processor</artifactId><optional>true</optional></dependency></dependencies></project>",
   }, dir .. "/pom.xml")
   vim.fn.writefile({ "package twob;", "class App { int x; }" }, dir .. "/src/main/java/twob/App.java")
+  -- Things that exist ONLY in B (case two_boot_index): a request mapping, a bean, a configuration property.
+  vim.fn.writefile({
+    "package twob;",
+    "import org.springframework.web.bind.annotation.GetMapping;",
+    "import org.springframework.web.bind.annotation.RestController;",
+    "@RestController public class TwoBOnlyController {",
+    '  @GetMapping("/twob-only-path") public String hi() { return "b"; }',
+    "}",
+  }, dir .. "/src/main/java/twob/TwoBOnlyController.java")
+  vim.fn.writefile({
+    "package twob;",
+    "import org.springframework.boot.context.properties.ConfigurationProperties;",
+    '@ConfigurationProperties(prefix = "twob.cfg") public class TwoBProps {',
+    "  private int limit; public int getLimit() { return limit; } public void setLimit(int l) { limit = l; }",
+    "}",
+  }, dir .. "/src/main/java/twob/TwoBProps.java")
   vim.fn.writefile({ "server.port=9091" }, dir .. "/src/main/resources/application.properties")
+  local jh = vim.fn.fnamemodify(vim.fn.resolve(vim.fn.exepath("java")), ":h:h") -- the JDK 21 on PATH; release 21
+  local mvn_out = vim.fn.system({ "env", "JAVA_HOME=" .. jh, "mvn", "-q", "-f", dir .. "/pom.xml", "compile" })
+  local mvn_rc = vim.v.shell_error
   local bbuf = lsp.open(dir .. "/src/main/java/twob/App.java")
   local bj = lsp.wait_ready(bbuf, 120000)
   local bsp = bj and wait_attach(bbuf, 20000)
@@ -585,6 +669,57 @@ local ok6, err6 = pcall(function()
         tostring(bsp and bsp.id == client.id), #spring_all, #spring_pids(),
         routed_b == bj and "B's jdt.ls" or "WRONG", routed_a == jdtls and "A's jdt.ls" or "WRONG",
         tostring(reg_b), tostring(want_id), table.concat(folders, ",")))
+
+  -- two_boot_index: the ONE Spring LS (workspace folder = project A only, see the folders above) answers for what only
+  -- B contains: B's request mapping and bean (workspace/symbol @/ and @+) and B's configuration property key
+  -- (completion in B's application.properties). B reaches the LS through its jdt.ls classpath events (the listener
+  -- registered on B's jdt.ls), not through a workspace folder. A's own mapping must still be there.
+  local ok7, err7 = pcall(function()
+    local function syms(q)
+      local r = client:request_sync("workspace/symbol", { query = q }, 6000, bbuf)
+      local out = {}
+      for _, x in ipairs(r and r.result or {}) do out[#out + 1] = x.name .. " @ " .. (x.location and x.location.uri or "") end
+      return out
+    end
+    local function any(list, pat)
+      for _, n in ipairs(list) do
+        if n:find(pat, 1, true) then return true end
+      end
+      return false
+    end
+    local pbufb
+    vim.cmd("edit " .. vim.fn.fnameescape(dir .. "/src/main/resources/application.properties"))
+    pbufb = vim.api.nvim_get_current_buf()
+    vim.wait(20000, function() return #vim.lsp.get_clients({ bufnr = pbufb, name = NAME }) > 0 end, 20)
+    vim.api.nvim_buf_set_lines(pbufb, 0, -1, false, { "twob.cfg.li" })
+    local function prop_items()
+      local r = client:request_sync("textDocument/completion",
+        { textDocument = { uri = vim.uri_from_bufnr(pbufb) }, position = { line = 0, character = 11 } }, 6000, pbufb)
+      local res = r and r.result or {}
+      local labels = {}
+      for _, it in ipairs(res.items or res) do labels[#labels + 1] = it.label end
+      return labels
+    end
+    local maps, beans, props = {}, {}, {}
+    local t0 = E.now()
+    local deadline = vim.uv.now() + 60000 -- each request below is bounded (6 s), so is the loop
+    repeat
+      maps, beans, props = syms("@/"), syms("@+"), prop_items()
+      if any(maps, "twob-only-path") and any(beans, "TwoBOnlyController") and vim.tbl_contains(props, "twob.cfg.limit") then break end
+      vim.wait(2000)
+    until vim.uv.now() > deadline
+    local waited = E.now() - t0
+    local m_ok, b_ok = any(maps, "twob-only-path"), any(beans, "TwoBOnlyController")
+    local p_ok = vim.tbl_contains(props, "twob.cfg.limit")
+    local a_ok = any(maps, "@/hello") and any(beans, "GreetingController")
+    local only_a = #folders == 1 and (folders[1]):find("fixtures/demo", 1, true) ~= nil
+    lsp.report(P .. "two_boot_index", mvn_rc == 0 and m_ok and b_ok and p_ok and a_ok and only_a,
+      ("Spring LS (workspace folder only A: %s) answers for B after %.0f ms: request mapping /twob-only-path %s, bean TwoBOnlyController %s, "
+        .. "property twob.cfg.limit %s (%d items); A's /hello and GreetingController still there: %s; B compile rc %d%s"):format(
+        tostring(only_a), waited, tostring(m_ok), tostring(b_ok), tostring(p_ok), #props, tostring(a_ok), mvn_rc,
+        mvn_rc ~= 0 and (" " .. mvn_out:sub(1, 200)) or ""))
+  end)
+  if not ok7 then lsp.report(P .. "two_boot_index", false, "error: " .. tostring(err7)) end
 end)
 if not ok6 then lsp.report(P .. "two_boot_shared", false, "error: " .. tostring(err6)) end
 lsp.finish()

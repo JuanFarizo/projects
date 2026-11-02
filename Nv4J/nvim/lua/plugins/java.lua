@@ -177,6 +177,8 @@ return {
         require("nv4j.debug").on_attach(client)
         -- Test keys (nv4j/tests.lua) for this buffer (LazyVim's are off: opts.test = false above).
         require("nv4j.tests").bind(args.buf)
+        -- One WARN per jdt.ls at 2 GB RSS, never a limit (nv4j/memwatch.lua).
+        require("nv4j.memwatch").start()
       end
       -- The "Publish Diagnostics" / "Building" / "Validate documents" toasts
       -- (bottom-right, checkmark list) are jdtls's $/progress notifications,

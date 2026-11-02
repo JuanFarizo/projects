@@ -85,7 +85,8 @@ local function as_path(path)
     path = path.projectUri or path.uri or (type(path.projectUris) == "table" and path.projectUris[1])
   end
   if type(path) ~= "string" or path == "" then return nil end
-  if path:find("://", 1, true) then
+  -- "file:///p" and the single-slash "file:/p" the Spring LS sends (Java File.toURI()); vim.uri_to_fname reads both.
+  if path:find("://", 1, true) or path:find("^file:") then
     local ok, fname = pcall(vim.uri_to_fname, path)
     return ok and fname or path
   end
@@ -180,13 +181,28 @@ local registered = setmetatable({}, { __mode = "k" })
 local state = { registered = registered }
 M._state = state
 
+-- A jdt.ls that rejects addClasspathListener (error reply, e.g. its Spring bundle not active yet on a loaded
+-- machine) would never send that project's classpath to the Spring LS: retried RETRIES times, RETRY_MS * 2^n apart.
+local RETRIES = 4
+state.retry_ms = 1000 -- tests shorten it
+
 --- Fire-and-forget (no wait, no UI block): listener (un)registration on a jdt.ls other than the one that answers.
-local function send_async(c, command, param)
+--- A rejected ADD is retried on a timer (never waits) while that listener is still wanted and the client is alive.
+local function send_async(c, command, param, attempt)
+  attempt = attempt or 0
   local util = require("spring_boot.util")
   local id = param and param[1]
   if command == ADD then registered[c] = id else registered[c] = nil end
   util.execute_command(c, command, param, function(err)
-    if err and command == ADD and registered[c] == id then registered[c] = nil end
+    if not (err and command == ADD and registered[c] == id) then return end
+    registered[c] = nil
+    M.route_log(("addClasspathListener rejected by jdt.ls %s (root %s): %s"):format(
+      tostring(c.id), tostring(c.config and c.config.root_dir), vim.inspect(err):gsub("%s+", " "):sub(1, 120)))
+    if attempt >= RETRIES then return end
+    vim.defer_fn(function()
+      local want = state.classpath_args
+      if live(c) and registered[c] == nil and want and want[1] == id then send_async(c, ADD, param, attempt + 1) end
+    end, state.retry_ms * 2 ^ attempt)
   end)
 end
 

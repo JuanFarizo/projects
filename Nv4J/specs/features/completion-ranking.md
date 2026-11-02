@@ -13,7 +13,7 @@ Pass/fail tests: `tests/checks/10_completion_latency.lua` (latency, result count
 | eclipse.jdt.ls | `~/.cache/nv4j/eclipse.jdt.ls` | `b52e20a` | EPL-2.0 |
 | blink.cmp v1.10.2 | `~/.local/share/nv4j/lazy/blink.cmp` | `78336bc` | MIT |
 
-The installed server is jdt.ls 1.62.0 with jdt.core 3.48.0 (Mason). The clones are current `master`, so line-level details can differ slightly from what runs. Nothing below is copied code. EPL-2.0 code must not be copied into this repo without its header and a note.
+The installed server is jdt.ls 1.63.0 with jdt.core 3.48.0 (Mason). The clones are current `master`, so line-level details can differ slightly from what runs. Nothing below is copied code. EPL-2.0 code must not be copied into this repo without its header and a note.
 
 ## How IntelliJ orders Java completion
 

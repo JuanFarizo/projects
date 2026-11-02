@@ -109,6 +109,8 @@ fi
 for check in "${CHECKS[@]}"; do
   name="$(basename "$check")"
   echo "== $name" | tee -a "$LOG"
+  # load and other jdt.ls/java processes at the start of each check: a slow or stalled jdt.ls run can be matched to a busy machine afterwards (flake C)
+  echo "load: $(uptime | sed 's/.*averages: *//'), java processes: $(pgrep -x java | wc -l | tr -d ' ')" >>"$LOG"
   case "$name" in
     50_*|51_*|52_*)
       if [ "$SPRING_MISSING" = 1 ]; then

@@ -22,7 +22,7 @@ Planted sources: `tests/fixtures/planted/*.java.txt` (they declare `public class
 | nvim-jdtls | `~/.local/share/nv4j/lazy/nvim-jdtls` | `6e9d953` | (plugin install) |
 | blink.cmp v1.10.2 | `~/.local/share/nv4j/lazy/blink.cmp` | | (plugin install) |
 
-Installed server: jdt.ls 1.62.0, jdt.core 3.48.0, m2e 2.8.0 (Mason). The clones are `master`, so line numbers can differ slightly from what runs. No code copied.
+Installed server: jdt.ls 1.63.0, jdt.core 3.48.0, m2e 2.8.0 (Mason). The clones are `master`, so line numbers can differ slightly from what runs. No code copied.
 
 Not in the sparse clones (so not checked, only user-visible behaviour is cited): IntelliJ's `ShowAutoImportPass`/`ImportHelper` internals beyond the code-style table, the IntelliJ Maven sync UI (closed `maven` plugin parts), jdt.core's `ImportRewriteAnalyzer` (import grouping was measured instead of read).
 

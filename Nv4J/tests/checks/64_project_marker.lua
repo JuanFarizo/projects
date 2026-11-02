@@ -22,18 +22,22 @@
 --                   `.nv4j` dir, cross-directory reference resolves (no error in alpha/A.java using
 --                   beta/B.java), the planted error in gamma/C.java is reported.
 --  one_workspace  : one -data dir among the jdtls-data dirs of the 4 candidate roots (project + 3 subdirs).
---  rss            : RSS of that jdt.ls process, REPORT-ONLY: PASS with the measured MB in the detail; FAIL only when the pid
---                   cannot be found or its RSS cannot be read. The 2 GB figure is a proposal (specs/001 D25), not a budget
---                   (user ruling: stays "proposed", not applied).
+--  rss            : RSS of that jdt.ls process: PASS with the measured MB in the detail; FAIL only when the pid
+--                   cannot be found or its RSS cannot be read. No threshold here: jdt.ls memory has no limit (user ruling
+--                   2026-11-02); the 2 GB warning is nv4j/memwatch.lua, covered by memwatch_unit.
+--  memwatch_unit  : stub clients and stubbed RSS (no jdt.ls), memwatch.check: below the threshold no warning; at or above
+--                   exactly one (title Nv4J, names the root and the MB); a second sample adds none; threshold 0 never
+--                   warns; a non-jdtls client is ignored; a restarted client (new id) warns again.
 --  cap_unit       : stub clients, loose-root cap (vim.g.nv4j_loose_max): refused only for a loose root with the cap
 --                   reached by other running loose clients; same root, .nv4j/build roots, stopped clients, max=0 and
 --                   max=2 with 1 running allowed; one "Not starting a second jdt.ls" warning per refused root.
 --  warn           : without `.nv4j`, two sibling loose dirs -> one client (the second is refused: no jdt.ls on its
 --                   files), exactly one WARN (title Nv4J, both roots, common parent, ".nv4j"); more files add none.
+--  memwatch_live  : real jdt.ls, vim.g.nv4j_jdtls_warn_mb = 50 and nv4j_memwatch_ms = 1000 set before it attaches: exactly one
+--                   "jdt.ls for <root> uses N MB" WARN within 60 s, none more 5 s later, timer stopped after the client stopped.
 --  warn_off       : vim.g.nv4j_loose_max = 0 -> two clients and one "Starting a second jdt.ls" warning (old behaviour).
 local lsp = require("lsp")
 local P = "64_project_marker."
-local RSS_PROPOSED_KB = 2048 * 1024 -- 2 GB, proposed from 1257 to 1294 MB measured for this project (specs/001 D25): printed, never enforced
 
 local TMP = "/tmp/nv4j/d25-" .. vim.fn.getpid()
 vim.fn.delete(TMP, "rf")
@@ -243,6 +247,43 @@ do
   vim.fn.delete(TMP .. "/home", "rf")
 end
 
+-- ── memwatch_unit (stub clients, stubbed RSS, no jdt.ls) ──────────────────────────────────────
+do
+  local ok_m, e_m = pcall(function()
+    local mw = require("nv4j.memwatch")
+    local function cl(id, name, r) return { id = id, name = name, config = { root_dir = r } } end
+    local sent, rssmb = {}, {}
+    local function note(msg, level, o) sent[#sent + 1] = { msg = msg, level = level, title = o and o.title } end
+    local rss_of = function(c) return rssmb[c.id] end
+    local warned = {}
+    local a, sp = cl(1, "jdtls", "/p/a"), cl(9, "spring-boot", "/p/a")
+    rssmb[1], rssmb[9] = 2047, 9000
+    mw.check({ a, sp }, rss_of, warned, note, 2048)
+    local below = #sent
+    rssmb[1] = 2048
+    mw.check({ a, sp }, rss_of, warned, note, 2048)
+    local at = #sent
+    local m = sent[1] or {}
+    rssmb[1] = 3000
+    mw.check({ a, sp }, rss_of, warned, note, 2048)
+    local again = #sent
+    local w0, n0 = {}, #sent
+    mw.check({ a }, rss_of, w0, note, 0)
+    local off = #sent - n0
+    local b = cl(2, "jdtls", "/p/a") -- restarted: new client
+    rssmb[2] = 2500
+    mw.check({ b }, rss_of, warned, note, 2048)
+    local restarted = #sent
+    local ok = below == 0 and at == 1 and again == 1 and off == 0 and restarted == 2 and m.level == vim.log.levels.WARN
+      and m.title == "Nv4J" and (m.msg or ""):find("/p/a", 1, true) ~= nil and (m.msg or ""):find("2048", 1, true) ~= nil
+      and (m.msg or ""):find(".nv4j", 1, true) ~= nil
+    lsp.report(P .. "memwatch_unit", ok,
+      ("warnings: below threshold %d (want 0), at it %d (want 1), second sample %d (want 1), threshold 0 added %d (want 0), restarted client %d total (want 2); spring client ignored; text %q")
+        :format(below, at, again, off, restarted, m.msg or ""))
+  end)
+  if not ok_m then lsp.report(P .. "memwatch_unit", false, "error: " .. tostring(e_m)) end
+end
+
 -- ── helpers for the integration cases ──────────────────────────────────────────────────────────
 local function data_dir(c)
   local cmd = c.config.cmd or {}
@@ -335,8 +376,7 @@ local ok_all, err = pcall(function()
   local pid = clients[1] and pid_of(clients[1])
   local rss = rss_kb(pid)
   lsp.report(P .. "rss", rss ~= nil,
-    rss and ("jdt.ls pid %s RSS %.0f MB for 3 files in 3 dirs (report-only; proposed 2 GB, %s it)"):format(pid, rss / 1024,
-      rss <= RSS_PROPOSED_KB and "under" or "OVER")
+    rss and ("jdt.ls pid %s RSS %.0f MB for 3 files in 3 dirs"):format(pid, rss / 1024)
       or ("jdt.ls process or its RSS not found (pid %s)"):format(tostring(pid)))
 end)
 if not ok_all then lsp.report(P .. "single_client", false, "error: " .. tostring(err)) end
@@ -395,6 +435,51 @@ if not ok_all then lsp.report(P .. "warn_off", false, "error: " .. tostring(err)
 vim.g.nv4j_loose_max = nil
 stop_all()
 vim.notify = orig_notify
+
+-- ── memwatch_live: the real timer path (needs a real jdt.ls) ───────────────────────────────────
+-- Threshold 50 MB and a 1 s period are set before the jdt.ls attaches (the timer is restarted first: an earlier case
+-- may have started it with the defaults). Exactly one WARN "jdt.ls for <root> uses N MB", still one 5 s later,
+-- and the timer is gone once the client has stopped (the next tick sees no jdt.ls).
+local MW = TMP .. "/mw"
+write(MW .. "/.nv4j")
+write(MW .. "/M.java", "public class M {}\n")
+ok_all, err = pcall(function()
+  local mw = require("nv4j.memwatch")
+  mw.stop()
+  local warns = {}
+  local nf = vim.notify
+  vim.notify = function(msg, level, o)
+    if type(msg) == "string" and msg:find("^jdt.ls for ") then warns[#warns + 1] = msg end
+    return nf(msg, level, o)
+  end
+  vim.g.nv4j_jdtls_warn_mb, vim.g.nv4j_memwatch_ms = 50, 1000
+  local ok_in, e_in = pcall(function()
+    local t0 = vim.uv.now()
+    local _, c = open_ready(MW .. "/M.java")
+    if not c then return lsp.report(P .. "memwatch_live", false, "jdt.ls not ready (prerequisite)") end
+    vim.wait(60000, function() return #warns >= 1 end, 100)
+    local first_ms = vim.uv.now() - t0
+    local n1 = #warns
+    vim.wait(5000, function() return false end, 100)
+    local n2 = #warns
+    c:stop()
+    vim.wait(15000, function() return c:is_stopped() end, 100)
+    stop_all()
+    vim.wait(4000, function() return false end, 100) -- >= 3 ticks of 1 s with no jdt.ls
+    local m1 = warns[1] or ""
+    local mb = tonumber(m1:match("uses (%d+) MB"))
+    local timer_gone = not mw._timer_active()
+    lsp.report(P .. "memwatch_live", n1 == 1 and n2 == 1 and m1:find("jdt.ls for " .. MW, 1, true) == 1 and mb ~= nil and mb >= 50 and timer_gone,
+      ("threshold 50 MB, period 1 s: %d warning after %.0f ms from opening the file (want 1), %d after 5 s more (want 1): %q; timer stopped after the client stopped: %s")
+        :format(n1, first_ms, n2, m1:sub(1, 80), tostring(timer_gone)))
+  end)
+  vim.notify = nf
+  vim.g.nv4j_jdtls_warn_mb, vim.g.nv4j_memwatch_ms = nil, nil
+  mw.stop()
+  if not ok_in then error(e_in) end
+end)
+if not ok_all then lsp.report(P .. "memwatch_live", false, "error: " .. tostring(err)) end
+stop_all()
 
 -- cleanup: temp tree and the jdt.ls dirs of the roots this check made (exact names only)
 for r in pairs(roots_made) do

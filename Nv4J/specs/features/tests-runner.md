@@ -13,7 +13,7 @@ Run nearest test: result visible <= 10 s from the key press, warm (second run of
 - Results stream into the SM test runner tree (`platform/smRunner/src/com/intellij/execution/testframework/sm/runner/SMTestProxy.java`, `GeneralToSMTRunnerEventsConvertor.java`): pass/fail/ignored counts, failure message, stack trace with links to lines (`SMTestLocator`). "Rerun failed tests" reruns exactly the failed leaves.
 - The runner ignores surefire's `excludedGroups`: a tagged-out class still runs from the editor.
 
-## jdt.ls / java-test mechanism (installed: jdt.ls 1.62.0, java-test bundle 0.43.1 in Mason, nvim-jdtls `6e9d953`)
+## jdt.ls / java-test mechanism (installed: jdt.ls 1.63.0, java-test bundle 0.43.1 in Mason, nvim-jdtls `6e9d953`)
 
 - Test discovery: `vscode.java.test.findTestTypesAndMethods` (or the older `vscode.java.test.search.codelens`) on a file URI returns a tree of test items (`fullName`, `testLevel` Class 5 / Method 6, `testKind`, `jdtHandler`, `range`, `children` for methods, nested classes as items).
 - Launch arguments: `vscode.java.test.junit.argument` with `{ projectName, testLevel, testKind, testNames }` returns `mainClass` (JDT's `RemoteTestRunner`), `classpath`, `programArguments` with `-port <n>`. nvim-jdtls adds the test-scope classpath from `java.project.getClasspaths`.
