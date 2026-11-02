@@ -45,8 +45,23 @@ local function warn_broad(dir)
   end)
 end
 
+local function has_build(dir)
+  if not dir then return false end
+  for _, marker in ipairs(M.build_markers) do
+    if vim.uv.fs_stat(dir .. "/" .. marker) then return true end
+  end
+  return false
+end
+
+local function under(parent, dir)
+  parent, dir = vim.fs.normalize(parent), vim.fs.normalize(dir)
+  return dir == parent or dir:sub(1, #parent + 1) == parent .. "/"
+end
+
 --- Project root of `path`, first rule that applies:
----  1. the nearest dir with a `.nv4j` file (D25), so every directory below it shares one jdt.ls;
+---  1. the nearest dir with a `.nv4j` file (D25), so every directory below it shares one jdt.ls,
+---     except: a `.nv4j` with no build file of its own does not steal a Maven/Gradle module sitting
+---     under it (jdt.ls has no pom at that root, so the child's pom would be ignored);
 ---  2. the nearest build-marker dir, or the repo's .git root when that root has a build marker itself
 ---     (multi-module Maven: prefer the repo root over a submodule's own pom.xml);
 ---  3. a loose file (nothing above it) gets its own dir, never an unrelated enclosing git repo: that
@@ -57,52 +72,77 @@ end
 ---@return string root, boolean has_marker, "nv4j"|"build"|"loose" kind
 function M.project(path)
   local nv4j_root = vim.fs.root(path, { M.project_marker })
+  local marker_root = vim.fs.root(path, M.build_markers)
   if nv4j_root then
     if M.home_or_above(nv4j_root) then warn_broad(nv4j_root) end
-    for _, marker in ipairs(M.build_markers) do
-      if vim.uv.fs_stat(nv4j_root .. "/" .. marker) then return nv4j_root, true, "nv4j" end
-    end
-    return nv4j_root, false, "nv4j"
+    -- pom next to the marker: aggregator / normal Maven project.
+    if has_build(nv4j_root) then return nv4j_root, true, "nv4j" end
+    -- no pom beside it: still the root for loose files. Do not swallow a child module's pom
+    -- (one jdt.ls at a folder with no pom.xml is an invisible project: Maven classpath dies).
+    local child_build = marker_root and marker_root ~= nv4j_root and under(nv4j_root, marker_root)
+    if not child_build then return nv4j_root, false, "nv4j" end
   end
-  local marker_root = vim.fs.root(path, M.build_markers)
   if not marker_root then
     return vim.fs.dirname(path), false, "loose"
   end
   local git_root = vim.fs.root(path, { ".git" })
   if git_root then
-    for _, marker in ipairs(M.build_markers) do
-      if vim.uv.fs_stat(git_root .. "/" .. marker) then
-        return git_root, true, "build"
-      end
-    end
+    if has_build(git_root) then return git_root, true, "build" end
   end
   return marker_root, true, "build"
 end
 
 local warned_loose = {}
---- D25 visibility: once per root, a WARN when a jdt.ls is about to start for a loose-file root (no
---- build marker, no `.nv4j`) while a jdt.ls for another loose-file root is running. Never blocks the
---- start. Called by plugins/java.lua's opts.jdtls (each Java buffer attach); `clients` defaults to the
---- live jdtls clients (tests pass stubs). Returns the message when it warned.
+local function running(c)
+  if c.is_stopped and c:is_stopped() then return false end
+  if c.is_stopping and c:is_stopping() then return false end
+  return true
+end
+--- D25 cap: when a jdt.ls is about to start for a loose-file root (no build marker, no `.nv4j`) and
+--- `vim.g.nv4j_loose_max` (default 1; 0 = no cap) loose-root jdt.ls already run for other roots, the start is
+--- refused (second return value true; plugins/java.lua's start_or_attach guard honours it) and a WARN says so,
+--- once per root. Below the cap (or cap 0) it only warns once, never blocks. Roots of kind "nv4j"/"build" and
+--- attaching to a running client of the same root are never capped. Stopped/stopping clients do not count, and
+--- nothing is remembered about a refusal except that its warning was shown. Called by opts.jdtls on each Java
+--- buffer attach; `clients` defaults to the live jdtls clients (tests pass stubs).
+---@return string? msg the warning text when one was shown now (nil on a repeat), boolean refused
 function M.warn_loose(root, clients)
-  if not root or warned_loose[root] then return nil end
+  if not root then return nil, false end
   clients = clients or vim.lsp.get_clients({ name = "jdtls" })
-  local other
+  local others, other = 0, nil
   for _, c in ipairs(clients) do
-    local r = c.config and c.config.root_dir
-    if r == root then return nil end -- attaching to a running client, nothing starts
-    if r and not other and select(3, M.project(r .. "/x.java")) == "loose" then other = r end
+    if running(c) then
+      local r = c.config and c.config.root_dir
+      if r == root then warned_loose[root] = nil return nil, false end -- attaching to a running client, nothing starts
+      if r and select(3, M.project(r .. "/x.java")) == "loose" then
+        others = others + 1
+        other = other or r
+      end
+    end
   end
-  if not other or select(3, M.project(root .. "/x.java")) ~= "loose" then return nil end
+  if not other or select(3, M.project(root .. "/x.java")) ~= "loose" then
+    warned_loose[root] = nil -- nothing blocks this root now: a later refusal warns again
+    return nil, false
+  end
+  local max = vim.g.nv4j_loose_max
+  if type(max) ~= "number" then max = 1 end
+  local refused = max > 0 and others >= max
+  if warned_loose[root] then return nil, refused end
   warned_loose[root] = true
   local parent = root
   while parent ~= "/" and other:sub(1, #parent + 1) ~= parent .. "/" do parent = vim.fs.dirname(parent) end
-  local msg = ("Starting a second jdt.ls (about 1 GB or more) for loose Java files in %s while one runs for %s. "
-    .. "To use one jdt.ls for both, create an empty .nv4j file in %s and restart Neovim.")
-    :format(root, other, M.too_broad(parent) and "the project folder that holds both"
-      or ("their common parent (" .. parent .. ")"))
+  local where = M.too_broad(parent) and "the project folder that holds both" or ("their common parent (" .. parent .. ")")
+  local msg
+  if refused then
+    msg = ("Not starting a second jdt.ls (about 1 GB or more) for loose Java files in %s: one already runs for %s, "
+      .. "so this file opens without LSP. To use one jdt.ls for both, create an empty .nv4j file in %s and restart Neovim "
+      .. "(or raise vim.g.nv4j_loose_max)."):format(root, other, where)
+  else
+    msg = ("Starting a second jdt.ls (about 1 GB or more) for loose Java files in %s while one runs for %s. "
+      .. "To use one jdt.ls for both, create an empty .nv4j file in %s and restart Neovim."):format(root, other, where)
+  end
   vim.notify(msg, vim.log.levels.WARN, { title = "Nv4J" })
-  return msg
+  return msg, refused
 end
 
 local function read(path)
@@ -211,14 +251,45 @@ function M.boot_module(root, module)
   return dirs[1]
 end
 
+--- Whether paths compare case-insensitively (macOS and Windows file systems; vim.g.nv4j_case_fold = true|false
+--- forces it, for tests).
+function M.case_insensitive()
+  if vim.g.nv4j_case_fold ~= nil then return vim.g.nv4j_case_fold == true end
+  return vim.fn.has("mac") == 1 or vim.fn.has("win32") == 1
+end
+
+--- Canonical form for comparing paths: normalised, symlinks resolved (vim.uv.fs_realpath of the deepest
+--- existing ancestor, so a path that does not exist yet still resolves), case folded only where the FS is
+--- case-insensitive.
+function M.canon(path)
+  local p = vim.fs.normalize(path)
+  local rest = ""
+  local cur = p
+  while cur ~= "" do
+    local rp = vim.uv.fs_realpath(cur)
+    if rp then
+      rp = vim.fs.normalize(rp)
+      p = (rp == "/" and "" or rp) .. rest
+      if p == "" then p = "/" end
+      break
+    end
+    local parent = vim.fs.dirname(cur)
+    if not parent or parent == cur then break end
+    rest = "/" .. vim.fs.basename(cur) .. rest
+    cur = parent
+  end
+  if p ~= "/" then p = p:gsub("/+$", "") end
+  return M.case_insensitive() and p:lower() or p
+end
+
 --- The jdt.ls client whose root is `path` or its deepest ancestor, or nil. `clients` defaults to the
 --- live jdtls clients (tests pass stubs). Shared by nv4j/run.lua and nv4j/debug.lua.
 function M.client_for_path(path, clients)
   if not path or path == "" then return nil end
-  path = vim.fs.normalize(path)
+  path = M.canon(path)
   local best, best_len
   for _, c in ipairs(clients or vim.lsp.get_clients({ name = "jdtls" })) do
-    local r = c.config and c.config.root_dir and vim.fs.normalize(c.config.root_dir)
+    local r = c.config and c.config.root_dir and M.canon(c.config.root_dir)
     if r and (path == r or path:sub(1, #r + 1) == r .. "/") and (not best_len or #r > best_len) then
       best, best_len = c, #r
     end

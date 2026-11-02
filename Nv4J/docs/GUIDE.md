@@ -16,7 +16,7 @@ Without a marker, each folder gets its own jdt.ls (about 1.3 GB each). Mark the 
 touch ~/code/my-practice-folder/.nv4j
 ```
 
-Restart Neovim. Now one jdt.ls serves every folder below the `.nv4j`, and classes in sibling folders see each other. Put `.nv4j` in the top folder of the project, not in `$HOME`. If a second jdt.ls starts anyway, Nv4J warns you once and tells you where to put the file.
+Restart Neovim. Now one jdt.ls serves every folder below the `.nv4j`, and classes in sibling folders see each other. Put `.nv4j` in the top folder of the project, not in `$HOME`. Without it, only the first loose folder gets a jdt.ls; a file in a second loose folder opens without LSP until you add `.nv4j`, and Nv4J warns you once and tells you where to put the file (`vim.g.nv4j_loose_max` raises the limit).
 
 ## 3. Write code and accept completion
 
@@ -94,5 +94,5 @@ jdt.ls runs on the JDK of `$JAVA_HOME` when it starts. The JDK your project comp
 - Completion feels slow: `:CompletionProfile on`, work for a while, `:CompletionProfile off`.
 - A refactor looks stuck: wait for the 3 s and 8 s notices; an error is reported when jdt.ls answers late.
 - Logs are in `/tmp/nv4j/logs` (jdt.ls: `lsp.log`).
-- Memory: one jdt.ls is about 1.3 GB. More than one means a folder without `.nv4j` (recipe 2).
+- Memory: one jdt.ls is about 1.3 GB. More than one means a project with its own build file or `.nv4j` plus a loose folder; a second loose folder opens without LSP until it gets a `.nv4j` (recipe 2).
 - More: README "Troubleshooting" and "Known limitations".

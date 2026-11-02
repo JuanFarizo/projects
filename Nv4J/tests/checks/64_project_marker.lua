@@ -2,11 +2,14 @@
 -- per loose-file directory". Code: nvim/lua/nv4j/root.lua (project, warn_loose), nvim/lua/plugins/java.lua.
 -- Everything runs in a fresh temp dir /tmp/nv4j/d25-<pid> (never the fixture), removed at the end with
 -- the jdtls-data/jdtls-config dirs of its roots; clients are stopped, then killed by pid if still alive.
---  order_*        : unit, root.lua project(): the nearest `.nv4j` beats a build marker below it, a nearer
---                   `.nv4j` beats a farther one, `.nv4j` beats the loose-file fallback; a `.nv4j` dir with a
---                   pom.xml of its own keeps has_marker (Spring Boot detected), without one has_marker is
---                   false (no Spring Boot, loose-file scaffolding); no `.nv4j`: build marker, git-root and
+--  order_*        : unit, root.lua project(): a nearer `.nv4j` beats a farther one, `.nv4j` beats the
+--                   loose-file fallback; a `.nv4j` dir with a pom.xml of its own keeps has_marker (Spring
+--                   Boot detected); a `.nv4j` with no pom of its own does not steal a child Maven/Gradle
+--                   module (that file keeps its build root); no `.nv4j`: build marker, git-root and
 --                   loose rules unchanged; usage counts (nv4j/usage.lua) treat a `.nv4j` root as a project.
+--  mm_*           : parent pom + two modules: `.nv4j` next to the parent pom is one Maven root; `.nv4j`
+--                   with only child poms leaves each module its own Maven root; a loose file under that
+--                   marker still uses the `.nv4j` dir.
 --  warn_unit      : deterministic twin of `warn` (stub clients): warns for a loose root while another loose
 --                   client runs (text names both roots, the common parent and .nv4j, title Nv4J), once per
 --                   root; never for a root that already has a client, a `.nv4j` or build root, or the
@@ -22,8 +25,12 @@
 --  rss            : RSS of that jdt.ls process, REPORT-ONLY: PASS with the measured MB in the detail; FAIL only when the pid
 --                   cannot be found or its RSS cannot be read. The 2 GB figure is a proposal (specs/001 D25), not a budget
 --                   (user ruling: stays "proposed", not applied).
---  warn           : without `.nv4j`, two sibling loose dirs -> two clients and exactly one WARN (title
---                   Nv4J, both roots, common parent, ".nv4j"); opening more files in both dirs adds none.
+--  cap_unit       : stub clients, loose-root cap (vim.g.nv4j_loose_max): refused only for a loose root with the cap
+--                   reached by other running loose clients; same root, .nv4j/build roots, stopped clients, max=0 and
+--                   max=2 with 1 running allowed; one "Not starting a second jdt.ls" warning per refused root.
+--  warn           : without `.nv4j`, two sibling loose dirs -> one client (the second is refused: no jdt.ls on its
+--                   files), exactly one WARN (title Nv4J, both roots, common parent, ".nv4j"); more files add none.
+--  warn_off       : vim.g.nv4j_loose_max = 0 -> two clients and one "Starting a second jdt.ls" warning (old behaviour).
 local lsp = require("lsp")
 local P = "64_project_marker."
 local RSS_PROPOSED_KB = 2048 * 1024 -- 2 GB, proposed from 1257 to 1294 MB measured for this project (specs/001 D25): printed, never enforced
@@ -60,7 +67,7 @@ local function order(name, file, want_root, want_marker, want_kind)
   lsp.report(P .. "order_" .. name, r == want and m == want_marker and k == want_kind,
     ("%s -> %s, %s, %s (want %s, %s, %s)"):format(file, r, tostring(m), tostring(k), want, tostring(want_marker), want_kind))
 end
-order("beats_build", "n1/sub/src/main/java/X.java", "n1", false, "nv4j")
+order("child_pom", "n1/sub/src/main/java/X.java", "n1/sub", true, "build")
 order("nearest", "n1/inner/d/X.java", "n1/inner", false, "nv4j")
 order("beats_loose", "n1/a/X.java", "n1", false, "nv4j")
 order("with_pom", "n2/src/X.java", "n2", true, "nv4j")
@@ -75,6 +82,39 @@ lsp.report(P .. "order_usage", usage.is_project(U .. "/n1") and not usage.is_pro
   ("usage counts: .nv4j root counted %s (want true), loose dir counted %s (want false)")
     :format(tostring(usage.is_project(U .. "/n1")), tostring(usage.is_project(U .. "/l"))))
 
+-- multi-module Maven (unit): `.nv4j` next to the parent pom vs `.nv4j` with only child poms
+local MM = TMP .. "/mm"
+local PARENT_POM = "<project><groupId>x</groupId><artifactId>p</artifactId><packaging>pom</packaging>\n<modules><module>app</module><module>lib</module></modules></project>"
+local APP_POM = "<project><parent><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-parent</artifactId></parent></project>"
+local LIB_POM = "<project><groupId>x</groupId><artifactId>lib</artifactId></project>"
+write(MM .. "/parent/.nv4j")
+write(MM .. "/parent/pom.xml", PARENT_POM)
+write(MM .. "/parent/app/pom.xml", APP_POM)
+write(MM .. "/parent/lib/pom.xml", LIB_POM)
+write(MM .. "/parent/app/src/main/java/App.java", "class App {}")
+write(MM .. "/parent/lib/src/main/java/Lib.java", "class Lib {}")
+write(MM .. "/kids/.nv4j")
+write(MM .. "/kids/app/pom.xml", APP_POM)
+write(MM .. "/kids/lib/pom.xml", LIB_POM)
+write(MM .. "/kids/app/src/main/java/App.java", "class App {}")
+write(MM .. "/kids/lib/src/main/java/Lib.java", "class Lib {}")
+write(MM .. "/kids/notes/x.java", "class X {}")
+local function mm(name, file, want_root, want_marker, want_kind, want_boot)
+  local r, m, k = root.project(file)
+  local boot = spring.boot_root(file)
+  local ok = r == want_root and m == want_marker and k == want_kind and boot == want_boot
+  lsp.report(P .. "mm_" .. name, ok,
+    ("%s -> %s, %s, %s boot=%s (want %s, %s, %s boot=%s)"):format(file:gsub(TMP, "TMP"),
+      tostring(r):gsub(TMP, "TMP"), tostring(m), tostring(k), tostring(boot):gsub(TMP, "TMP"),
+      tostring(want_root):gsub(TMP, "TMP"), tostring(want_marker), tostring(want_kind),
+      tostring(want_boot):gsub(TMP, "TMP")))
+end
+mm("parent", MM .. "/parent/app/src/main/java/App.java", MM .. "/parent", true, "nv4j", MM .. "/parent")
+mm("parent_lib", MM .. "/parent/lib/src/main/java/Lib.java", MM .. "/parent", true, "nv4j", MM .. "/parent")
+mm("child_pom", MM .. "/kids/app/src/main/java/App.java", MM .. "/kids/app", true, "build", MM .. "/kids/app")
+mm("child_lib", MM .. "/kids/lib/src/main/java/Lib.java", MM .. "/kids/lib", true, "build", nil)
+mm("child_loose", MM .. "/kids/notes/x.java", MM .. "/kids", false, "nv4j", nil)
+
 -- ── warn_unit (deterministic twin of warn) ─────────────────────────────────────────────────────
 local notes = {}
 -- Notifications are recorded, not forwarded: LazyVim's start-up notify queue replays into whatever
@@ -84,11 +124,12 @@ local broad_notes = {}
 vim.notify = function(msg, level, o)
   if o and o.title == "Nv4J" and level == vim.log.levels.WARN then
     msg = tostring(msg)
-    if msg:find("^Starting a second jdt.ls") then notes[#notes + 1] = msg end
+    if msg:find("^Starting a second jdt.ls") or msg:find("^Not starting a second jdt.ls") then notes[#notes + 1] = msg end
     if msg:find("^A %.nv4j file in ") then broad_notes[#broad_notes + 1] = msg end
   end
 end
 local function stub(r) return { config = { root_dir = r } } end
+local function root_mod_warn(r, c) return root.warn_loose(r, c) end
 do
   local W = TMP .. "/wunit"
   vim.fn.mkdir(W .. "/p/one", "p")
@@ -109,6 +150,58 @@ do
     ("first %s, same %s, nv4j/build roots silent %s, second loose -> %s, again %s, non-loose others %s, notifications %d (want 1)")
       :format(tostring(first), tostring(same), tostring(others), m and ("%q"):format(m) or "nil", tostring(again),
         tostring(nonloose_other), #notes - before))
+end
+
+-- ── cap_unit (loose-root cap, stub clients, no jdt.ls) ─────────────────────────────────────────
+do
+  local W = TMP .. "/capunit"
+  for _, d in ipairs({ "a", "b", "c", "d", "e", "f", "g", "h" }) do vim.fn.mkdir(W .. "/p/" .. d, "p") end
+  vim.fn.mkdir(W .. "/n", "p")
+  write(W .. "/n/.nv4j")
+  vim.fn.mkdir(W .. "/m", "p")
+  write(W .. "/m/pom.xml", "<project/>")
+  local function d(n) return W .. "/p/" .. n end
+  local function stopped(r) return { config = { root_dir = r }, is_stopped = function() return true end } end
+  local saved = vim.g.nv4j_loose_max
+  local ok_c, e_c = pcall(function()
+    vim.g.nv4j_loose_max = nil
+    local before = #notes
+    local function try(root, clients)
+      local m, refused = root_mod_warn(root, clients)
+      return m, refused
+    end
+    local m0, r0 = try(d("a"), {}) -- 0 loose clients
+    local m1, r1 = try(d("b"), { stub(d("a")) }) -- 1 loose, other root
+    local n_after_refuse = #notes - before
+    local m1b, r1b = try(d("b"), { stub(d("a")) }) -- again: refused, not re-warned
+    local _, rs = try(d("a"), { stub(d("a")) }) -- same root
+    local _, rn = try(W .. "/n", { stub(d("a")) }) -- .nv4j root
+    local _, rb = try(W .. "/m", { stub(d("a")) }) -- build root
+    local _, rst = try(d("c"), { stopped(d("a")) }) -- stopped client does not count
+    local _, rgone = try(d("b"), {}) -- running one is gone: same root as the refused one starts
+    local n_mid = #notes - before
+    local m_again, r_again = try(d("b"), { stub(d("a")) }) -- the slot was free in between: refused again, warns again
+    local n_again = #notes - before
+    vim.g.nv4j_loose_max = 0
+    local m_off, r_off = try(d("e"), { stub(d("a")) })
+    vim.g.nv4j_loose_max = 2
+    local _, r2a = try(d("f"), { stub(d("a")) })
+    local _, r2b = try(d("g"), { stub(d("a")), stub(d("b")) })
+    local ok = m0 == nil and r0 == false
+      and r1 == true and type(m1) == "string" and m1:find("^Not starting a second jdt.ls") ~= nil
+      and m1:find(d("b"), 1, true) and m1:find(d("a"), 1, true) and m1:find(".nv4j", 1, true) and m1:find("(" .. W .. "/p)", 1, true)
+      and n_after_refuse == 1 and m1b == nil and r1b == true and n_mid == 1
+      and rs == false and rn == false and rb == false and rst == false and rgone == false
+      and r_off == false and type(m_off) == "string" and m_off:find("^Starting a second jdt.ls") ~= nil
+      and r2a == false and r2b == true
+      and r_again == true and type(m_again) == "string" and n_again == 2
+    lsp.report(P .. "cap_unit", ok,
+      ("0 running -> refused %s (want false); 1 other -> refused %s, %q (want true, 'Not starting...'), warnings %d (want 1), repeat refused %s no new warning (%d total, want 1); same root %s, .nv4j root %s, build root %s, stopped client %s, none running %s (all want false); max=0 -> refused %s (want false, old 'Starting' warning); max=2: 1 running %s (want false), 2 running %s (want true); refused again after the slot was free: %s, warnings %d (want true, 2)")
+        :format(tostring(r0), tostring(r1), tostring(m1), n_after_refuse, tostring(r1b), n_mid, tostring(rs), tostring(rn),
+          tostring(rb), tostring(rst), tostring(rgone), tostring(r_off), tostring(r2a), tostring(r2b), tostring(r_again), n_again))
+  end)
+  vim.g.nv4j_loose_max = saved
+  if not ok_c then lsp.report(P .. "cap_unit", false, "error: " .. tostring(e_c)) end
 end
 
 -- ── broad dirs: $HOME, `/`, short paths (stubbed $HOME under TMP) ─────────────────────────────
@@ -249,31 +342,57 @@ end)
 if not ok_all then lsp.report(P .. "single_client", false, "error: " .. tostring(err)) end
 stop_all()
 
--- ── warn ───────────────────────────────────────────────────────────────────────────────────────
+-- ── warn (cap 1: the second loose root is refused), warn_off (cap 0: old behaviour, two clients) ──
 local LO = TMP .. "/loose"
 write(LO .. "/one/One.java", "public class One {}\n")
 write(LO .. "/one/OneB.java", "public class OneB {}\n")
 write(LO .. "/two/Two.java", "public class Two {}\n")
 write(LO .. "/two/TwoB.java", "public class TwoB {}\n")
+local function jdtls_on(buf) return #vim.lsp.get_clients({ name = "jdtls", bufnr = buf }) end
 ok_all, err = pcall(function()
   local before = #notes
-  local _, c1 = open_ready(LO .. "/one/One.java")
+  local b1, c1 = open_ready(LO .. "/one/One.java")
   local after_first = #notes - before
-  local _, c2 = open_ready(LO .. "/two/Two.java")
+  local b2 = lsp.open(LO .. "/two/Two.java")
+  vim.wait(4000, function() return #notes - before >= 1 end, 100)
+  -- Measured: without the cap the second client registers 3 to 4 s after the file opens (load 8), so a refused
+  -- start is only believed after waiting for it: up to 15 s (returns at once when a second client shows up).
+  vim.wait(15000, function() return #vim.lsp.get_clients({ name = "jdtls" }) >= 2 end, 100)
   local after_second = #notes - before
-  open_ready(LO .. "/two/TwoB.java")
-  open_ready(LO .. "/one/OneB.java")
+  local b3 = lsp.open(LO .. "/two/TwoB.java")
+  local b4 = lsp.open(LO .. "/one/OneB.java")
+  vim.wait(3000)
   local clients = vim.lsp.get_clients({ name = "jdtls" })
   local m = notes[before + 1] or ""
   local one, two = LO .. "/one", LO .. "/two"
-  local text_ok = m:find(two, 1, true) and m:find(one, 1, true) and m:find("(" .. LO .. ")", 1, true)
-    and m:find("create an empty .nv4j file", 1, true)
+  local text_ok = m:find("^Not starting a second jdt.ls") and m:find(two, 1, true) and m:find(one, 1, true)
+    and m:find("(" .. LO .. ")", 1, true) and m:find("create an empty .nv4j file", 1, true)
   lsp.report(P .. "warn",
-    c1 ~= nil and c2 ~= nil and #clients == 2 and after_first == 0 and after_second == 1 and #notes - before == 1 and text_ok,
-    ("%d jdt.ls clients (want 2), warnings after 1st start %d (want 0), after 2nd %d (want 1), after 2 more files %d (want 1); text %q; log %s")
-      :format(#clients, after_first, after_second, #notes - before, m, log))
+    c1 ~= nil and #clients == 1 and clients[1].config.root_dir == one and after_first == 0 and after_second == 1
+      and #notes - before == 1 and jdtls_on(b2) == 0 and jdtls_on(b3) == 0 and jdtls_on(b4) == 1 and text_ok,
+    ("%d jdt.ls client(s) (want 1, at %s), jdtls on Two.java %d, TwoB.java %d (want 0), OneB.java %d (want 1); warnings after 1st start %d (want 0), after 2nd %d (want 1), after 2 more files %d (want 1); text %q; log %s")
+      :format(#clients, one, jdtls_on(b2), jdtls_on(b3), jdtls_on(b4), after_first, after_second, #notes - before, m, log))
 end)
 if not ok_all then lsp.report(P .. "warn", false, "error: " .. tostring(err)) end
+stop_all()
+
+local LO0 = TMP .. "/loose0"
+write(LO0 .. "/one/One.java", "public class One {}\n")
+write(LO0 .. "/two/Two.java", "public class Two {}\n")
+vim.g.nv4j_loose_max = 0
+ok_all, err = pcall(function()
+  local before = #notes
+  local _, c1 = open_ready(LO0 .. "/one/One.java")
+  local _, c2 = open_ready(LO0 .. "/two/Two.java")
+  local clients = vim.lsp.get_clients({ name = "jdtls" })
+  local m = notes[before + 1] or ""
+  lsp.report(P .. "warn_off",
+    c1 ~= nil and c2 ~= nil and #clients == 2 and #notes - before == 1 and m:find("^Starting a second jdt.ls") ~= nil,
+    ("vim.g.nv4j_loose_max = 0: %d jdt.ls clients (want 2), warnings %d (want 1, 'Starting a second...'): %q; log %s")
+      :format(#clients, #notes - before, m, log))
+end)
+if not ok_all then lsp.report(P .. "warn_off", false, "error: " .. tostring(err)) end
+vim.g.nv4j_loose_max = nil
 stop_all()
 vim.notify = orig_notify
 

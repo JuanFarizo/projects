@@ -127,8 +127,10 @@ return {
       -- LazyVim calls this with the config it built (root_dir known) and uses the return value.
       opts.jdtls = function(config)
         config = vim.tbl_deep_extend("force", config, static_jdtls)
-        -- D25: a second loose-file jdt.ls is about to start (no build file, no .nv4j): warn once, start anyway.
-        require("nv4j.root").warn_loose(config.root_dir)
+        -- D25: a second loose-file jdt.ls is about to start (no build file, no .nv4j): warn once; over
+        -- vim.g.nv4j_loose_max (default 1) the start is refused by the start_or_attach guard below.
+        local _, refused = require("nv4j.root").warn_loose(config.root_dir)
+        if refused then config.nv4j_refused = true end
         -- On Started/ServiceReady, one throw-away completion takes jdt.ls's one-time index cost off
         -- the user's first completion (nv4j/warmup.lua). nvim-jdtls wraps this handler and calls it
         -- without ctx, so the root_dir tells warmup which client (project) sent the status.
@@ -184,6 +186,17 @@ return {
       -- that's the layer that actually renders them.
 
       require("jdtls").settings.jdt_uri_timeout_ms = 20000
+      -- LazyVim's java extra calls require("jdtls").start_or_attach(config) right after opts.jdtls, which cannot
+      -- stop it: wrap it once (idempotent) to skip a config that opts.jdtls marked refused (loose-root cap, nv4j/root.lua).
+      local jdtls_mod = require("jdtls")
+      if not jdtls_mod._nv4j_cap then
+        jdtls_mod._nv4j_cap = true
+        local orig = jdtls_mod.start_or_attach
+        jdtls_mod.start_or_attach = function(config, ...)
+          if type(config) == "table" and config.nv4j_refused then return end
+          return orig(config, ...)
+        end
+      end
 
       return opts
     end,
