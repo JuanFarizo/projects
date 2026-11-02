@@ -20,8 +20,23 @@
 --  detect      : the shared Spring Boot rule (nv4j/root.lua): Gradle version catalog = Boot, a pom with only a
 --                spring-boot.version property or Boot in a comment = not Boot, an aggregator whose module is Boot
 --                = Boot project; nv4j.run and nv4j.spring agree.
---  off_at_start: a child nvim started with g:nv4j_spring = false loads no plugin: no :SpringBoot command, no
---                vscode-spring-boot / sts commands in vim.lsp.commands (positive control: same child without the flag).
+--  off_at_start: a child nvim started with g:nv4j_spring = false loads no plugin; an unnamed java buffer
+--                (not Boot) also does not load it (only a Boot file does). Control: lazy.load still loads
+--                it when the flag is on, not when the flag is off.
+--  want_install : Mason ensure_installed only when cwd is a Spring Boot project (and the flag is on).
+--  should_load  : spring-boot.nvim loads only for a Boot Java/yml/properties file, not a plain pom or unnamed buffer.
+--  wired        : nv4j.spring start() patches spring_boot.jdtls (the test does not call route_jdtls itself).
+--  jdtls_route  : two jdt.ls clients: the one whose root owns the file / projectUri, not clients[1].
+--  route_paths  : symlinked projectUri, case folding only where the FS is case-insensitive, current-buffer
+--                 fallback only when no root contains the path (+ spring-route.log line), plain jdt.ls never the fallback.
+--  route_wrapped: stub jdt.ls clients through spring_boot.jdtls.execute_command / get_jdtls_client: B's projectUri
+--                 reaches only B (and its answer returns), a plain owner is still the owner, unmatched -> current buffer.
+--  classpath_all: addClasspathListener on every Boot jdt.ls (answering one waits, others async: a silent one does not
+--                 block), never on a plain one; the answer is the Boot jdt.ls's.
+--  classpath_attach: late-starting Boot jdt.ls (LspAttach) registered once however many buffers attach, none for
+--                 plain or already registered; removeClasspathListener reaches every Boot jdt.ls and clears the state.
+--  two_boot_shared: real second Boot project: second jdt.ls, ONE Spring LS process and client on both, listener on the
+--                 second jdt.ls through the real LspAttach path.
 -- Timings: /tmp/nv4j/logs/latency.jsonl (spring_ready, spring_props_first, spring_props_warm_p95,
 -- spring_hover). The fixture file is only edited in memory and restored.
 vim.o.confirm = false
@@ -269,28 +284,307 @@ local ok3, err3 = pcall(function()
   local agg_ok = root.boot_build(agg) == false and require("nv4j.spring").is_boot(agg) == true
   got[#got + 1] = "aggregator(module Boot)=" .. tostring(agg_ok)
   lsp.report(P .. "detect", #bad == 0 and agg_ok, table.concat(got, ", ") .. (#bad > 0 and ("; WRONG: " .. table.concat(bad, "; ")) or ""))
+end)
+if not ok3 then lsp.report(P .. "detect", false, "error: " .. tostring(err3)) end
 
-  -- The flag set before startup: the plugin is not loaded (lazy.nvim cond). Unnamed buffer with filetype java
-  -- (lazy ft trigger; nv4j.debug starts no jdt.ls for it) and, flag off only, the fixture's application.properties.
-  local probe = table.concat({
-    "enew", "setfiletype java",
-    -- the properties file only with the flag off (with it on it would start a Spring LS in the child)
-    "if get(g:, 'nv4j_spring', 1) is v:false | edit " .. fixture .. "/src/main/resources/application.properties | endif",
+local ok4, err4 = pcall(function()
+  -- Mason install and plugin load only for Boot (cwd / Boot file).
+  local S = require("nv4j.spring")
+  local here = vim.fn.getcwd()
+  local noboot = "/tmp/nv4j/50_need"
+  vim.fn.delete(noboot, "rf")
+  vim.fn.mkdir(noboot, "p")
+  vim.fn.writefile({ "<project><groupId>x</groupId></project>" }, noboot .. "/pom.xml")
+  vim.cmd("lcd " .. vim.fn.fnameescape(noboot))
+  local want_plain = S.want_install()
+  vim.cmd("lcd " .. vim.fn.fnameescape(fixture))
+  local want_boot = S.want_install()
+  local prev_flag = vim.g.nv4j_spring
+  vim.g.nv4j_spring = false
+  local want_off = S.want_install()
+  vim.g.nv4j_spring = prev_flag
+  vim.cmd("lcd " .. vim.fn.fnameescape(here))
+  lsp.report(P .. "want_install", want_plain == false and want_boot == true and want_off == false,
+    ("cwd plain pom %s (want false); cwd Boot fixture %s (want true); flag off on fixture %s (want false)")
+      :format(tostring(want_plain), tostring(want_boot), tostring(want_off)))
+
+  local boot_java = fixture .. "/src/main/java/demo/DemoApplication.java"
+  local boot_yml = fixture .. "/src/main/resources/application.properties"
+  local plain_java = "/tmp/nv4j/plain21/src/main/java/p21/Plain.java"
+  lsp.report(P .. "should_load", S.should_load(boot_java) == true and S.should_load(boot_yml) == true
+      and S.should_load(plain_java) == false and S.should_load("") == false,
+    ("Boot java %s, Boot properties %s, plain java %s, unnamed %s")
+      :format(tostring(S.should_load(boot_java)), tostring(S.should_load(boot_yml)),
+        tostring(S.should_load(plain_java)), tostring(S.should_load(""))))
+
+  -- Flag off: plugin stays unloaded. Unnamed java is not Boot: plugin stays unloaded (no ft=java).
+  -- Control: lazy.load still loads it when the flag is on.
+  local probe_line = [[lua local n=0 for k in pairs(vim.lsp.commands) do if tostring(k):find('spring%-boot') or tostring(k):find('^sts') then n=n+1 end end ]]
+    .. [[io.stdout:write(('PROBE cmd=%d lsp_cmds=%d loaded=%s\n'):format(vim.fn.exists(':SpringBoot'), n, tostring(package.loaded['spring_boot'] ~= nil)))]]
+  vim.fn.writefile({ "enew", "setfiletype java", "lua vim.wait(1500)", probe_line }, "/tmp/nv4j/50_probe.vim")
+  vim.fn.writefile({
+    "lua require('lazy').load({ plugins = { 'spring-boot.nvim' } })",
     "lua vim.wait(1500)",
-    [[lua local n=0 for k in pairs(vim.lsp.commands) do if tostring(k):find('spring%-boot') or tostring(k):find('^sts') then n=n+1 end end ]]
-      .. [[io.stdout:write(('PROBE cmd=%d lsp_cmds=%d loaded=%s\n'):format(vim.fn.exists(':SpringBoot'), n, tostring(package.loaded['spring_boot'] ~= nil)))]],
-  }, "\n")
-  vim.fn.writefile(vim.split(probe, "\n"), "/tmp/nv4j/50_probe.vim")
-  local function child(flag)
+    probe_line,
+  }, "/tmp/nv4j/50_probe_load.vim")
+  local function child(flag, script)
     local args = { "nvim", "--headless" }
     if flag then vim.list_extend(args, { "--cmd", "let g:nv4j_spring = v:false" }) end
-    vim.list_extend(args, { "-S", "/tmp/nv4j/50_probe.vim", "+qa!" })
+    vim.list_extend(args, { "-S", script, "+qa!" })
     local out = vim.fn.system(args)
     return out:match("PROBE[^\n]*") or ("no probe line: " .. out:sub(-200):gsub("%s+", " "))
   end
-  local off, on = child(true), child(false)
-  lsp.report(P .. "off_at_start", off:find("cmd=0 lsp_cmds=0 loaded=false", 1, true) ~= nil and on:find("cmd=2 lsp_cmds=[1-9]%d* loaded=true") ~= nil,
-    ("g:nv4j_spring=false: %s | default (control): %s"):format(off, on))
+  local off, unnamed = child(true, "/tmp/nv4j/50_probe.vim"), child(false, "/tmp/nv4j/50_probe.vim")
+  local load_on, load_off = child(false, "/tmp/nv4j/50_probe_load.vim"), child(true, "/tmp/nv4j/50_probe_load.vim")
+  lsp.report(P .. "off_at_start", off:find("cmd=0 lsp_cmds=0 loaded=false", 1, true) ~= nil
+      and unnamed:find("loaded=false", 1, true) ~= nil
+      and load_on:find("loaded=true", 1, true) ~= nil
+      and load_off:find("loaded=false", 1, true) ~= nil,
+    ("flag off unnamed: %s | default unnamed (must not load): %s | lazy.load default: %s | lazy.load flag off: %s")
+      :format(off, unnamed, load_on, load_off))
 end)
-if not ok3 then lsp.report(P .. "detect", false, "error: " .. tostring(err3)) end
+if not ok4 then lsp.report(P .. "want_install", false, "error: " .. tostring(err4)) end
+
+-- Two Boot projects, one Spring LS (nv4j/spring.lua route_jdtls). Stub jdt.ls clients under /tmp/nv4j/50_route
+-- (A, B Boot; C plain Maven; D Boot) drive the wrapper through the plugin's own entry point
+-- (spring_boot.jdtls.execute_command), vim.lsp.get_clients / get_client_by_id patched for one call and restored in a
+-- finally, the classpath state restored too.
+local ROUTE = "/tmp/nv4j/50_route"
+local function route_setup()
+  vim.fn.delete(ROUTE, "rf")
+  local boot_pom = {
+    "<project><modelVersion>4.0.0</modelVersion><parent><groupId>org.springframework.boot</groupId>",
+    "<artifactId>spring-boot-starter-parent</artifactId><version>3.5.13</version></parent>",
+    "<groupId>r</groupId><artifactId>%s</artifactId><version>1</version></project>",
+  }
+  for _, n in ipairs({ "A", "B", "D" }) do
+    vim.fn.mkdir(ROUTE .. "/" .. n .. "/src", "p")
+    local l = vim.deepcopy(boot_pom)
+    l[3] = l[3]:format(n)
+    vim.fn.writefile(l, ROUTE .. "/" .. n .. "/pom.xml")
+  end
+  vim.fn.mkdir(ROUTE .. "/C/src", "p")
+  vim.fn.writefile({ "<project><groupId>r</groupId><artifactId>C</artifactId></project>" }, ROUTE .. "/C/pom.xml")
+  vim.uv.fs_symlink(ROUTE .. "/B", ROUTE .. "/linkB")
+end
+local function mk_stub(seen, label, id, root, opts)
+  opts = opts or {}
+  return {
+    id = id, name = "jdtls", label = label, config = { root_dir = root },
+    is_stopped = function() return false end,
+    request = function(_, _, params, cb)
+      seen[#seen + 1] = { who = label, cmd = params and params.command, args = params and params.arguments }
+      if not opts.silent and cb then cb(nil, opts.answer or vim.NIL) end
+      return true
+    end,
+  }
+end
+local function count(seen, who, cmd)
+  local n = 0
+  for _, r in ipairs(seen) do if r.who == who and (not cmd or r.cmd == cmd) then n = n + 1 end end
+  return n
+end
+--- fn() with stub clients behind vim.lsp.get_clients / get_client_by_id and the current buffer named `buf_name`.
+local function with_stubs(list, buf_name, fn)
+  local S = require("nv4j.spring")
+  local o_get, o_by_id, o_args = vim.lsp.get_clients, vim.lsp.get_client_by_id, S._state.classpath_args
+  local o_buf = vim.api.nvim_get_current_buf()
+  vim.lsp.get_clients = function(f)
+    if f and f.name == "jdtls" then return list end
+    return o_get(f)
+  end
+  vim.lsp.get_client_by_id = function(id)
+    for _, c in ipairs(list) do if c.id == id then return c end end
+    return o_by_id(id)
+  end
+  local sb = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_set_current_buf(sb)
+  vim.api.nvim_buf_set_name(sb, buf_name)
+  local ok, err = pcall(fn)
+  vim.lsp.get_clients, vim.lsp.get_client_by_id = o_get, o_by_id
+  S._state.classpath_args = o_args
+  vim.api.nvim_set_current_buf(o_buf)
+  pcall(vim.api.nvim_buf_delete, sb, { force = true })
+  if not ok then error(err, 0) end
+end
+local function route_log_size()
+  local st = vim.uv.fs_stat(require("nv4j.paths").logs .. "/spring-route.log")
+  return st and st.size or 0
+end
+local function route_log_tail(from)
+  local f = io.open(require("nv4j.paths").logs .. "/spring-route.log", "r")
+  if not f then return "" end
+  f:seek("set", from)
+  local t = f:read("*a")
+  f:close()
+  return t
+end
+
+local ok5, err5 = pcall(function()
+  local S = require("nv4j.spring")
+  local seenp = {}
+  route_setup()
+  local sA = mk_stub(seenp, "A", 101, ROUTE .. "/A", { answer = { from = "A" } })
+  local sB = mk_stub(seenp, "B", 102, ROUTE .. "/B", { answer = { from = "B" } })
+  local sC = mk_stub(seenp, "C", 103, ROUTE .. "/C")
+  local all = { sA, sB, sC }
+
+  -- start() really wires the routing (the test does not call route_jdtls itself).
+  local jm = require("spring_boot.jdtls")
+  lsp.report(P .. "wired", jm._nv4j_routed == true,
+    ("spring_boot.jdtls patched by nv4j.spring start(): %s"):format(tostring(jm._nv4j_routed)))
+
+  -- jdtls_route: pure matching, no stubs of the LSP API.
+  local rA = S.jdtls_for(ROUTE .. "/A/src/Foo.java", all)
+  local rB = S.jdtls_for(ROUTE .. "/B/src/Bar.java", all)
+  local rUri = S.jdtls_for("file://" .. ROUTE .. "/B/src/Bar.java", all)
+  local rNone = S.jdtls_for("/tmp/nv4j/other/x.java", all)
+  lsp.report(P .. "jdtls_route", rA == sA and rB == sB and rUri == sB and rNone == nil,
+    ("A file -> %s, B file -> %s, B projectUri -> %s, other -> %s (want A, B, B, nil)")
+      :format(rA and rA.label, rB and rB.label, rUri and rUri.label, tostring(rNone)))
+
+  -- route_paths: symlinked projectUri, case folding, and the fallback only when no root contains the path.
+  local bad = {}
+  with_stubs(all, ROUTE .. "/A/src/Cur.java", function()
+    local link = S.route_client({ projectUri = "file://" .. ROUTE .. "/linkB/src/X.java" }, all)
+    if link ~= sB then bad[#bad + 1] = "symlink projectUri -> " .. tostring(link and link.label) .. " (want B)" end
+    local pre = route_log_size()
+    local un = S.route_client({ projectUri = "file:///nowhere/Z/x.java" }, all)
+    local logged = route_log_tail(pre)
+    if un ~= sA then bad[#bad + 1] = "unmatched projectUri -> " .. tostring(un and un.label) .. " (want current buffer A)" end
+    if not logged:find("/nowhere/Z/x.java", 1, true) then bad[#bad + 1] = "no spring-route.log line for the fallback" end
+    local swapped = ROUTE .. "/b/src/X.java" -- case-different root
+    local swapped_exists = vim.uv.fs_stat(ROUTE .. "/b") ~= nil -- case-insensitive FS: realpath alone resolves it
+    vim.g.nv4j_case_fold = true
+    local folded = S.route_client({ projectUri = swapped }, all)
+    vim.g.nv4j_case_fold = false
+    local unfolded = S.route_client({ projectUri = swapped }, all)
+    vim.g.nv4j_case_fold = nil
+    if folded ~= sB then bad[#bad + 1] = "case folded -> " .. tostring(folded and folded.label) .. " (want B)" end
+    if not swapped_exists and unfolded == sB then bad[#bad + 1] = "case-sensitive FS, fold off, still matched B" end
+  end)
+  with_stubs({ sC, sA, sB }, "/tmp/nv4j/elsewhere/n.txt", function()
+    local f = S.route_client(nil, { sC, sA, sB })
+    if f ~= sA then bad[#bad + 1] = "no buffer project -> " .. tostring(f and f.label) .. " (want first Boot jdt.ls A, never plain C)" end
+  end)
+  lsp.report(P .. "route_paths", #bad == 0, #bad == 0 and "symlink, case fold (FS-dependent), fallback + log line, first Boot not plain: all right" or table.concat(bad, "; "))
+
+  -- route_wrapped: through the plugin's execute_command / get_jdtls_client.
+  local bad2 = {}
+  with_stubs(all, ROUTE .. "/A/src/Cur.java", function()
+    for i = #seenp, 1, -1 do seenp[i] = nil end
+    local rb = jm.execute_command("sts.project.gav", { projectUri = "file://" .. ROUTE .. "/B/src/Bar.java" }, 300)
+    if count(seenp, "B", "sts.project.gav") ~= 1 or #seenp ~= 1 then bad2[#bad2 + 1] = "B projectUri hit " .. vim.inspect(seenp) end
+    if type(rb) ~= "table" or rb.from ~= "B" then bad2[#bad2 + 1] = "B answer " .. vim.inspect(rb) end
+    for i = #seenp, 1, -1 do seenp[i] = nil end
+    local rc = jm.execute_command("sts.project.gav", { projectUri = "file://" .. ROUTE .. "/C/x" }, 300)
+    if count(seenp, "C") ~= 1 or #seenp ~= 1 or rc ~= vim.NIL then bad2[#bad2 + 1] = "plain C owner: " .. vim.inspect(seenp) end
+    for i = #seenp, 1, -1 do seenp[i] = nil end
+    jm.execute_command("sts.project.gav", { projectUri = "file:///nowhere/Z" }, 300)
+    if count(seenp, "A") ~= 1 or #seenp ~= 1 then bad2[#bad2 + 1] = "unmatched hit " .. vim.inspect(seenp) end
+    if jm.get_jdtls_client({ projectUri = "file://" .. ROUTE .. "/B/q" }) ~= sB then bad2[#bad2 + 1] = "get_jdtls_client(B) wrong" end
+  end)
+  lsp.report(P .. "route_wrapped", #bad2 == 0, #bad2 == 0 and "projectUri B -> B only (answer from B), plain C owner -> C, unmatched -> current buffer A" or table.concat(bad2, "; "))
+
+  -- classpath_all: Boot jdt.ls only, async for all but the answering one (B never answers: a blocking fan-out
+  -- would take the whole 300 ms timeout), the answer is A's, never a NIL from a non-Boot jdt.ls.
+  local bad3 = {}
+  local seen2 = {}
+  local a2 = mk_stub(seen2, "A", 111, ROUTE .. "/A", { answer = { from = "A" } })
+  local b2 = mk_stub(seen2, "B", 112, ROUTE .. "/B", { silent = true })
+  local c2 = mk_stub(seen2, "C", 113, ROUTE .. "/C") -- answers NIL, last in the list
+  with_stubs({ a2, b2, c2 }, ROUTE .. "/A/src/Cur.java", function()
+    local t0 = vim.uv.hrtime()
+    local r = jm.execute_command("sts.java.addClasspathListener", { "cb1" }, 300)
+    local ms = (vim.uv.hrtime() - t0) / 1e6
+    if count(seen2, "A", "sts.java.addClasspathListener") ~= 1 or count(seen2, "B", "sts.java.addClasspathListener") ~= 1 then
+      bad3[#bad3 + 1] = "A/B not once each: " .. vim.inspect(seen2)
+    end
+    if count(seen2, "C") ~= 0 then bad3[#bad3 + 1] = "non-Boot C got the command" end
+    if type(r) ~= "table" or r.from ~= "A" then bad3[#bad3 + 1] = "answer " .. vim.inspect(r) end
+    if ms > 150 then bad3[#bad3 + 1] = ("blocked %.0f ms (silent B, timeout 300)"):format(ms) end
+    seen2.ms = ms
+  end)
+  lsp.report(P .. "classpath_all", #bad3 == 0,
+    #bad3 == 0 and ("addClasspathListener: A (answers) and B (async, silent) once, plain C none, return %.0f ms of 300"):format(seen2.ms or -1)
+      or table.concat(bad3, "; "))
+
+  -- classpath_attach: late starter (LspAttach, once per client however many buffers) and removeClasspathListener.
+  local bad4 = {}
+  local seen3 = {}
+  local d3 = mk_stub(seen3, "D", 121, ROUTE .. "/D")
+  local c3 = mk_stub(seen3, "C", 122, ROUTE .. "/C")
+  local a3 = mk_stub(seen3, "A", 123, ROUTE .. "/A", { answer = { from = "A" } })
+  local function attach(c, n)
+    for _ = 1, n do
+      vim.api.nvim_exec_autocmds("LspAttach", { group = "nv4j_spring_route", data = { client_id = c.id } })
+    end
+  end
+  with_stubs({ a3 }, ROUTE .. "/A/src/Cur.java", function()
+    jm.execute_command("sts.java.addClasspathListener", { "cb2" }, 300) -- fan-out registered A
+    attach(a3, 3)
+    if count(seen3, "A", "sts.java.addClasspathListener") ~= 1 then bad4[#bad4 + 1] = "A registered by the fan-out got " .. count(seen3, "A") .. " (want 1)" end
+  end)
+  with_stubs({ a3, d3, c3 }, ROUTE .. "/A/src/Cur.java", function()
+    S._state.classpath_args = { "cb2" }
+    attach(d3, 3)
+    attach(c3, 2)
+    local nd, nc = count(seen3, "D", "sts.java.addClasspathListener"), count(seen3, "C")
+    if nd ~= 1 then bad4[#bad4 + 1] = "late Boot D registered " .. nd .. " times (want 1 for 3 attaches)" end
+    if nc ~= 0 then bad4[#bad4 + 1] = "plain C registered " .. nc end
+    if not vim.deep_equal(seen3[#seen3] and seen3[#seen3].args, { "cb2" }) then bad4[#bad4 + 1] = "args " .. vim.inspect(seen3[#seen3]) end
+    -- removeClasspathListener: every Boot jdt.ls, state cleared, a later starter gets nothing.
+    jm.execute_command("sts.java.removeClasspathListener", { "cb2" }, 300)
+    local rem = { count(seen3, "A", "sts.java.removeClasspathListener"), count(seen3, "D", "sts.java.removeClasspathListener"), count(seen3, "C", "sts.java.removeClasspathListener") }
+    if rem[1] ~= 1 or rem[2] ~= 1 or rem[3] ~= 0 then bad4[#bad4 + 1] = ("remove A,D,C = %s (want 1,1,0)"):format(table.concat(rem, ",")) end
+    if S._state.classpath_args ~= nil or S._state.registered[d3] ~= nil then bad4[#bad4 + 1] = "state not cleared by remove" end
+    local before = #seen3
+    attach(d3, 2)
+    if #seen3 ~= before then bad4[#bad4 + 1] = "attach after remove still sent" end
+  end)
+  lsp.report(P .. "classpath_attach", #bad4 == 0,
+    #bad4 == 0 and "late Boot starter: 3 attaches -> 1 registration; fan-out-registered A: 0 extra; plain C: 0; remove: A and D, state cleared, no later send"
+      or table.concat(bad4, "; "))
+end)
+if not ok5 then lsp.report(P .. "jdtls_route", false, "error: " .. tostring(err5)) end
+
+-- Two real Boot projects: a second jdt.ls (root B), the SAME Spring LS process attached to B's files, the
+-- classpath listener registered on B's jdt.ls by the real LspAttach path, sts/* routed to each project's jdt.ls.
+local ok6, err6 = pcall(function()
+  local S = require("nv4j.spring")
+  local dir = "/tmp/nv4j/50_two/B"
+  vim.fn.delete("/tmp/nv4j/50_two", "rf")
+  vim.fn.mkdir(dir .. "/src/main/java/twob", "p")
+  vim.fn.mkdir(dir .. "/src/main/resources", "p")
+  vim.fn.writefile({
+    '<project xmlns="http://maven.apache.org/POM/4.0.0"><modelVersion>4.0.0</modelVersion>',
+    "<parent><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-parent</artifactId>",
+    "<version>3.5.13</version><relativePath/></parent>",
+    "<groupId>twob</groupId><artifactId>twob</artifactId><version>1</version>",
+    "<properties><maven.compiler.release>21</maven.compiler.release></properties></project>",
+  }, dir .. "/pom.xml")
+  vim.fn.writefile({ "package twob;", "class App { int x; }" }, dir .. "/src/main/java/twob/App.java")
+  vim.fn.writefile({ "server.port=9091" }, dir .. "/src/main/resources/application.properties")
+  local bbuf = lsp.open(dir .. "/src/main/java/twob/App.java")
+  local bj = lsp.wait_ready(bbuf, 120000)
+  local bsp = bj and wait_attach(bbuf, 20000)
+  local spring_all = vim.lsp.get_clients({ name = NAME })
+  local routed_b = bj and S.route_client({ projectUri = vim.uri_from_fname(dir .. "/src/main/java/twob/App.java") })
+  local routed_a = S.route_client({ projectUri = vim.uri_from_fname(fixture .. "/src/main/java/demo/DemoApplication.java") })
+  local st = S._state
+  local want_id = st.classpath_args and st.classpath_args[1]
+  local reg_b = bj and st.registered[bj]
+  local folders = {}
+  for _, f in ipairs(client.workspace_folders or {}) do folders[#folders + 1] = f.name end
+  lsp.report(P .. "two_boot_shared", bj ~= nil and bj.id ~= jdtls.id and bsp ~= nil and bsp.id == client.id
+      and #spring_all == 1 and #spring_pids() == 1 and routed_b == bj and routed_a == jdtls
+      and want_id ~= nil and reg_b == want_id,
+    ("second jdt.ls %s (own client: %s); spring-boot client on B's App.java %s (same client: %s); spring-boot clients %d, processes %d; "
+      .. "route B -> %s, route A -> %s; listener on B's jdt.ls %s (want %s); Spring LS workspace folders: %s")
+      :format(bj and "ready" or "NOT READY", tostring(bj and bj.id ~= jdtls.id), bsp and "attached" or "NONE",
+        tostring(bsp and bsp.id == client.id), #spring_all, #spring_pids(),
+        routed_b == bj and "B's jdt.ls" or "WRONG", routed_a == jdtls and "A's jdt.ls" or "WRONG",
+        tostring(reg_b), tostring(want_id), table.concat(folders, ",")))
+end)
+if not ok6 then lsp.report(P .. "two_boot_shared", false, "error: " .. tostring(err6)) end
 lsp.finish()
