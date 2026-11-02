@@ -284,9 +284,77 @@ local ok_all, err = pcall(function()
   -- `:e` a new file: the BufNewFile template, answered "class", is on disk
   do
     local path = dir .. "/P3Edited.java"
+    -- edit_template_sync: what every client was told about P3Edited (didOpen text, then each didChange),
+    -- replayed and compared with the buffer. A second client attaching while the template's didChange is
+    -- still in nvim's 150 ms debounce gets didOpen with the template and then that didChange again
+    -- (nvim shares the pending changes of all clients of one sync kind): the Spring LS held the template
+    -- twice (L1 syntax error, L7 "type already defined"). The attach is forced right after `:e` so it
+    -- does not depend on when the Spring LS happens to attach.
+    local told = {} -- client id -> { name, text lines | nil, errs }
+    local function apply(rec, ch)
+      if not rec.lines then rec.errs[#rec.errs + 1] = "didChange before didOpen" return end
+      if not ch.range then rec.lines = vim.split(ch.text, "\n", { plain = true }) return end
+      local s, e = ch.range.start, ch.range["end"]
+      local before = rec.lines[s.line + 1] or ""
+      local after = rec.lines[e.line + 1] or ""
+      local new = vim.split(before:sub(1, s.character) .. ch.text .. after:sub(e.character + 1), "\n", { plain = true })
+      local out = {}
+      for i = 1, s.line do out[#out + 1] = rec.lines[i] end
+      vim.list_extend(out, new)
+      for i = e.line + 2, #rec.lines do out[#out + 1] = rec.lines[i] end
+      rec.lines = out
+    end
+    local function track(c)
+      if c._p3_tracked then return end
+      c._p3_tracked = true
+      local orig = c.notify
+      c.notify = function(self, method, params, bufnr)
+        local uri = params and params.textDocument and params.textDocument.uri
+        if uri and uri:find("P3Edited.java", 1, true) then
+          local rec = told[self.id] or { name = self.name, errs = {} }
+          told[self.id] = rec
+          if method == "textDocument/didOpen" then
+            rec.lines = vim.split(params.textDocument.text, "\n", { plain = true })
+          elseif method == "textDocument/didChange" then
+            for _, ch in ipairs(params.contentChanges) do apply(rec, ch) end
+          end
+        end
+        return orig(self, method, params, bufnr)
+      end
+    end
+    for _, c in ipairs(vim.lsp.get_clients()) do track(c) end
     local ok, ms, how = via_template("class", path)
+    local eb = vim.fn.bufnr(path)
+    local forced = {}
+    for _, c in ipairs(vim.lsp.get_clients({ name = "spring-boot" })) do
+      if eb ~= -1 and not vim.lsp.buf_is_attached(eb, c.id) then
+        forced[#forced + 1] = c.name
+        vim.lsp.buf_attach_client(eb, c.id)
+      end
+    end
     vim.wait(100, function() return false end)
     check_file("edit_template", path, "demo.p3scaffold", "public class P3Edited", nil, ok, ms, how)
+    vim.wait(400, function() return false end) -- past nvim's 150 ms didChange debounce
+    local want = eb ~= -1 and vim.api.nvim_buf_get_lines(eb, 0, -1, false) or {}
+    local bad, seen = {}, {}
+    for _, c in ipairs(vim.lsp.get_clients({ bufnr = eb ~= -1 and eb or 0 })) do
+      local rec = told[c.id]
+      seen[#seen + 1] = c.name
+      if not rec or not rec.lines then
+        bad[#bad + 1] = c.name .. ": never opened it"
+      else
+        -- the server's text ends with the buffer's final newline: compare without the trailing empty line
+        local got = vim.deepcopy(rec.lines)
+        if got[#got] == "" then got[#got] = nil end
+        if table.concat(got, "\n") ~= table.concat(want, "\n") then
+          bad[#bad + 1] = ("%s holds %d lines, buffer %d (%s)"):format(c.name, #got, #want, table.concat(got, "|"):sub(1, 120))
+        end
+        vim.list_extend(bad, rec.errs)
+      end
+    end
+    lsp.report(P .. "edit_template_sync", ok and eb ~= -1 and #seen >= 1 and #bad == 0,
+      ("clients %s (forced attach: %s); %s"):format(table.concat(seen, ","), #forced > 0 and table.concat(forced, ",") or "none",
+        #bad == 0 and "every client's text equals the buffer" or table.concat(bad, "; ")))
   end
   -- neo-tree `a`: the file_added handler of plugins/neo-tree.lua on the empty file neo-tree made
   do

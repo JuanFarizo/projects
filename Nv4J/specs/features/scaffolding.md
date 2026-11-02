@@ -1,6 +1,6 @@
 # Feature: Scaffolding (new package, class, test class)
 
-Priority: P3. Status: built in Task 3 (`61_scaffold` 27 of 27 PASS). Decision: D22 in `specs/001-architecture.md`. Spec: `specs/005-p3-tests-scaffold-refactor.md`. Check: `tests/checks/61_scaffold.lua`. Product: `nvim/lua/nv4j/scaffold.lua`, the one template source, also used by `config/autocmds.lua` (BufNewFile) and `plugins/neo-tree.lua` (`file_added`); `nvim/lua/util/java_scaffold.lua` is gone.
+Priority: P3. Status: built in Task 3 (`61_scaffold` 28 of 28 PASS). Decision: D22 in `specs/001-architecture.md`. Spec: `specs/005-p3-tests-scaffold-refactor.md`. Check: `tests/checks/61_scaffold.lua`. Product: `nvim/lua/nv4j/scaffold.lua`, the one template source, also used by `config/autocmds.lua` (BufNewFile) and `plugins/neo-tree.lua` (`file_added`); `nvim/lua/util/java_scaffold.lua` is gone.
 
 ## Budget
 
@@ -64,6 +64,8 @@ Three consecutive runs 27/0 (`/tmp/nv4j/logs/test-20261026-093126.log`, `-093142
 | n61p+q+r | prompted name created in cwd (p), BufNewFile template not written (q), neo-tree handler writes nothing (r) | `prompts` (p); `edit_template` "(0 lines)", the Task 0 baseline (q); `neotree_fill` "EMPTY" (r) | `-093227.log` |
 | n61s | fix round 1: a syntax error (`oops` line) added to each new buffer and removed 3.5 s later | `compiles`, `compiles_all` "at 3 s 1 error(s)" while the post-build read is clean (the 3 s leg alone catches it) | `/tmp/nv4j/logs/test-20261026-093933.log` |
 
+| n61t | fix of the flake below reverted (`flush_lsp` removed from `fill_buf`) | `edit_template_sync` "spring-boot holds 9 lines, buffer 5" | `/tmp/nv4j/logs/test-20261102-160335.log` (first unfixed run `-160236.log`); with the fix `-160311.log` PASS |
+
 `compiles*` assert the budget at its mark (fix round 1): a timer per file reads its error diagnostics at creation + 3 s, they must be published and zero (`/tmp/nv4j/logs/test-20261026-093908.log`, 27/0). Deterministic twin: after the timing wait, `nv4j.debug.refresh_and_build` then 500 ms without a publish; the error count is read after that build, not from whichever publish came first.
 
 ## Decision D22 (summary; full text in 001)
@@ -96,6 +98,7 @@ Negative controls: the baseline itself is the control for "saved": the template 
 | t3-f | insert mode via `feedkeys("S")` in headless checks would leave `S` in the typeahead | insert only with a UI (`nvim_list_uis`) | kept |
 | t3-h | review fix round 1: the 3 s budget was not asserted at 3 s (only "settled <= 3 s" and the post-build read) | snapshot of the errors at creation + 3 s, must be zero; n61s FAILs it | kept |
 | t3-g | `prompts`, `edit_template`, `neotree_fill` added (the prompt path, `:e`, neo-tree handler) | pass; n61p/q/r FAIL them | kept |
+| t3-i | `compiles_all` `edit_template` failed twice in full runs of 2026-11-02 (`L1 Syntax error`, `L7 The type P3Edited is already defined`, load 7 to 10). Cause: the `:e` flow edits the buffer (template) while nvim holds the didChange in its 150 ms debounce; the Spring LS attaches in that window, gets didOpen with the template and then the pending didChange to the same group, so it held the template twice (jdt.ls was right). Fix: `fill_buf` flushes the pending changes (`vim.lsp._changetracking.flush`, guarded) right after `set_lines`. New case `edit_template_sync` replays every client's didOpen/didChange and compares with the buffer; the second client's attach is forced after `:e` so the case does not depend on timing | n61t FAILs it; 5 runs PASS | kept |
 
 ## Open items
 

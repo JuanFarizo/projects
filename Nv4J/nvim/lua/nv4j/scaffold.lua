@@ -302,6 +302,19 @@ local function pick_kind(class_name, cb)
   end)
 end
 
+--- Sends the didChange nvim still holds back (150 ms debounce) for every client attached to `bufnr`.
+--- nvim keeps the pending changes of all clients of one sync kind in one queue and sends them to every
+--- client of the group when the timer fires. A client that attaches in between (the Spring LS, on a
+--- scheduled attach after `:e`) gets didOpen with the text that already includes the change and then
+--- the same change again: it held the new file's template twice. Flushing right after the edit leaves
+--- nothing pending for a late attacher. Uses nvim's internal module (guarded: if it moves, nothing is
+--- flushed and the behaviour is nvim's default).
+local function flush_lsp(bufnr)
+  local ok, ct = pcall(require, "vim.lsp._changetracking")
+  if not ok or type(ct.flush) ~= "function" then return end
+  for _, c in ipairs(vim.lsp.get_clients({ bufnr = bufnr })) do pcall(ct.flush, c, bufnr) end
+end
+
 --- `:e Foo.java` (BufNewFile): asks the kind, fills the buffer and writes it, so the file on disk is
 --- not the empty one nvim-jdtls writes on attach.
 function M.fill_buf(bufnr, path)
@@ -310,6 +323,7 @@ function M.fill_buf(bufnr, path)
     if not vim.api.nvim_buf_is_valid(bufnr) then return end
     local lines, cl, cc, at_end = M.lines(class_name, pkg, kind)
     vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
+    flush_lsp(bufnr)
     vim.api.nvim_buf_call(bufnr, function() vim.cmd("silent write!") end)
     if vim.api.nvim_get_current_buf() == bufnr and has_ui() then
       vim.api.nvim_win_set_cursor(0, { cl, cc })
