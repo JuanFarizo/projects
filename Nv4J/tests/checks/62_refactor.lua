@@ -24,6 +24,8 @@
 --  rename_class_boot  : GreetingController (@RestController) -> HelloController; build clean.
 --  rename_class_errors: a syntax error in Checkout (jdt.ls then skips its references): the summary
 --                       warning names Checkout.java:3. _twin: refactor.new_errors on a planted error.
+--  rename_class_cold_retry, _cold_warn, _cold_warm_once: the first rename answer without PriceCalculator (stub): one retry,
+--                       dependent updated; every answer without it: WARN names it, one `u` per buffer; unstubbed: one request.
 --  rename_package     : demo.shop -> demo.store from Checkout's package line: demo/store/Checkout.java,
 --                       package line on disk, buffer re-pointed, summary; build clean.
 --  rename_package_imports: demo.billing -> demo.invoicing (src/main and src/test folders), package and
@@ -3611,6 +3613,231 @@ case("rename_class_on_done_throws", function()
   stop()
   lsp.report(P .. "rename_class_on_done_throws", n == 1 and args[1] == "true" and refactor._busy() == nil,
     ("on_done called %d time(s) (%s); busy %s"):format(n, table.concat(args, ","), vim.inspect(refactor._busy())))
+end)
+
+-- rename_class_revalidates (flake B): after a rename, jdt.ls is told to validate EVERY open Java file, also
+-- one the edit did not touch (a dependent it skipped keeps its old diagnostics otherwise: 1 of 4 runs of
+-- rename_class_errors had no follow-up). Deterministic: the notifications sent are recorded.
+case("rename_class_revalidates", function()
+  local inv, chk = lsp.open(INVOICE), lsp.open(CHECKOUT)
+  local GC = main .. "demo/GreetingController.java"
+  lsp.open(GC) -- not touched by the rename of Invoice
+  vim.api.nvim_set_current_buf(inv)
+  local l, c = pos(inv, "^public class Invoice", "Invoice")
+  vim.api.nvim_win_set_cursor(0, { l + 1, c })
+  local sent, real = {}, client.notify
+  client.notify = function(self, method, params)
+    if method == "java/validateDocument" then sent[#sent + 1] = params.textDocument.uri end
+    return real(self, method, params)
+  end
+  local res = {}
+  local ok_call, err = pcall(function()
+    refactor.rename_class({ name = "Bill", on_done = function(ok) res.done = ok end })
+    vim.wait(8000, function() return res.done ~= nil end, 10)
+  end)
+  client.notify = nil
+  local has_u = function(p) return vim.tbl_contains(sent, vim.uri_from_fname(p)) end
+  lsp.report(P .. "rename_class_revalidates", ok_call and res.done == true and has_u(GC) and has_u(CHECKOUT) and has_u(CALC),
+    ("done %s (%s); validateDocument sent for the untouched GreetingController %s, Checkout %s, PriceCalculator %s (%d sent)"):format(
+      tostring(res.done), tostring(err), tostring(has_u(GC)), tostring(has_u(CHECKOUT)), tostring(has_u(CALC)), #sent))
+end)
+
+-- rename_class_cold_* (flake B, product defect): the first rename of a session can come back cold (jdt.ls skips a dependent
+-- or leaves its references out) and the project stops compiling under a success toast. rename_class compares the files of the
+-- edit with textDocument/references of the old declaration, asks once more, and warns when a file is still missing.
+-- Stubs on client.request: the first (or every) rename answer is stripped of PriceCalculator's edits.
+local function drop_calc(edit)
+  local function not_calc(u) return not u:find("/demo/billing/PriceCalculator.java", 1, true) end
+  if edit.documentChanges then
+    edit.documentChanges = vim.tbl_filter(function(ch) return not (ch.textDocument and not not_calc(ch.textDocument.uri)) end, edit.documentChanges)
+  end
+  if edit.changes then
+    for u in pairs(edit.changes) do if not not_calc(u) then edit.changes[u] = nil end end
+  end
+  return edit
+end
+
+--- Renames Invoice -> Bill with the rename answers stubbed by `strip(n, edit)` (n = which request); returns the facts.
+local function cold_rename(strip, ref_stub, ropts)
+  ropts = ropts or {}
+  local inv, chk, calc = lsp.open(INVOICE), lsp.open(CHECKOUT), lsp.open(CALC)
+  local before = { Checkout = { chk, E.text(chk) }, PriceCalculator = { calc, E.text(calc) }, Invoice = { inv, E.text(inv) } }
+  vim.api.nvim_set_current_buf(inv)
+  local l, c = pos(inv, "^public class Invoice", "Invoice")
+  vim.api.nvim_win_set_cursor(0, { l + 1, c })
+  local real, real_ms = client.request, refactor.rename_ms
+  if ropts.rename_ms then refactor.rename_ms = ropts.rename_ms end
+  local r = { renames = 0, ref_ms = 0, refs = 0, first_files = nil, done_n = 0 }
+  r.ref_n = 0
+  client.request = function(self, m, params, handler, b)
+    if m == "textDocument/references" then
+      r.ref_n = r.ref_n + 1
+      local t0 = vim.uv.hrtime()
+      r.refs = r.refs + 1
+      local timed = function(err, res, ctx)
+        r.ref_ms = r.ref_ms + (vim.uv.hrtime() - t0) / 1e6
+        return handler(err, res, ctx)
+      end
+      if ref_stub then return ref_stub(r.ref_n, function(h) return real(self, m, params, h or timed, b) end, timed) end
+      return real(self, m, params, timed, b)
+    end
+    if m ~= "textDocument/rename" then return real(self, m, params, handler, b) end
+    r.renames = r.renames + 1
+    local n = r.renames
+    return real(self, m, params, function(err, edit, ctx)
+      if edit and strip then edit = strip(n, edit) end
+      if ropts.rename_delay and n == 1 then
+        vim.defer_fn(function() handler(err, edit, ctx) end, ropts.rename_delay)
+        return
+      end
+      if n == 1 and edit then -- what the product was given as the first answer
+        r.first_files = vim.tbl_map(function(ch) return ch.textDocument and ch.textDocument.uri or ch.oldUri end, edit.documentChanges or {})
+      end
+      return handler(err, edit, ctx)
+    end, b)
+  end
+  local got, stop = capture()
+  local ok, err = pcall(function()
+    local t0 = vim.uv.hrtime()
+    refactor.rename_class({ name = "Bill", on_done = function(x) r.done_n, r.done = r.done_n + 1, x end })
+    vim.wait(ropts.wait or 12000, function() return r.done ~= nil end, 10)
+    r.total_ms = (vim.uv.hrtime() - t0) / 1e6
+    vim.wait(300)
+  end)
+  client.request, refactor.rename_ms = real, real_ms
+  stop()
+  r.got, r.err, r.before, r.busy = got, err, before, refactor._busy()
+  r.calc_old = word_count(text_of(CALC), "Invoice")
+  r.chk_old = word_count(text_of(CHECKOUT), "Invoice")
+  return r
+end
+
+--- One `u` in each buffer gives its text from before the rename back (the renamed file lives on as Bill).
+local function undo_all(before)
+  local bad = {}
+  for name, bt in pairs(before) do
+    local b = bt[1]
+    if not vim.api.nvim_buf_is_valid(b) then b = vim.fn.bufnr(BILL) end
+    if b == -1 or not vim.api.nvim_buf_is_valid(b) then
+      bad[#bad + 1] = name .. " (buffer gone)"
+    else
+      vim.api.nvim_buf_call(b, function() vim.cmd("silent! undo") end)
+      if E.text(b) ~= bt[2] then bad[#bad + 1] = name end
+    end
+  end
+  return bad
+end
+
+case("rename_class_cold_retry", function()
+  local r = cold_rename(function(n, edit) return n == 1 and drop_calc(edit) or edit end)
+  local warn = find_msg(r.got, "did NOT update", vim.log.levels.WARN)
+  lsp.report(P .. "rename_class_cold_retry", r.err == nil and r.renames == 2 and r.done == true and r.done_n == 1 and r.calc_old == 0
+    and r.chk_old == 0 and warn == nil and r.busy == nil and r.first_files ~= nil
+    and not vim.iter(r.first_files):any(function(u) return u:find("/PriceCalculator.java", 1, true) end),
+    ("rename requests %d (want 2: cold first answer without PriceCalculator, then the retry); on_done x%d (%s); Invoice tokens left: PriceCalculator %d, Checkout %d; warning %s; references asked %d x (%.0f ms); busy %s; err %s"):format(
+      r.renames, r.done_n, tostring(r.done), r.calc_old, r.chk_old, tostring(warn), r.refs, r.ref_ms, vim.inspect(r.busy), tostring(r.err)))
+end)
+
+case("rename_class_cold_warn", function()
+  local r = cold_rename(function(_, edit) return drop_calc(edit) end)
+  local warn = find_msg(r.got, "did NOT update", vim.log.levels.WARN) or ""
+  local bad = undo_all(r.before)
+  lsp.report(P .. "rename_class_cold_warn", r.err == nil and r.renames == 2 and r.done == true and r.done_n == 1 and r.busy == nil
+    and warn:find("PriceCalculator.java:", 1, true) ~= nil and warn:find("Renamed class Invoice -> Bill", 1, true) ~= nil
+    and r.calc_old > 0 and #bad == 0,
+    ("rename requests %d (want 2); on_done x%d (%s); WARN %s; PriceCalculator keeps %d Invoice token(s) (jdt.ls gave nothing for it); one u restored all: %s"):format(
+      r.renames, r.done_n, tostring(r.done), warn ~= "" and warn:sub(1, 420) or "NONE", r.calc_old, #bad == 0 and "yes" or table.concat(bad, ", ")))
+end)
+
+-- warm: no stub on the answer. Exactly one rename request when the edit holds every referencing file (jdt.ls cold on a
+-- fresh session may legitimately need two: then the first answer must really have lacked a referencing file).
+case("rename_class_cold_warm_once", function()
+  local r = cold_rename(nil)
+  local first = r.first_files and table.concat(r.first_files, " ") or ""
+  local complete = first:find("Checkout", 1, true) ~= nil and first:find("/PriceCalculator.java", 1, true) ~= nil
+  lsp.report(P .. "rename_class_cold_warm_once", r.err == nil and r.done == true and r.done_n == 1 and r.calc_old == 0 and r.chk_old == 0
+    and ((r.renames == 1 and complete) or (r.renames == 2 and not complete))
+    and (r.renames ~= 1 or (r.ref_ms <= 100 and (r.total_ms or 1e9) <= 2000)), -- budgets: references <= 100 ms extra, whole rename <= 2 s
+    ("rename requests %d; first answer complete: %s; references asked %d x total %.0f ms; whole rename %.0f ms; Invoice tokens left %d"):format(
+      r.renames, tostring(complete), r.refs, r.ref_ms, r.total_ms or -1, r.calc_old + r.chk_old))
+end)
+
+-- rename_class_refs_* (review I1-I3, deterministic stubs on client.request for textDocument/references; the rename answers are
+-- stripped of PriceCalculator on the first request where noted). unknown = no usable references answer (error, timeout).
+local UNVERIFIED_MSG = "could not verify that all usages were renamed"
+local function ref_err(_, _, h) h({ code = -32603, message = "stub: references failed" }, nil, {}); return true, 1 end
+local function ref_never() return true, 1 end
+
+case("rename_class_refs_unknown", function()
+  -- references fail (error, then never answer = timeout): unknown twice -> edit applied once, WARN "could not verify", one u
+  local r = cold_rename(nil, function(n, real, timed) if n == 1 then return ref_err(n, real, timed) end return ref_never() end, { rename_ms = 600 })
+  local warn = find_msg(r.got, UNVERIFIED_MSG, vim.log.levels.WARN) or ""
+  local missed = find_msg(r.got, "did NOT update", vim.log.levels.WARN)
+  local bad = undo_all(r.before)
+  lsp.report(P .. "rename_class_refs_unknown", r.err == nil and r.renames == 2 and r.ref_n == 2 and r.done == true and r.done_n == 1
+    and r.busy == nil and warn ~= "" and missed == nil and r.calc_old == 0 and r.chk_old == 0 and #bad == 0,
+    ("rename requests %d (want 2); references asked %d (want 2: error, timeout); on_done x%d (%s); WARN %s; Invoice tokens left %d; one u restored all: %s; busy %s; err %s"):format(
+      r.renames, r.ref_n, r.done_n, tostring(r.done), warn ~= "" and warn:sub(1, 200) or "NONE", r.calc_old + r.chk_old,
+      #bad == 0 and "yes" or table.concat(bad, ", "), vim.inspect(r.busy), tostring(r.err)))
+end)
+
+case("rename_class_refs_error_once", function()
+  -- references error once, then answer (real): retry, no WARN of either kind
+  local r = cold_rename(nil, function(n, real, timed) if n == 1 then return ref_err(n, real, timed) end return real() end)
+  local w1, w2 = find_msg(r.got, UNVERIFIED_MSG, vim.log.levels.WARN), find_msg(r.got, "did NOT update", vim.log.levels.WARN)
+  lsp.report(P .. "rename_class_refs_error_once", r.err == nil and r.renames == 2 and r.ref_n == 2 and r.done == true and r.done_n == 1
+    and w1 == nil and w2 == nil and r.calc_old == 0 and r.chk_old == 0 and r.busy == nil,
+    ("rename requests %d (want 2); references asked %d (want 2); on_done x%d; unverified WARN %s; missed WARN %s; Invoice tokens left %d; busy %s; err %s"):format(
+      r.renames, r.ref_n, r.done_n, tostring(w1), tostring(w2), r.calc_old + r.chk_old, vim.inspect(r.busy), tostring(r.err)))
+end)
+
+case("rename_class_refs_empty_ok", function()
+  -- an answered, EMPTY references list is not unknown (a class may have no usages): one rename, no WARN
+  local r = cold_rename(nil, function(_, _, timed) timed(nil, {}, {}); return true, 1 end)
+  local w1, w2 = find_msg(r.got, UNVERIFIED_MSG, vim.log.levels.WARN), find_msg(r.got, "did NOT update", vim.log.levels.WARN)
+  lsp.report(P .. "rename_class_refs_empty_ok", r.err == nil and r.renames == 1 and r.done == true and r.done_n == 1 and w1 == nil and w2 == nil and r.busy == nil,
+    ("rename requests %d (want 1); on_done x%d; unverified WARN %s; missed WARN %s; err %s"):format(r.renames, r.done_n, tostring(w1), tostring(w2), tostring(r.err)))
+end)
+
+case("rename_class_refs_capped", function()
+  -- 25 references in files the edit never touches: the WARN names warn_max and "... and 15 more"; M.last.left keeps all 25
+  local fake = {}
+  for i = 1, 25 do
+    fake[i] = { uri = vim.uri_from_fname(main .. "demo/billing/Fake" .. i .. ".java"), range = { start = { line = i, character = 0 }, ["end"] = { line = i, character = 3 } } }
+  end
+  local r = cold_rename(nil, function(_, _, timed) timed(nil, fake, {}); return true, 1 end)
+  local warn = find_msg(r.got, "did NOT update", vim.log.levels.WARN) or ""
+  local n = select(2, warn:gsub("Fake%d+%.java:", ""))
+  lsp.report(P .. "rename_class_refs_capped", r.err == nil and r.done == true and r.done_n == 1 and n == refactor.warn_max
+    and warn:find("... and 15 more", 1, true) ~= nil and #warn < 1500 and refactor.last and #refactor.last.left == 25,
+    ("done %s x%d; entries named %d (want %d); 'and 15 more' %s; WARN length %d; last.left %d; err %s"):format(tostring(r.done), r.done_n, n, refactor.warn_max,
+      tostring(warn:find("... and 15 more", 1, true) ~= nil), #warn, refactor.last and #refactor.last.left or -1, tostring(r.err)))
+end)
+
+case("rename_class_refs_slow_first", function()
+  -- the first rename answer comes after 0.7 s of a 1 s bound (cold, no PriceCalculator) and the references check then
+  -- shows the gap; the retry must still get its own full bound (a total of 1.4+ s > 1 s) and complete
+  local r = cold_rename(function(n, edit) return n == 1 and drop_calc(edit) or edit end, nil, { rename_ms = 1000, rename_delay = 700 })
+  local warn = find_msg(r.got, "did NOT update", vim.log.levels.WARN)
+  local err = find_msg(r.got, "did not answer", vim.log.levels.ERROR)
+  lsp.report(P .. "rename_class_refs_slow_first", r.err == nil and r.renames == 2 and r.done == true and r.done_n == 1 and err == nil and warn == nil
+    and r.calc_old == 0 and r.chk_old == 0 and (r.total_ms or 0) > 700 and r.busy == nil,
+    ("rename requests %d (want 2); on_done x%d (%s); total %.0f ms (first answer delayed 700 ms, bound 1000 ms per request); timeout ERROR %s; missed WARN %s; Invoice tokens left %d; err %s"):format(
+      r.renames, r.done_n, tostring(r.done), r.total_ms or -1, tostring(err), tostring(warn), r.calc_old + r.chk_old, tostring(r.err)))
+end)
+
+case("rename_class_refs_late_ignored", function()
+  -- references never answer for a rename whose bound fires on the references stage: unknown, applied once; a late references
+  -- answer afterwards changes nothing and does not call on_done again
+  local late = {}
+  local r = cold_rename(nil, function(_, _, timed) late[#late + 1] = timed; return true, 1 end, { rename_ms = 500 })
+  local before_n = r.done_n
+  for _, h in ipairs(late) do h(nil, {}, {}) end
+  vim.wait(200)
+  lsp.report(P .. "rename_class_refs_late_ignored", r.err == nil and r.done == true and before_n == 1 and r.done_n == 1 and #late == 2 and r.busy == nil
+    and find_msg(r.got, UNVERIFIED_MSG, vim.log.levels.WARN) ~= nil,
+    ("on_done x%d after the late answers (want 1); references asked %d (want 2); unverified WARN %s; busy %s; err %s"):format(
+      r.done_n, #late, tostring(find_msg(r.got, UNVERIFIED_MSG, vim.log.levels.WARN) ~= nil), vim.inspect(r.busy), tostring(r.err)))
 end)
 
 -- rename_class_case_only_undo (re-review Q1): the two renames of a case-only rename (via the temporary name) form ONE undo step in each

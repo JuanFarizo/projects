@@ -412,6 +412,18 @@ local TMP_SUFFIX = "__Nv4jTmp"
 
 M.rename_ms = 10000 -- textDocument/rename: 0.4-1 s normally (19.7 s once, a jdt.ls stall); no answer by then ends it
 local rename_class_impl
+M.warn_max = 10 -- file:line entries named in a WARN; the full list stays in M.last.left
+local function capped(list)
+  local n = #list
+  if n <= M.warn_max then return table.concat(list, ", ") end
+  return table.concat(list, ", ", 1, M.warn_max) .. (", ... and %d more"):format(n - M.warn_max)
+end
+local function cold_note(old, left)
+  return ("WARNING: jdt.ls did NOT update these references to %s (it skipped the file, even after a second request); they still name the old class and the project may not compile: %s"):format(
+    old, capped(left))
+end
+local UNVERIFIED = "WARNING: could not verify that all usages were renamed (jdt.ls gave no usable answer to textDocument/references, even after a second request); check that the project still compiles"
+local references, untouched_refs -- defined with change_signature/inline below; the cold-rename check shares them
 
 --- opts._quiet: step 1 of a case-only rename (no summary, scan or follow-up); opts._shown_old: the name the
 --- user sees in step 2's label and string scan; opts._tmp_from = { tmp_path = original_path }.
@@ -485,7 +497,7 @@ function rename_class_impl(opts)
     end
     local ticks = tick_snapshot()
     busy, mine = { label = ("rename class %s"):format(old) }, true
-    local function answered(err, edit)
+    local function answered(err, edit, left, unknown)
       if err then
         notify(("Rename class %s -> %s: jdt.ls refused (%s); nothing changed"):format(old, name, err.message or vim.inspect(err)),
           vim.log.levels.ERROR)
@@ -518,6 +530,10 @@ function rename_class_impl(opts)
         failed_part_way(label, why, files, root_of(client))
         return done(false)
       end
+      if opts._quiet then -- step 1 of a case-only rename: step 2's scan reports what still names the old class
+        if left and #left > 0 then notify(cold_note(old, left), vim.log.levels.WARN) end
+        if unknown then notify(UNVERIFIED, vim.log.levels.WARN) end
+      end
       if opts._quiet then return done(true) end -- step 1 of a case-only rename: step 2 reports
       for _, f in ipairs(files) do -- step 2: the file came from the user's name, not from the temporary one
         if f.from and opts._tmp_from and opts._tmp_from[f.from] then f.from = opts._tmp_from[f.from] end
@@ -525,41 +541,101 @@ function rename_class_impl(opts)
       local t_scan = vim.uv.hrtime()
       local _, pkg = src_root_of(vim.fs.dirname(path))
       local stale, cut, unread = M.stale_refs(require("nv4j.root").project(path), class_names(shown, pkg ~= "" and pkg or nil))
-      M.last = { label = label, files = files, ok = true, stale = stale, scan_ms = (vim.uv.hrtime() - t_scan) / 1e6, truncated = cut, unread = unread }
-      notify(summary(label, files, root_of(client)) .. stale_note(stale, shown, cut, unread), (#stale > 0 or cut or #unread > 0) and vim.log.levels.WARN or nil)
+      left = left or {}
+      M.last = { label = label, files = files, ok = true, stale = stale, left = left, unverified = unknown or false, scan_ms = (vim.uv.hrtime() - t_scan) / 1e6, truncated = cut, unread = unread }
+      notify(summary(label, files, root_of(client)) .. stale_note(stale, shown, cut, unread)
+        .. (#left > 0 and (". " .. cold_note(shown, left)) or "") .. (unknown and (". " .. UNVERIFIED) or ""),
+        (#stale > 0 or cut or #unread > 0 or #left > 0 or unknown) and vim.log.levels.WARN or nil)
+      -- every open Java file of this jdt.ls, not only the touched ones: a dependent jdt.ls skipped (a syntax
+      -- error there) otherwise keeps its diagnostics from before the rename and the follow-up sees nothing
+      -- (flake B: 1 of 4 runs of `62_refactor` rename_class_errors, follow-up nil)
+      M.revalidate(client, vim.tbl_filter(function(p) return p:match("%.java$") end, vim.tbl_map(function(b)
+        return vim.api.nvim_buf_get_name(b)
+      end, vim.lsp.get_buffers_by_client_id(client.id))))
       follow_up(label, before, vim.tbl_map(function(f) return f.path end, files))
       done(true)
     end
     local settled = false
-    local pok, sent = pcall(client.request, client, "textDocument/rename", params, function(err, edit)
-      if settled then return end -- after the time limit (the rename was reported as not done): ignored
+    -- Cold jdt.ls (first rename of a session): it refuses a dependent ("has syntax errors. Content of that file
+    -- will not be updated") or answers without the references, and the project stops compiling with a
+    -- success toast. So before applying, the files of the edit are compared with the files that reference the
+    -- old declaration (async, no UI freeze); missing ones, or no usable answer to the references request
+    -- (error, timeout: "unknown"): ask once more (the first request warms jdt.ls), still so: apply what
+    -- jdt.ls gave and warn (the list of files, or "could not verify"). Every request has its own M.rename_ms
+    -- bound (a slow first answer cannot starve the retry); an answer after its bound is ignored.
+    local function ask(method, p, cb)
+      local fired = false
+      local function fire(err, res, timed)
+        if fired or settled then return end
+        fired = true
+        cb(err, res, timed)
+      end
+      local pok, sent = pcall(client.request, client, method, p, function(err, res) fire(err, res, false) end, buf)
+      if not pok or not sent then return false, pok and "it is not running" or tostring(sent) end
+      vim.defer_fn(function() fire(nil, nil, true) end, M.rename_ms)
+      return true
+    end
+    -- cb(left, unknown): files of the old declaration's references the edit did not touch; unknown = no answer
+    local function check_refs(edit, cb)
+      local sent = ask("textDocument/references", { textDocument = { uri = params.textDocument.uri },
+        position = params.position, context = { includeDeclaration = false } }, function(err, res, timed)
+        if timed or err or type(res) ~= "table" then return cb({}, true) end
+        local refs = {}
+        for _, r in ipairs(res) do
+          if r.uri and r.uri:match("^file:") then refs[#refs + 1] = { path = vim.uri_to_fname(r.uri), l = r.range.start.line } end
+        end
+        local files = {}
+        for _, f in ipairs(edit_files(edit)) do
+          files[#files + 1] = f
+          if f.from then files[#files + 1] = { path = f.from } end -- references inside the renamed file itself
+        end
+        cb(untouched_refs(refs, files, root_of(client)), false)
+      end)
+      if not sent then cb({}, true) end
+    end
+    local function finish(err, edit, left, unknown)
       settled = true
       -- whatever goes wrong after the answer, the caller hears of it (on_done) and `busy` is cleared
-      local ok, e = pcall(answered, err, edit)
+      local ok, e = pcall(answered, err, edit, left, unknown)
       if not ok then
         M.last = { label = label, files = {}, ok = false, err = tostring(e) }
         notify(("Rename class %s -> %s FAILED after jdt.ls answered (%s); files in an earlier summary line, if any, may be changed: undo with `u` there"):format(
           old, name, tostring(e)), vim.log.levels.ERROR)
         done(false)
       end
-    end, buf)
+    end
+    local function send(attempt, prev)
+      return ask("textDocument/rename", params, function(err, edit, timed)
+        if timed or err or not edit then
+          -- the retry failed: the first answer, with the warning
+          if prev then return finish(nil, prev.edit, prev.left, prev.unknown) end
+          if timed then
+            settled = true
+            M.last = { label = label, files = {}, ok = false, err = "no answer" }
+            notify(("Rename class %s -> %s: jdt.ls did not answer in %d ms; nothing changed (an answer arriving later is ignored)"):format(
+              old, name, M.rename_ms), vim.log.levels.ERROR)
+            return done(false)
+          end
+          return finish(err, edit)
+        end
+        check_refs(edit, function(left, unknown)
+          if settled then return end
+          if (#left > 0 or unknown) and attempt == 1 then
+            if send(2, { edit = edit, left = left, unknown = unknown }) then return end
+          end
+          finish(nil, edit, left, unknown)
+        end)
+      end)
+    end
+    local sent, why = send(1)
     -- the request was not sent (jdt.ls stopped, or the call threw): nothing will ever answer
-    if not pok or not sent then
+    if not sent then
       settled = true
       M.last = { label = label, files = {}, ok = false, err = "request not sent" }
-      notify(("Rename class %s -> %s: the request could not be sent to jdt.ls (%s); nothing changed"):format(old, name,
-        pok and "it is not running" or tostring(sent)), vim.log.levels.ERROR)
+      notify(("Rename class %s -> %s: the request could not be sent to jdt.ls (%s); nothing changed"):format(old, name, why),
+        vim.log.levels.ERROR)
       return done(false)
     end
-    -- jdt.ls never answers (died, hung): `busy` must not stay set until Neovim restarts
-    vim.defer_fn(function()
-      if settled then return end
-      settled = true
-      M.last = { label = label, files = {}, ok = false, err = "no answer" }
-      notify(("Rename class %s -> %s: jdt.ls did not answer in %d ms; nothing changed (an answer arriving later is ignored)"):format(
-        old, name, M.rename_ms), vim.log.levels.ERROR)
-      done(false)
-    end, M.rename_ms)
   end
   if opts.name then return run(opts.name) end
   vim.ui.input({ prompt = ("Rename class %s to: "):format(old), default = old }, run)
@@ -1248,7 +1324,7 @@ local function is_bean(lines, l)
 end
 
 --- jdt.ls's references to the symbol declared at (uri, l, c) in project files: { { path, l } }.
-local function references(client, buf, uri, l, c)
+function references(client, buf, uri, l, c)
   local res = client:request_sync("textDocument/references", { textDocument = { uri = uri },
     position = { line = l, character = c }, context = { includeDeclaration = false } }, M.inline_ms, buf)
   local refs = {}
@@ -1260,7 +1336,7 @@ end
 
 --- "file:line" of the references in files the edit did not touch (`files`: apply()'s list): occurrences
 --- jdt.ls did not update (it skips a file it cannot parse).
-local function untouched_refs(refs, files, root)
+function untouched_refs(refs, files, root)
   local touched, left, seen = {}, {}, {}
   for _, f in ipairs(files) do touched[f.path] = true end
   for _, r in ipairs(refs) do
