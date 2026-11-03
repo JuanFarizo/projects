@@ -11,14 +11,14 @@ One list of what is open. Update it when you finish or add something. Newest dec
 
 ## Open work
 
-- [x] jdt.ls flakes investigated 2026-11-02 (details in `docs/HANDOFF-p3.md`, Flakes). B fixed twice (`rename_class` revalidates every open Java file, case `rename_class_revalidates`; the cold first rename that left dependents on the old name is retried once and warned, cases `rename_class_cold_*`). A (`INVALID_SERVER_JSON`) narrowed: not Neovim's parser, the message is jdt.ls's `sts.java.classpath` data over 64 KB; open: capture the raw bytes on error. C (stall) not found: old log gone, load was 11 to 49; `run.sh` now logs the load before each check.
+- [x] jdt.ls flakes investigated 2026-11-02 (details in `docs/HANDOFF-p3.md`, Flakes). B fixed twice (`rename_class` revalidates every open Java file, case `rename_class_revalidates`; the cold first rename that left dependents on the old name is retried once and warned, cases `rename_class_cold_*`). A (`INVALID_SERVER_JSON`) narrowed: not Neovim's parser, the message is jdt.ls's `sts.java.classpath` data over 64 KB; the raw-bytes capture now exists (`vim.g.nv4j_lsp_capture`, see below); open: wait for the next hit. C (stall) not found: old log gone, load was 11 to 49; `run.sh` now logs the load before each check.
 - [ ] `two_boot_index` flake (about 1 in 4 at load 4-5): 8 instrumented runs were all green, cause not captured; two real defects fixed (`file:/` projectUri routing, retry of a rejected `addClasspathListener`, see spring-language-server.md s2). If it fails again, look at the `addClasspathListener rejected` lines in `/tmp/nv4j/logs/spring-route.log` and keep `spring-boot-ls.log`.
-- [ ] Flake A: `INVALID_SERVER_JSON`: capture the raw bytes when `on_error` fires (a debug-only hook that keeps the last 128 KB of server stdout).
+- [x] Flake A capture: `vim.g.nv4j_lsp_capture = true` (or env `NV4J_LSP_CAPTURE=1`) keeps the last 128 KB of raw stdout of jdt.ls and the Spring LS and writes `/tmp/nv4j/logs/lsp-capture-<client>-<time>.bin` with a WARN on `INVALID_SERVER_JSON` or an abnormal server exit (`nvim/lua/nv4j/lspcapture.lua`, check 64 `capture_*`). Still open: turn it on when working with a big Spring project; when it fires, look at the bytes around character 65512 of the dump and see whether two messages interleave.
 - [ ] Flake C: stall: look at the new `load: ..., java processes` lines in `tests/run.sh` output next time a check is slow.
 - [ ] Linux: run Nv4J on Ubuntu once. `<A-/>` comment, `<A-Left>` / `<A-Right>`, `<A-]>` / `<A-[>` were tested only through the key map, not in a Linux terminal.
 - [ ] AI agents: Claude and Cursor were never run for real; check 65 stubs `ClaudeCodeOpen`.
 - [ ] First start with Mason on a new machine: prettier, marksman, markdownlint-cli2 and markdown-toc install (needs Node).
-- [ ] Cap minors: a buffer the loose-file cap refused needs `:e` after the running jdt.ls stops; the `start_or_attach` wrap is lost if the jdtls module is reloaded; `warn_loose` compares raw path strings.
+- [x] Cap minors (2026-11-02): a buffer the loose-file cap refused starts its jdt.ls by itself when a jdt.ls exits and the cap allows it (`root.release_refused`, cases `cap_release`, `cap_release_live`); the `start_or_attach` guard is re-applied before every start (`root.guard_start`, case `guard_reload`); `warn_loose` compares roots with `root.canon` (case `cap_canon`).
 - [ ] Tests not covered: TestNG, JUnit 4, multi-module and Gradle test runs; the Mason `is_installing` guard; the warning paths of the Spring route log.
 - [ ] Case-folding branch of the project path match runs only on a case-sensitive file system (this Mac is case-insensitive).
 
@@ -32,6 +32,7 @@ Settled, no longer asked: the 5 s ceiling for change signature on a method with 
 
 ## Done recently
 
+- 2026-11-02: debug-only raw stdout capture for flake A and the three cap minors (see Open work); `64_project_marker` has 36 cases. Controls n64g: all eight new real or unit cases FAIL when the capture, the release, the canon compare or the guard re-application is removed (`/tmp/nv4j/logs/test-20261102-224619.log`).
 - 2026-11-02: `61_scaffold` `compiles_all` / `edit_template` flake fixed: the Spring LS held the new file's template twice (nvim sends a pending didChange to a client that attached after the edit); `fill_buf` flushes pending changes, case `edit_template_sync` with control. The same race can hit any edit made within 150 ms before a second LS attaches (not fixed outside the scaffold).
 - 2026-11-02: cold first class rename no longer leaves dependents on the old name silently: references compared with the edit, one retry, WARN if still missing (check 62 `rename_class_cold_*`). Docs name jdt.ls 1.63.0 (installed plugin 1.63.0.202610191322).
 - 2026-11-02: Spring LS with two projects: checked with a real run, it does index the second project (request mapping, bean, configuration key) although it gets only the first folder; no fix needed. Check 50 `two_boot_index`. Memory warning timer path smoke-tested with a real jdt.ls: check 64 `memwatch_live`.

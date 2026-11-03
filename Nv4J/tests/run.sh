@@ -5,6 +5,21 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 LOGS=/tmp/nv4j/logs
 mkdir -p "$LOGS"
 LOG="$LOGS/test-$(date +%Y%m%d-%H%M%S).log"
+# One suite at a time: two runs share the fixture folder and its files (a second run doubles or deletes
+# the first one's files). A stale lock (dead pid) is taken over; NV4J_ALLOW_PARALLEL=1 skips the lock.
+LOCK=/tmp/nv4j/run.lock
+if [ "${NV4J_ALLOW_PARALLEL:-0}" != 1 ]; then
+  if ! mkdir "$LOCK" 2>/dev/null; then
+    other="$(cat "$LOCK/pid" 2>/dev/null)"
+    if [ -n "$other" ] && kill -0 "$other" 2>/dev/null; then
+      echo "FATAL: another tests/run.sh is running (pid $other); they share the fixture. Wait for it, or NV4J_ALLOW_PARALLEL=1." >&2
+      exit 2
+    fi
+    rm -rf "$LOCK"; mkdir "$LOCK" || exit 2
+  fi
+  echo $$ > "$LOCK/pid"
+  trap 'rm -rf "$LOCK"' EXIT
+fi
 # Timing samples: one run per file (the previous run's stays as latency.prev.jsonl), so the file
 # does not grow forever.
 [ -f "$LOGS/latency.jsonl" ] && mv -f "$LOGS/latency.jsonl" "$LOGS/latency.prev.jsonl"

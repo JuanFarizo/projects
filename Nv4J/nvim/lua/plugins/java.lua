@@ -127,6 +127,15 @@ return {
       -- LazyVim calls this with the config it built (root_dir known) and uses the return value.
       opts.jdtls = function(config)
         config = vim.tbl_deep_extend("force", config, static_jdtls)
+        require("nv4j.root").guard_start(require("jdtls"))
+        -- The cap refused a jdt.ls start for this root: when any jdt.ls exits, nv4j/root.lua release_refused starts it
+        -- for the still-loaded buffers of a refused root if the cap allows it (no :e needed).
+        local prev_exit = config.on_exit
+        config.on_exit = function(...)
+          for _, f in ipairs(vim._ensure_list(prev_exit or {})) do pcall(f, ...) end
+          vim.schedule(function() pcall(require("nv4j.root").release_refused) end)
+        end
+        require("nv4j.lspcapture").install()
         -- D25: a second loose-file jdt.ls is about to start (no build file, no .nv4j): warn once; over
         -- vim.g.nv4j_loose_max (default 1) the start is refused by the start_or_attach guard below.
         local _, refused = require("nv4j.root").warn_loose(config.root_dir)
@@ -189,16 +198,9 @@ return {
 
       require("jdtls").settings.jdt_uri_timeout_ms = 20000
       -- LazyVim's java extra calls require("jdtls").start_or_attach(config) right after opts.jdtls, which cannot
-      -- stop it: wrap it once (idempotent) to skip a config that opts.jdtls marked refused (loose-root cap, nv4j/root.lua).
-      local jdtls_mod = require("jdtls")
-      if not jdtls_mod._nv4j_cap then
-        jdtls_mod._nv4j_cap = true
-        local orig = jdtls_mod.start_or_attach
-        jdtls_mod.start_or_attach = function(config, ...)
-          if type(config) == "table" and config.nv4j_refused then return end
-          return orig(config, ...)
-        end
-      end
+      -- stop it: guard it (idempotent) to skip a config that opts.jdtls marked refused (loose-root cap, nv4j/root.lua).
+      -- Applied again at the top of opts.jdtls, which runs before every start: a reloaded jdtls module is a new table.
+      require("nv4j.root").guard_start(require("jdtls"))
 
       return opts
     end,

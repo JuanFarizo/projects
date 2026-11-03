@@ -92,7 +92,8 @@ function M.project(path)
   return marker_root, true, "build"
 end
 
-local warned_loose = {}
+local warned_loose = {} -- canon root -> true once its refusal/warning was shown
+local refused_roots = {} -- canon root -> raw root: refused by the cap, waiting for the blocking jdt.ls to stop
 local function running(c)
   if c.is_stopped and c:is_stopped() then return false end
   if c.is_stopping and c:is_stopping() then return false end
@@ -104,16 +105,18 @@ end
 --- once per root. Below the cap (or cap 0) it only warns once, never blocks. Roots of kind "nv4j"/"build" and
 --- attaching to a running client of the same root are never capped. Stopped/stopping clients do not count, and
 --- nothing is remembered about a refusal except that its warning was shown. Called by opts.jdtls on each Java
---- buffer attach; `clients` defaults to the live jdtls clients (tests pass stubs).
+--- buffer attach; `clients` defaults to the live jdtls clients (tests pass stubs). Roots are compared with
+--- M.canon (symlinks, trailing slash, case on a case-insensitive FS), the warning text keeps the raw paths.
 ---@return string? msg the warning text when one was shown now (nil on a repeat), boolean refused
 function M.warn_loose(root, clients)
   if not root then return nil, false end
   clients = clients or vim.lsp.get_clients({ name = "jdtls" })
+  local croot = M.canon(root)
   local others, other = 0, nil
   for _, c in ipairs(clients) do
     if running(c) then
       local r = c.config and c.config.root_dir
-      if r == root then warned_loose[root] = nil return nil, false end -- attaching to a running client, nothing starts
+      if r and M.canon(r) == croot then warned_loose[croot] = nil return nil, false end -- attaching to a running client, nothing starts
       if r and select(3, M.project(r .. "/x.java")) == "loose" then
         others = others + 1
         other = other or r
@@ -121,28 +124,102 @@ function M.warn_loose(root, clients)
     end
   end
   if not other or select(3, M.project(root .. "/x.java")) ~= "loose" then
-    warned_loose[root] = nil -- nothing blocks this root now: a later refusal warns again
+    warned_loose[croot] = nil -- nothing blocks this root now: a later refusal warns again
     return nil, false
   end
   local max = vim.g.nv4j_loose_max
   if type(max) ~= "number" then max = 1 end
   local refused = max > 0 and others >= max
-  if warned_loose[root] then return nil, refused end
-  warned_loose[root] = true
-  local parent = root
-  while parent ~= "/" and other:sub(1, #parent + 1) ~= parent .. "/" do parent = vim.fs.dirname(parent) end
+  if warned_loose[croot] then return nil, refused end
+  warned_loose[croot] = true
+  local parent, cother = root, M.canon(other)
+  while parent ~= "/" and cother:sub(1, #M.canon(parent) + 1) ~= M.canon(parent) .. "/" do parent = vim.fs.dirname(parent) end
   local where = M.too_broad(parent) and "the project folder that holds both" or ("their common parent (" .. parent .. ")")
   local msg
   if refused then
     msg = ("Not starting a second jdt.ls (about 1 GB or more) for loose Java files in %s: one already runs for %s, "
       .. "so this file opens without LSP. To use one jdt.ls for both, create an empty .nv4j file in %s and restart Neovim "
-      .. "(or raise vim.g.nv4j_loose_max)."):format(root, other, where)
+      .. "(or raise vim.g.nv4j_loose_max). It starts by itself when %s stops."):format(root, other, where, other)
   else
     msg = ("Starting a second jdt.ls (about 1 GB or more) for loose Java files in %s while one runs for %s. "
       .. "To use one jdt.ls for both, create an empty .nv4j file in %s and restart Neovim."):format(root, other, where)
   end
   vim.notify(msg, vim.log.levels.WARN, { title = "Nv4J" })
   return msg, refused
+end
+
+--- Remember that the cap refused a jdt.ls start for `root` (called by the start_or_attach guard).
+function M.note_refused(root)
+  if root then refused_roots[M.canon(root)] = root end
+end
+
+--- Roots refused by the cap and not started since (canon -> raw), for tests.
+function M.refused() return vim.deepcopy(refused_roots) end
+
+--- Forget refused roots (tests).
+function M.clear_refused() refused_roots = {} warned_loose = {} end
+
+--- Called when a jdt.ls client has exited: every root the cap refused that still has a loaded, named, not
+--- attached Java buffer gets its jdt.ls started if warn_loose now allows it (cap checked again, root by root,
+--- clients re-read after each start). `start(buf)` re-fires FileType with the buffer current (default), which goes through
+--- opts.jdtls and the start_or_attach guard again. A root whose start is refused again stays remembered
+--- (note_refused), a root with no loaded buffer left is forgotten. Runs once per exit, never loops: a start
+--- only causes another release when that jdt.ls exits.
+---@param get_clients? fun(): table[] default: live jdtls clients
+---@param start? fun(buf: integer)
+---@return string[] started the raw roots started now
+function M.release_refused(get_clients, start)
+  get_clients = get_clients or function() return vim.lsp.get_clients({ name = "jdtls" }) end
+  start = start or function(buf)
+    -- LazyVim's attach reads the CURRENT buffer (name, root), not the autocmd's: run it with `buf` current.
+    vim.api.nvim_buf_call(buf, function() vim.api.nvim_exec_autocmds("FileType", { buffer = buf, modeline = false }) end)
+  end
+  local started = {}
+  for croot, raw in pairs(vim.deepcopy(refused_roots)) do
+    local bufs = {}
+    for _, b in ipairs(vim.api.nvim_list_bufs()) do
+      if vim.api.nvim_buf_is_loaded(b) and vim.bo[b].filetype == "java" and vim.bo[b].buftype == "" then
+        local name = vim.api.nvim_buf_get_name(b)
+        if name ~= "" and M.canon(M.project(name)) == croot then
+          local attached = false
+          for _, c in ipairs(vim.lsp.get_clients({ bufnr = b, name = "jdtls" })) do
+            if running(c) then attached = true end
+          end
+          if not attached then bufs[#bufs + 1] = b end
+        end
+      end
+    end
+    if #bufs == 0 then
+      refused_roots[croot] = nil
+    else
+      local _, refused = M.warn_loose(raw, get_clients())
+      if not refused then
+        refused_roots[croot] = nil
+        started[#started + 1] = raw
+        for _, b in ipairs(bufs) do pcall(start, b) end
+      end
+    end
+  end
+  return started
+end
+
+--- Idempotent guard on `mod.start_or_attach` (nvim-jdtls): a config that opts.jdtls marked `nv4j_refused` (cap)
+--- is not started and its root is remembered (note_refused). Safe to call before every start: a reloaded jdtls
+--- module is a new table without the guard, and this puts it back; an already guarded module is left alone.
+---@param mod table the jdtls module
+---@return boolean wrapped true when the guard was installed now
+function M.guard_start(mod)
+  if type(mod) ~= "table" or mod._nv4j_cap or type(mod.start_or_attach) ~= "function" then return false end
+  mod._nv4j_cap = true
+  local orig = mod.start_or_attach
+  mod.start_or_attach = function(config, ...)
+    if type(config) == "table" and config.nv4j_refused then
+      M.note_refused(config.root_dir)
+      return
+    end
+    return orig(config, ...)
+  end
+  return true
 end
 
 local function read(path)

@@ -57,8 +57,15 @@ local snap = F.snapshot()
 -- previous publish (or the first): when the file's diagnostics reached their state. A clean list
 -- republished because ANOTHER file was created does not move it.
 local published_at, state_at, last_errs = {}, {}, {}
+local edit_pub, edit_told = {}, {} -- P3Edited: publishes per client; client id -> { name, lines } as told
 local orig_pd = vim.lsp.handlers["textDocument/publishDiagnostics"]
 vim.lsp.handlers["textDocument/publishDiagnostics"] = function(e, result, ctx, cfg)
+  if result and result.uri and result.uri:find("P3Edited.java", 1, true) then
+    -- who published what for P3Edited (shown when compiles_all fails on it: names the client that holds wrong text)
+    local c = vim.lsp.get_client_by_id(ctx.client_id)
+    edit_pub[#edit_pub + 1] = ("%s:%dE"):format(c and c.name or "?",
+      #vim.tbl_filter(function(x) return x.severity == 1 end, result.diagnostics or {}))
+  end
   if result and result.uri then
     published_at[result.uri] = E.now()
     local n = #vim.tbl_filter(function(x) return x.severity == 1 end, result.diagnostics or {})
@@ -290,7 +297,7 @@ local ok_all, err = pcall(function()
     -- (nvim shares the pending changes of all clients of one sync kind): the Spring LS held the template
     -- twice (L1 syntax error, L7 "type already defined"). The attach is forced right after `:e` so it
     -- does not depend on when the Spring LS happens to attach.
-    local told = {} -- client id -> { name, text lines | nil, errs }
+    local told = edit_told -- client id -> { name, text lines | nil, errs }
     local function apply(rec, ch)
       if not rec.lines then rec.errs[#rec.errs + 1] = "didChange before didOpen" return end
       if not ch.range then rec.lines = vim.split(ch.text, "\n", { plain = true }) return end
@@ -424,6 +431,11 @@ local ok_all, err = pcall(function()
       if c.name == "kind_class" then cls = { ok = ok, d = d } end
     end
     lsp.report(P .. "compiles", cls ~= nil and cls.ok, cls and cls.d or "P3Class not created")
+    if #bad > 0 then
+      local held = {}
+      for _, r in pairs(edit_told) do held[#held + 1] = ("%s=%s"):format(r.name, table.concat(r.lines or {}, "|"):sub(1, 120)) end
+      bad[#bad + 1] = ("P3Edited publishes [%s]; text each client was told [%s]"):format(table.concat(edit_pub, ","), table.concat(held, " ;; "))
+    end
     lsp.report(P .. "compiles_all", #created > 0 and #bad == 0 and built,
       ("%d files, build %s; %s%s"):format(#created, built and "done" or "NOT done", #bad > 0 and ("FAILED: " .. table.concat(bad, "; ") .. "; ALL: ") or "", table.concat(det, "; ")))
   end

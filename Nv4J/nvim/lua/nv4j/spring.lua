@@ -357,6 +357,7 @@ local function start()
   local jar = M.ls_jar()
   if not jar then return end
   started = true
+  require("nv4j.lspcapture").install() -- debug-only raw stdout capture, a no-op unless vim.g.nv4j_lsp_capture (nv4j/lspcapture.lua)
   require("spring_boot").setup({
     ls_path = jar,
     jars = M.jars(),

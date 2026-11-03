@@ -35,6 +35,16 @@
 --                   files), exactly one WARN (title Nv4J, both roots, common parent, ".nv4j"); more files add none.
 --  memwatch_live  : real jdt.ls, vim.g.nv4j_jdtls_warn_mb = 50 and nv4j_memwatch_ms = 1000 set before it attaches: exactly one
 --                   "jdt.ls for <root> uses N MB" WARN within 60 s, none more 5 s later, timer stopped after the client stopped.
+--  cap_canon      : warn_loose compares roots with root.canon: a running client at a symlink of the root or at "root/" is the same
+--                   root (not refused); one canonical key per refused root (one warning for "b" and "b/").
+--  cap_release    : stub clients, real (unattached) buffers: a root the cap refused (note_refused through the start_or_attach
+--                   guard) starts when the blocker is stopped, only one of two roots at cap 1, nothing at the next exit, a root
+--                   with no loaded buffer is forgotten.
+--  cap_release_live : real jdt.ls: the second loose folder's buffers get their own client by themselves when the first stops (no :e).
+--  guard_reload   : root.guard_start is idempotent, skips a refused config, and a reloaded jdtls module is guarded again by opts.jdtls.
+--  capture_*      : nv4j/lspcapture.lua (vim.g.nv4j_lsp_capture): off = nothing wrapped; on = INVALID_SERVER_JSON / abnormal exit write
+--                   the last 128 KB of the server's raw stdout to /tmp/nv4j/logs/lsp-capture-*.bin with a WARN (fake `jdtls` script);
+--                   capture_live = the hook on a real jdt.ls start.
 --  warn_off       : vim.g.nv4j_loose_max = 0 -> two clients and one "Starting a second jdt.ls" warning (old behaviour).
 local lsp = require("lsp")
 local P = "64_project_marker."
@@ -43,6 +53,7 @@ local TMP = "/tmp/nv4j/d25-" .. vim.fn.getpid()
 vim.fn.delete(TMP, "rf")
 vim.fn.mkdir(TMP, "p")
 TMP = vim.uv.fs_realpath(TMP) -- /tmp is /private/tmp on macOS; roots come back resolved
+local log = vim.env.NV4J_LOG or "(no NV4J_LOG)"
 local function write(path, text)
   vim.fn.mkdir(vim.fs.dirname(path), "p")
   local f = assert(io.open(path, "w"))
@@ -208,6 +219,208 @@ do
   if not ok_c then lsp.report(P .. "cap_unit", false, "error: " .. tostring(e_c)) end
 end
 
+-- ── cap_canon: warn_loose compares roots with root.canon (symlink, trailing slash), unit, stub clients ──────
+do
+  local W = TMP .. "/capcanon"
+  vim.fn.mkdir(W .. "/p/a", "p")
+  vim.fn.mkdir(W .. "/p/b", "p")
+  vim.uv.fs_symlink(W .. "/p/a", W .. "/p/alink")
+  local a, b = W .. "/p/a", W .. "/p/b"
+  local ok_c, e_c = pcall(function()
+    root.clear_refused()
+    vim.g.nv4j_loose_max = nil
+    local before = #notes
+    -- a running client whose root is spelled through a symlink IS the same root as `a`: attaching, nothing starts
+    local m_same, r_same = root_mod_warn(a, { stub(W .. "/p/alink") })
+    local m_slash, r_slash = root_mod_warn(a, { stub(a .. "/") })
+    -- a refusal for `b` spelled two ways warns once (same canonical key) and both are refused
+    local m1, r1 = root_mod_warn(b, { stub(W .. "/p/alink") })
+    local m2, r2 = root_mod_warn(b .. "/", { stub(W .. "/p/alink") })
+    local n = #notes - before
+    -- the common parent is found through the symlinked spelling too
+    local parent_ok = m1 and m1:find("(" .. W .. "/p)", 1, true) ~= nil
+    root.clear_refused()
+    lsp.report(P .. "cap_canon", m_same == nil and r_same == false and m_slash == nil and r_slash == false
+      and type(m1) == "string" and r1 == true and m2 == nil and r2 == true and n == 1 and parent_ok,
+      ("running client at a symlink of the root: refused %s (want false), at 'root/': %s (want false); other root b: refused %s, b/ refused %s, warnings %d (want 1, one canonical key), common parent in text %s; log %s")
+        :format(tostring(r_same), tostring(r_slash), tostring(r1), tostring(r2), n, tostring(parent_ok), log))
+  end)
+  if not ok_c then lsp.report(P .. "cap_canon", false, "error: " .. tostring(e_c)) end
+end
+
+-- ── cap_release: a root the cap refused starts by itself when the blocking jdt.ls stops (stub clients, real buffers) ──
+do
+  local W = TMP .. "/caprel"
+  for _, d in ipairs({ "a", "b", "c" }) do write(W .. "/p/" .. d .. "/" .. d:upper() .. ".java", "class " .. d:upper() .. " {}\n") end
+  local function d(n) return W .. "/p/" .. n end
+  local bufs = {}
+  local saved_ei = vim.o.eventignore
+  local ok_c, e_c = pcall(function()
+    vim.o.eventignore = "FileType,BufReadPost,BufEnter,BufWinEnter" -- named buffers with ft java must not start a real jdt.ls
+    for _, n in ipairs({ "a", "b", "c" }) do
+      local b = vim.api.nvim_create_buf(true, false)
+      vim.api.nvim_buf_set_name(b, d(n) .. "/" .. n:upper() .. ".java")
+      vim.bo[b].filetype = "java"
+      bufs[n] = b
+    end
+    vim.o.eventignore = saved_ei
+    root.clear_refused()
+    vim.g.nv4j_loose_max = nil
+    local blocker = { config = { root_dir = d("a") }, _stopped = false }
+    function blocker.is_stopped() return blocker._stopped end
+    local clients = { blocker }
+    local started_bufs = {}
+    local function start(buf)
+      started_bufs[#started_bufs + 1] = buf
+      local r = root.project(vim.api.nvim_buf_get_name(buf))
+      clients[#clients + 1] = stub(r) -- a started jdt.ls is a running client from now on
+    end
+    local get = function() return clients end
+    -- the cap refuses b and c while `a` runs (through the guard, as in the product)
+    local mod = { start_or_attach = function() error("must not start") end }
+    root.guard_start(mod)
+    for _, n in ipairs({ "b", "c" }) do
+      local _, refused = root.warn_loose(d(n), clients)
+      mod.start_or_attach({ root_dir = d(n), nv4j_refused = refused })
+    end
+    local pending = vim.tbl_count(root.refused())
+    local r_blocked = root.release_refused(get, start) -- blocker still runs
+    local still = vim.tbl_count(root.refused())
+    blocker._stopped = true
+    local r1 = root.release_refused(get, start) -- slot free: one of b, c starts, the other is refused again (cap 1)
+    local after1 = vim.tbl_count(root.refused())
+    local r2 = root.release_refused(get, start) -- a second exit: nothing new may start (the started one counts)
+    -- the other refused root: its buffer is gone -> forgotten, nothing started
+    local waiting = next(root.refused())
+    local gone_buf = (waiting == root.canon(d("b"))) and bufs.b or bufs.c
+    pcall(vim.api.nvim_buf_delete, gone_buf, { force = true })
+    local n_started_before = #started_bufs
+    -- the running one (started above) stops too: the remaining refused root has no loaded buffer
+    clients[#clients]._stopped = true
+    clients[#clients].is_stopped = function() return true end
+    local r3 = root.release_refused(get, start)
+    root.clear_refused()
+    lsp.report(P .. "cap_release",
+      pending == 2 and #r_blocked == 0 and still == 2 and #r1 == 1 and #started_bufs == 1 and after1 == 1
+        and #r2 == 0 and #started_bufs == 1 and #r3 == 0 and #started_bufs == n_started_before and next(root.refused()) == nil,
+      ("refused by the cap: %d roots (want 2); blocker still running -> started %d (want 0), still pending %d; blocker stopped -> started %d (want 1, cap respected: %d buffer(s)), pending %d (want 1); next exit started %d (want 0); remaining root without a loaded buffer -> started %d, pending after %d (want 0, 0); log %s")
+        :format(pending, #r_blocked, still, #r1, #started_bufs, after1, #r2, #r3, vim.tbl_count(root.refused()), log))
+  end)
+  vim.o.eventignore = saved_ei
+  for _, b in pairs(bufs) do pcall(vim.api.nvim_buf_delete, b, { force = true }) end
+  if not ok_c then lsp.report(P .. "cap_release", false, "error: " .. tostring(e_c)) end
+end
+
+-- ── capture_*: debug-only raw stdout capture (nv4j/lspcapture.lua, flake A INVALID_SERVER_JSON) ──────────────
+do
+  local cap = require("nv4j.lspcapture")
+  local CD = TMP .. "/capture"
+  vim.fn.mkdir(CD, "p")
+  local logs = require("nv4j.paths").logs
+  local function frame(body) return ("Content-Length: %d\r\n\r\n%s"):format(#body, body) end
+  local ok_json = frame('{"jsonrpc":"2.0","method":"window/logMessage","params":{"type":4,"message":"hello"}}')
+  local bad_json = frame('{"jsonrpc":"2.0","method":"x",,,}')
+  -- A fake language server: a script named `jdtls` that writes data.bin to stdout, then exits with `code`.
+  local function fake_server(dir, data, code)
+    vim.fn.mkdir(dir, "p")
+    local f = assert(io.open(dir .. "/data.bin", "wb")); f:write(data); f:close()
+    write(dir .. "/jdtls", ('#!/bin/sh\ncat "$(dirname "$0")/data.bin"\nsleep 1\nexit %d\n'):format(code or 0))
+    vim.uv.fs_chmod(dir .. "/jdtls", tonumber("755", 8))
+    return { dir .. "/jdtls" }
+  end
+  --- run rpc.start for cmd, wait for the first INVALID_SERVER_JSON (or for exit), return events + new capture files
+  local function run(cmd, want_json)
+    local before = {}
+    for _, f in ipairs(vim.fn.glob(logs .. "/lsp-capture-jdtls-*.bin", false, true)) do before[f] = true end
+    local ev = { errors = {}, exit = nil, warns = {} }
+    local nf = vim.notify
+    vim.notify = function(msg, level, o)
+      if type(msg) == "string" and msg:find("stdout saved to", 1, true) then ev.warns[#ev.warns + 1] = msg end
+      return nf(msg, level, o)
+    end
+    local client = vim.lsp.rpc.start(cmd, {
+      on_error = function(code) ev.errors[#ev.errors + 1] = code end,
+      on_exit = function(code, signal) ev.exit = { code, signal } end,
+    })
+    vim.wait(15000, function() return ev.exit ~= nil end, 50)
+    vim.wait(500, function() return false end, 50) -- scheduled WARN
+    pcall(client.terminate)
+    vim.notify = nf
+    local files = {}
+    for _, f in ipairs(vim.fn.glob(logs .. "/lsp-capture-jdtls-*.bin", false, true)) do
+      if not before[f] then files[#files + 1] = f end
+    end
+    table.sort(files)
+    return ev, files
+  end
+  local function slurp(path)
+    local f = io.open(path, "rb"); if not f then return "" end
+    local s = f:read("*a"); f:close(); return s
+  end
+  local saved_g = vim.g.nv4j_lsp_capture
+  local orig_start = vim.lsp.rpc.start
+  local made = {}
+  local ok_c, e_c = pcall(function()
+    -- off: nothing is wrapped, nothing is written
+    vim.g.nv4j_lsp_capture = nil
+    local off_install = cap.install()
+    local off_same = vim.lsp.rpc.start == orig_start
+    local ev0, files0 = run(fake_server(CD .. "/off", ok_json .. bad_json, 0))
+    lsp.report(P .. "capture_off", off_install == false and off_same and #files0 == 0 and vim.tbl_contains(ev0.errors, vim.lsp.rpc.client_errors.INVALID_SERVER_JSON),
+      ("capture off: install() %s (want false), vim.lsp.rpc.start unchanged %s, INVALID_SERVER_JSON still reported to the client %s, capture files %d (want 0); log %s")
+        :format(tostring(off_install), tostring(off_same), tostring(vim.tbl_contains(ev0.errors, vim.lsp.rpc.client_errors.INVALID_SERVER_JSON)), #files0, log))
+
+    -- on: a valid message then an unparsable one -> one file with both raw messages, one WARN with its path
+    vim.g.nv4j_lsp_capture = true
+    local on_install = cap.install()
+    local ev1, files1 = run(fake_server(CD .. "/small", ok_json .. bad_json, 0))
+    for _, f in ipairs(files1) do made[#made + 1] = f end
+    local raw1 = files1[1] and slurp(files1[1]) or ""
+    local warn1 = ev1.warns[1] or ""
+    lsp.report(P .. "capture_json", on_install and #files1 == 1 and raw1 == ok_json .. bad_json
+      and #ev1.warns == 1 and files1[1] ~= nil and warn1:find(files1[1], 1, true) ~= nil
+      and vim.tbl_contains(ev1.errors, vim.lsp.rpc.client_errors.INVALID_SERVER_JSON),
+      ("capture on, INVALID_SERVER_JSON: %d file(s) (want 1) %s holding %d bytes = the 2 raw messages (%d) %s; WARN with the path: %d (want 1); client still got the error %s; log %s")
+        :format(#files1, files1[1] or "-", #raw1, #(ok_json .. bad_json), tostring(raw1 == ok_json .. bad_json), #ev1.warns,
+          tostring(vim.tbl_contains(ev1.errors, vim.lsp.rpc.client_errors.INVALID_SERVER_JSON)), log))
+
+    -- more than 128 KB before the bad message: the file is exactly the last 128 KB
+    local filler = frame('{"jsonrpc":"2.0","method":"x","params":{"p":"' .. ("a"):rep(150 * 1024) .. '"}}')
+    local data = filler .. filler .. bad_json
+    local ev2, files2 = run(fake_server(CD .. "/big", data, 0))
+    for _, f in ipairs(files2) do made[#made + 1] = f end
+    local raw2 = files2[1] and slurp(files2[1]) or ""
+    lsp.report(P .. "capture_tail", #files2 == 1 and #raw2 == cap.CAP and raw2 == data:sub(-cap.CAP) and #ev2.warns == 1,
+      ("%d bytes sent, file %s: %d bytes (want %d = the last 128 KB, identical to the stream tail %s), WARN %d; log %s")
+        :format(#data, files2[1] or "-", #raw2, cap.CAP, tostring(raw2 == data:sub(-cap.CAP)), #ev2.warns, log))
+
+    -- abnormal exit: a "-exit" file with the stream
+    local ev3, files3 = run(fake_server(CD .. "/exit", ok_json, 3))
+    for _, f in ipairs(files3) do made[#made + 1] = f end
+    lsp.report(P .. "capture_exit", #files3 == 1 and files3[1]:find("%-exit%.bin$") ~= nil and slurp(files3[1]) == ok_json
+      and ev3.exit and ev3.exit[1] == 3 and #ev3.warns == 1,
+      ("server exit code 3: %d file(s) (want 1, '-exit.bin') %s with the stream (%d bytes, want %d), WARN %d; log %s")
+        :format(#files3, files3[1] or "-", files3[1] and #slurp(files3[1]) or 0, #ok_json, #ev3.warns, log))
+
+    -- a normal exit (code 0, no error) writes nothing; a server that is not jdtls / spring-boot is not touched
+    local ev4, files4 = run(fake_server(CD .. "/clean", ok_json, 0))
+    local names = {
+      cap.name_of({ "/m/bin/jdtls", "-data", "/x" }), cap.name_of({ "/j/bin/java", "-jar", "/m/share/vscode-spring-boot-tools/language-server.jar" }),
+      cap.name_of({ "/j/bin/java", "-cp", "a", "org.springframework.ide.vscode.boot.app.BootLanguageServerBootApp" }),
+      cap.name_of({ "lua-language-server" }), cap.name_of("x"),
+    }
+    lsp.report(P .. "capture_scope", #files4 == 0 and names[1] == "jdtls" and names[2] == "spring-boot" and names[3] == "spring-boot"
+      and names[4] == nil and names[5] == nil,
+      ("clean exit: %d file(s) (want 0); name_of jdtls cmd %s, Spring LS jar cmd %s, exploded Spring LS cmd %s, other server %s; log %s")
+        :format(#files4, tostring(names[1]), tostring(names[2]), tostring(names[3]), tostring(names[4]), log))
+  end)
+  cap.uninstall()
+  vim.lsp.rpc.start = orig_start
+  vim.g.nv4j_lsp_capture = saved_g
+  for _, f in ipairs(made) do vim.fn.delete(f) end
+  if not ok_c then lsp.report(P .. "capture_unit", false, "error: " .. tostring(e_c)) end
+end
+
 -- ── broad dirs: $HOME, `/`, short paths (stubbed $HOME under TMP) ─────────────────────────────
 do
   local H = TMP .. "/home/me"
@@ -336,7 +549,6 @@ local function settle(buf, want_errors, ms)
   vim.wait(ms, function() return #errors(buf) == want_errors end, 200)
   return errors(buf)
 end
-local log = vim.env.NV4J_LOG or "(no NV4J_LOG)"
 
 -- ── single_client, one_workspace, rss ──────────────────────────────────────────────────────────
 local PR = TMP .. "/proj"
@@ -414,6 +626,26 @@ ok_all, err = pcall(function()
       :format(#clients, one, jdtls_on(b2), jdtls_on(b3), jdtls_on(b4), after_first, after_second, #notes - before, m, log))
 end)
 if not ok_all then lsp.report(P .. "warn", false, "error: " .. tostring(err)) end
+
+-- ── cap_release_live: the buffers the cap refused start their jdt.ls by themselves once the blocking one stops (no :e) ──
+ok_all, err = pcall(function()
+  local b2, b3 = vim.fn.bufnr(LO .. "/two/Two.java"), vim.fn.bufnr(LO .. "/two/TwoB.java")
+  local blocker = vim.lsp.get_clients({ name = "jdtls" })[1]
+  if not blocker or b2 < 0 or b3 < 0 then return lsp.report(P .. "cap_release_live", false, "prerequisite: no blocking jdt.ls or no refused buffers") end
+  local before_clients, before_b2 = #vim.lsp.get_clients({ name = "jdtls" }), jdtls_on(b2)
+  local t0 = vim.uv.now()
+  blocker:stop()
+  local started = vim.wait(120000, function() return jdtls_on(b2) == 1 and jdtls_on(b3) == 1 end, 200)
+  local ms = vim.uv.now() - t0
+  local clients = vim.lsp.get_clients({ name = "jdtls" })
+  local rs = vim.tbl_map(function(c) return c.config.root_dir end, clients)
+  lsp.report(P .. "cap_release_live",
+    before_clients == 1 and before_b2 == 0 and started and #clients == 1 and clients[1].config.root_dir == LO .. "/two"
+      and next(require("nv4j.root").refused()) == nil,
+    ("before the stop: %d client, Two.java had %d jdt.ls (want 1, 0); after stopping it, without :e: Two.java and TwoB.java attached %s after %.0f ms, clients [%s] (want 1 at %s), refused roots left %d (want 0); log %s")
+      :format(before_clients, before_b2, tostring(started), ms, table.concat(rs, ", "), LO .. "/two", vim.tbl_count(require("nv4j.root").refused()), log))
+end)
+if not ok_all then lsp.report(P .. "cap_release_live", false, "error: " .. tostring(err)) end
 stop_all()
 
 local LO0 = TMP .. "/loose0"
@@ -435,6 +667,74 @@ if not ok_all then lsp.report(P .. "warn_off", false, "error: " .. tostring(err)
 vim.g.nv4j_loose_max = nil
 stop_all()
 vim.notify = orig_notify
+
+-- ── capture_live: the hook on a real jdt.ls start (vim.g.nv4j_lsp_capture set before it attaches) ──────────
+local CL = TMP .. "/caplive"
+write(CL .. "/.nv4j")
+write(CL .. "/L.java", "public class L {}\n")
+ok_all, err = pcall(function()
+  local cap = require("nv4j.lspcapture")
+  local orig_start = vim.lsp.rpc.start
+  vim.g.nv4j_lsp_capture = true
+  local ok_in, e_in = pcall(function()
+    local _, c = open_ready(CL .. "/L.java")
+    if not c then return lsp.report(P .. "capture_live", false, "jdt.ls not ready (prerequisite)") end
+    local st
+    for _, x in ipairs(cap.states()) do if x.name == "jdtls" then st = x end end
+    local path = st and cap.dump(st, "test")
+    local raw = path and io.open(path, "rb"):read("*a") or ""
+    lsp.report(P .. "capture_live", st ~= nil and st.bytes > 0 and path ~= nil and raw:find("^Content%-Length: %d+") ~= nil
+      and raw:find('"jsonrpc"', 1, true) ~= nil and #raw <= cap.CAP,
+      ("real jdt.ls with vim.g.nv4j_lsp_capture: captured client %s, %s bytes seen, dump %s = %d bytes (want 1..%d) starting with a Content-Length header %s; log %s")
+        :format(tostring(st ~= nil), tostring(st and st.bytes), tostring(path), #raw, cap.CAP, tostring(raw:find("^Content%-Length: %d+") ~= nil), log))
+    if path then vim.fn.delete(path) end
+  end)
+  stop_all()
+  cap.uninstall()
+  vim.lsp.rpc.start = orig_start
+  vim.g.nv4j_lsp_capture = nil
+  if not ok_in then error(e_in) end
+end)
+if not ok_all then lsp.report(P .. "capture_live", false, "error: " .. tostring(err)) end
+stop_all()
+
+-- ── guard_reload: the start_or_attach guard is re-applied to a reloaded jdtls module (unit + product wiring; after the real jdt.ls cases: loading nvim-jdtls before the first Java file breaks Mason's PATH) ──
+do
+  local ok_c, e_c = pcall(function()
+    root.clear_refused()
+    local calls = {}
+    local function fake() return { start_or_attach = function(c) calls[#calls + 1] = c end } end
+    local m1 = fake()
+    local w1, w1b = root.guard_start(m1), root.guard_start(m1)
+    m1.start_or_attach({ root_dir = "/x/ok" })
+    m1.start_or_attach({ root_dir = U .. "/n1/", nv4j_refused = true })
+    local refused_noted = root.refused()[root.canon(U .. "/n1")] ~= nil
+    root.clear_refused()
+    -- "reload": a new module table has no guard; guard_start puts it back, once
+    local m2 = fake()
+    local w2 = root.guard_start(m2)
+    m2.start_or_attach({ root_dir = "/x/skip", nv4j_refused = true })
+    local unit_ok = w1 == true and w1b == false and #calls == 1 and calls[1].root_dir == "/x/ok" and refused_noted
+      and w2 == true and #calls == 1 and m2._nv4j_cap == true
+    root.clear_refused()
+    -- product wiring: plugins/java.lua's opts.jdtls re-applies the guard to the CURRENT require("jdtls")
+    local real = require("jdtls")
+    local spec = require("plugins.java")[1]
+    local opts = spec.opts({}, { cmd = {} }) -- the one-time application (plugin load), on the current module
+    package.loaded["jdtls"] = nil
+    local reloaded = require("jdtls")
+    local fresh = reloaded ~= real and not reloaded._nv4j_cap
+    opts.jdtls({ root_dir = TMP .. "/guardreload", cmd = {}, settings = {} })
+    local reapplied = reloaded._nv4j_cap == true and reloaded.start_or_attach ~= nil
+    package.loaded["jdtls"] = real -- back to the module the rest of this check (and LazyVim) holds
+    root.clear_refused()
+    lsp.report(P .. "guard_reload", unit_ok and fresh and reapplied,
+      ("unit: guard installed %s then again %s (want true, false), refused config skipped and root remembered %s, start for a normal config %d (want 1), reloaded table guarded %s; product: reloaded jdtls module unguarded %s, guarded after opts.jdtls %s (want true, true); log %s")
+        :format(tostring(w1), tostring(w1b), tostring(refused_noted), #calls, tostring(w2), tostring(fresh), tostring(reapplied), log))
+  end)
+  package.loaded["jdtls"] = package.loaded["jdtls"] or nil
+  if not ok_c then lsp.report(P .. "guard_reload", false, "error: " .. tostring(e_c)) end
+end
 
 -- ── memwatch_live: the real timer path (needs a real jdt.ls) ───────────────────────────────────
 -- Threshold 50 MB and a 1 s period are set before the jdt.ls attaches (the timer is restarted first: an earlier case
