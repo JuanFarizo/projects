@@ -57,15 +57,20 @@ function M.is_boot(root) return require("nv4j.root").is_boot(root) end
 function M.build_tool_command(root, opts, project)
   opts = opts or {}
   local env = {}
-  local function exe(wrapper, tool)
-    local dir = root
+  -- The wrapper: the first executable one from `root` up to `project`. With `nonexec` (Gradle only) a
+  -- wrapper that exists without the exec bit (a zip or FAT checkout loses it) comes back as (path, true):
+  -- the caller runs it as `sh <path>`, which needs no exec bit. Else the bare tool name.
+  local function exe(wrapper, tool, nonexec)
+    local dir, found = root, nil
     while dir do
       local w = dir .. "/" .. wrapper
       if vim.fn.executable(w) == 1 then return w end
+      if nonexec and not found and vim.fn.filereadable(w) == 1 then found = w end
       if not project or dir == project or #dir <= #project then break end
       local up = vim.fs.dirname(dir)
       dir = up ~= dir and up or nil
     end
+    if found then return found, true end
     return tool
   end
   local has_pom = vim.uv.fs_stat(root .. "/pom.xml") ~= nil
@@ -80,9 +85,39 @@ function M.build_tool_command(root, opts, project)
     return cmd, env
   end
   if has_gradle then
-    local cmd = { exe("gradlew", "gradle"), "bootRun" }
+    local w, via_sh = exe("gradlew", "gradle", true)
+    local cmd
+    if via_sh then
+      -- D32/G4: a gradlew without the exec bit is run through sh (it reads the script, no exec bit
+      -- needed) instead of being skipped for a bare `gradle` that may not exist
+      cmd = { "sh", w, "bootRun" }
+    elseif w == "gradle" then
+      if vim.fn.executable("gradle") ~= 1 then
+        return nil, env, ("No gradlew found in %s (searched up to %s) and no `gradle` on Neovim's PATH. "
+          .. "SDKMAN defines `gradle` as a shell function that Neovim cannot see. Add a wrapper "
+          .. "(`gradle wrapper`) or start Neovim from a shell where `gradle` is an executable."):format(
+          vim.fn.fnamemodify(root, ":~"), vim.fn.fnamemodify(project or root, ":~"))
+      end
+      cmd = { "gradle", "bootRun" }
+    else
+      cmd = { w, "bootRun" }
+    end
     if opts.profile then env.SPRING_PROFILES_ACTIVE = opts.profile end
     if opts.args and #opts.args > 0 then cmd[#cmd + 1] = "--args=" .. table.concat(opts.args, " ") end
+    if opts.vm_args and #opts.vm_args > 0 then
+      -- bootRun has no VM-args flag: JAVA_TOOL_OPTIONS reaches the app JVM (and the Gradle daemon). An
+      -- existing value (settings env first, then Neovim's) is kept and extended, never replaced silently.
+      local parts = {}
+      for _, a in ipairs(opts.vm_args) do parts[#parts + 1] = a:find("%s") and ('"' .. a .. '"') or a end
+      local mine = table.concat(parts, " ")
+      local prior = (opts.env and opts.env.JAVA_TOOL_OPTIONS) or vim.env.JAVA_TOOL_OPTIONS
+      if prior and prior ~= "" then
+        env.JAVA_TOOL_OPTIONS = prior .. " " .. mine
+        notify("JAVA_TOOL_OPTIONS already set: VM args appended (" .. env.JAVA_TOOL_OPTIONS .. ")")
+      else
+        env.JAVA_TOOL_OPTIONS = mine
+      end
+    end
     return cmd, env
   end
 end
@@ -576,11 +611,11 @@ function M.spring_boot(opts)
     -- run in the Boot module, not at the aggregator: spring-boot:run / bootRun there would run the
     -- whole reactor (Maven needs the sibling modules installed: mvn install once)
     local module = require("nv4j.root").boot_module(root, module_root) or root
-    local cmd, extra = M.build_tool_command(module, vim.tbl_extend("force", opts, { prefer = tool }), root)
-    if not cmd then return notify("No pom.xml or build.gradle in " .. module, vim.log.levels.WARN) end
+    local cmd, extra, why = M.build_tool_command(module, vim.tbl_extend("force", opts, { prefer = tool }), root)
+    if not cmd then return notify(why or ("No pom.xml or build.gradle in " .. module), vim.log.levels.WARN) end
     env = vim.tbl_extend("force", env, extra, { PATH = home .. "/bin:" .. (vim.env.PATH or "") })
     return M.start_terminal({ cmd = cmd, cwd = module, env = env, profile = opts.profile,
-      name = vim.fs.basename(module) .. " (" .. vim.fs.basename(cmd[1]) .. ")" .. (opts.profile and (" [" .. opts.profile .. "]") or "") })
+      name = vim.fs.basename(module) .. " (" .. vim.fs.basename(cmd[1] == "sh" and cmd[2] or cmd[1]) .. ")" .. (opts.profile and (" [" .. opts.profile .. "]") or "") })
   end
 
   boot_configs(client, function(configs, err)

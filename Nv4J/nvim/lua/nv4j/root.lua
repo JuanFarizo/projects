@@ -58,6 +58,31 @@ local function under(parent, dir)
   return dir == parent or dir:sub(1, #parent + 1) == parent .. "/"
 end
 
+local SETTINGS = { "settings.gradle", "settings.gradle.kts" }
+local function has_settings(dir)
+  for _, f in ipairs(SETTINGS) do
+    if vim.uv.fs_stat(dir .. "/" .. f) then return true end
+  end
+  return false
+end
+
+--- D29: a Gradle sub-project (`dir` has build.gradle(.kts), no pom.xml, no settings file of its own) belongs
+--- to the build of the NEAREST settings.gradle(.kts) in a parent directory, so one jdt.ls (and one `<leader>tp`)
+--- covers the whole multi-project build. The search stops at the git root (inclusive), at the `.nv4j` dir
+--- (inclusive; `.nv4j` overrides) and never reaches $HOME or above. Maven and standalone projects: nil.
+---@return string? root
+function M.gradle_settings_root(dir, git_root, nv4j_root)
+  if not dir or has_settings(dir) or vim.uv.fs_stat(dir .. "/pom.xml") then return nil end
+  if not (vim.uv.fs_stat(dir .. "/build.gradle") or vim.uv.fs_stat(dir .. "/build.gradle.kts")) then return nil end
+  local cur = vim.fs.dirname(dir)
+  while cur and cur ~= dir and not M.home_or_above(cur) do
+    if has_settings(cur) then return cur end
+    if (git_root and cur == git_root) or (nv4j_root and cur == nv4j_root) then return nil end
+    dir, cur = cur, vim.fs.dirname(cur)
+  end
+  return nil
+end
+
 --- Project root of `path`, first rule that applies:
 ---  1. the nearest dir with a `.nv4j` file (D25), so every directory below it shares one jdt.ls,
 ---     except: a `.nv4j` with no build file of its own does not steal a Maven/Gradle module sitting
@@ -72,7 +97,9 @@ end
 ---@return string root, boolean has_marker, "nv4j"|"build"|"loose" kind
 function M.project(path)
   local nv4j_root = vim.fs.root(path, { M.project_marker })
-  local marker_root = vim.fs.root(path, M.build_markers)
+  -- ONE list entry = equal priority: the NEAREST dir holding any build marker (G7). A flat list is a priority
+  -- order (a pom.xml two levels up beat a nearer build.gradle.kts).
+  local marker_root = vim.fs.root(path, { M.build_markers })
   if nv4j_root then
     if M.home_or_above(nv4j_root) then warn_broad(nv4j_root) end
     -- pom next to the marker: aggregator / normal Maven project.
@@ -89,7 +116,7 @@ function M.project(path)
   if git_root then
     if has_build(git_root) then return git_root, true, "build" end
   end
-  return marker_root, true, "build"
+  return M.gradle_settings_root(marker_root, git_root, nv4j_root) or marker_root, true, "build"
 end
 
 local warned_loose = {} -- canon root -> true once its refusal/warning was shown

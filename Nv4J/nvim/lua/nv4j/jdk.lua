@@ -106,9 +106,154 @@ function M.server_home()
     table.concat(M.roots(), ", "), tostring(vim.env.JAVA_HOME)), 0)
 end
 
+--- Comments removed from Groovy/Kotlin source, string literals kept. Returns the text and a table
+--- `ins[i] = true` for bytes inside a string literal (so a keyword printed in a string is not a setting).
+local function gradle_strip(src)
+  local out, ins, n, i, len = {}, {}, 0, 1, #src
+  local function push(ch, inside) n = n + 1; out[n] = ch; if inside then ins[n] = true end end
+  while i <= len do
+    local c, two, three = src:sub(i, i), src:sub(i, i + 1), src:sub(i, i + 2)
+    if two == "//" then
+      local e = src:find("\n", i, true)
+      if not e then break end
+      i = e
+    elseif two == "/*" then
+      local _, e = src:find("*/", i + 2, true)
+      if not e then break end
+      push(" ")
+      i = e + 1
+    elseif three == '"""' or three == "'''" then
+      push(c); push(c); push(c)
+      local _, e = src:find(three, i + 3, true)
+      for j = i + 3, e and e - 3 or len do push(src:sub(j, j), true) end
+      if not e then break end
+      push(c); push(c); push(c)
+      i = e + 1
+    elseif c == '"' or c == "'" then
+      push(c)
+      local j = i + 1
+      while j <= len do
+        local d = src:sub(j, j)
+        if d == "\\" then
+          push(d, true); push(src:sub(j + 1, j + 1), true); j = j + 2
+        elseif d == c then
+          break
+        elseif d == "\n" then
+          j = j - 1 -- unterminated: a string does not span lines
+          break
+        else
+          push(d, true); j = j + 1
+        end
+      end
+      push(c)
+      i = j + 1
+    else
+      push(c)
+      i = i + 1
+    end
+  end
+  return table.concat(out), ins
+end
+
+--- Calls fn(text after the name) for each code occurrence of identifier `name` (not inside a string,
+--- not part of a longer word; `java.sourceCompatibility` counts).
+local function gradle_after(text, ins, name, width, fn)
+  local init = 1
+  while true do
+    local s, e = text:find(name, init, true)
+    if not s then return end
+    init = e + 1
+    if not ins[s] and not text:sub(s - 1, s - 1):find("[%w_]") and not text:sub(e + 1, e + 1):find("[%w_]") then
+      fn(text:sub(e + 1, e + width))
+    end
+  end
+end
+
+--- Version strings in one Gradle build file (Groovy or Kotlin DSL), text rules only, nothing is evaluated,
+--- in order: `languageVersion = JavaLanguageVersion.of(N)` (java or kotlin toolchain), `jvmToolchain(N)`,
+--- `sourceCompatibility`, `targetCompatibility` (`JavaVersion.VERSION_21`, `VERSION_1_8`, `toVersion("17")`,
+--- `'21'`, `21`, `1.8`). A value that is not a literal (variable, version catalog, property) is skipped.
+local function gradle_versions(src)
+  local text, ins = gradle_strip(src)
+  local vs = {}
+  local function add(v) if v then vs[#vs + 1] = v end end
+  gradle_after(text, ins, "languageVersion", 120, function(rest)
+    add(rest:match("^[%s%.=%a%(]*JavaLanguageVersion%.of%(%s*[\"']?(%d+)"))
+  end)
+  gradle_after(text, ins, "jvmToolchain", 120, function(rest)
+    add(rest:match("^%s*%(%s*(%d+)") or rest:match("^%s*%(%s*JavaLanguageVersion%.of%(%s*[\"']?(%d+)"))
+  end)
+  for _, name in ipairs({ "sourceCompatibility", "targetCompatibility" }) do
+    gradle_after(text, ins, name, 80, function(rest)
+      rest = rest:gsub("^[%s=%(]+", "")
+      local v = rest:match("^JavaVersion%.VERSION_([%d_]+)")
+      if v then v = v:gsub("_", ".") end
+      add(v or rest:match("^JavaVersion%.toVersion%(%s*[\"']?(%d[%d%.]*)") or rest:match("^[\"']([%d%.]+)[\"']")
+        or rest:match("^(%d[%d%.]*)"))
+    end)
+  end
+  return vs
+end
+
+--- Directories of the projects a settings.gradle(.kts) `include`s (":app", ":libs:core" -> app, libs/core).
+local function gradle_included(root)
+  local dirs = {}
+  for _, f in ipairs({ "settings.gradle", "settings.gradle.kts" }) do
+    local src = read(root .. "/" .. f)
+    if src then
+      local text = gradle_strip("\n" .. src)
+      local init = 1
+      while #dirs < 50 do
+        local _, e = text:find("\n[ \t]*include", init)
+        if not e then break end
+        init = e + 1
+        local rest = text:sub(e + 1)
+        local line = rest:match("^[ (][^\n]*") -- `include ...` but not includeBuild / includeFlat
+        if line then
+          while line:match(",%s*$") do -- a statement continues on the next line after a trailing comma
+            local nl = rest:match("^\n[^\n]*", #line + 1)
+            if not nl then break end
+            line = line .. nl
+          end
+          for name in line:gmatch("[\"']([^\"']+)[\"']") do
+            local rel = name:gsub("^:", ""):gsub(":", "/")
+            if rel ~= "" and not rel:find("..", 1, true) and vim.fn.isdirectory(root .. "/" .. rel) == 1 then
+              dirs[#dirs + 1] = rel
+            end
+          end
+        end
+      end
+    end
+  end
+  return dirs
+end
+
+--- Majors from the Gradle build files: the root's build.gradle / build.gradle.kts, then those of the
+--- sub-projects named by `include` in settings.gradle(.kts); duplicates removed. Out of scope: version
+--- catalogs (libs.versions.toml), gradle.properties, values computed by code, convention plugins, buildSrc.
+local function gradle_majors(root)
+  local out, seen = {}, {}
+  local function from(dir)
+    for _, f in ipairs({ "build.gradle", "build.gradle.kts" }) do
+      local src = read(dir .. "/" .. f)
+      for _, v in ipairs(src and gradle_versions(src) or {}) do
+        local m = v:match("^[%d%.]+$") and parse_version(v)
+        if m and not seen[m] then
+          seen[m] = true
+          out[#out + 1] = m
+        end
+      end
+    end
+  end
+  from(root)
+  for _, rel in ipairs(gradle_included(root)) do from(root .. "/" .. rel) end
+  return out
+end
+
 --- Java majors the project asks for, in priority order: .sdkmanrc java=, then pom
 --- maven.compiler.release, plugin <release>, java.version, maven.compiler.source, <source>,
---- maven.compiler.target, <target>. Only the project's own pom is read (no parent poms).
+--- maven.compiler.target, <target>, then the Gradle build files (gradle_majors: toolchain, jvmToolchain,
+--- sourceCompatibility, targetCompatibility). Only the project's own pom is read (no parent poms).
 ---@return integer[]
 function M.project_majors(root)
   local out = {}
@@ -133,6 +278,7 @@ function M.project_majors(root)
       add(prop(name, 0))
     end
   end
+  if root then vim.list_extend(out, gradle_majors(root)) end -- NV4J:GRADLE
   return out
 end
 

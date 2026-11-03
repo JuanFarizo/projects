@@ -120,9 +120,10 @@ Not a gap (measured fine): Kotlin DSL import and run, Spring LS on Gradle, JUnit
 
 1. **T1 fixture and baseline check (G10).** `tests/fixtures/gradle-boot`, `run.sh` resolution step with SKIP, `67_gradle` cases that pass today: `import`, `spring_ls` (mapping, property completion), `run_cp`, `run_bootrun`, `test_nearest/class/project`, `failure_shown`, `debug_started`. Controls: each case against a stub as in 60. Ships a safety net for everything below.
 2. **T2 G1** (launcher on Gradle + never 0/0/0). Highest user value: it breaks the test key silently.
-3. **T3 G7 + G2** (root rule: nearest, `settings.gradle` wins). One jdt.ls per Gradle build, `<leader>tp` over all sub-projects.
-4. **T4 G3** (project JDK from Gradle files).
-5. **T5 G4** (bootRun polish).
+3. **T3 G7 + G2** (root rule: nearest, `settings.gradle` wins). One jdt.ls per Gradle build, `<leader>tp` over all sub-projects. **Built 2026-11-03**: `root.project` uses one equal-priority marker list (nearest build file) and `root.gradle_settings_root` (nearest settings.gradle(.kts) above a Gradle-only sub-project, bounded by git root, `.nv4j` dir and $HOME); check `68_gradle_root` (15 cases, 3 green runs, controls per case).
+
+4. **T4 G3** (project JDK from Gradle files). DONE 2026-11-03: `jdk.project_majors` also reads the root's `build.gradle(.kts)` then the `include`d sub-projects' (toolchain `languageVersion`, `jvmToolchain(N)`, `sourceCompatibility`, `targetCompatibility`; comments and strings skipped; no evaluation; version catalogs, `gradle.properties`, convention plugins, `buildSrc`, `options.release` not read); order `.sdkmanrc`, pom, Gradle. Check `69_gradle_jdk` (16 cases, `tests/lib/control_69.sh` controls).
+5. **T5 G4** (bootRun polish). **Built 2026-11-03**: `nv4j/run.lua` `build_tool_command` Gradle branch: `vm_args` (also from `.nv4j`) go to env `JAVA_TOOL_OPTIONS`, appended to an existing value (settings env first, then Neovim's) with one INFO notification, never replaced; a `gradlew` without the exec bit runs as `sh <gradlew> bootRun`; no wrapper and no executable `gradle` on Neovim's PATH = one WARN naming the missing wrapper and the SDKMAN shell function (no zsh shell-out, no `~/.sdkman` path guessing); Maven unchanged. Check `70_gradle_run` (12 cases, stubbed terminal, five controls).
 6. **T6 G6** (build file errors; first reproduce).
 7. **T7 G8/G9 if wanted, then docs**: README Gradle line (`README.md:17`, `:242`), `docs/KEYS.md:44`, `001` D2 text ("untested" -> status), `docs/TODO.md`, handoff.
 

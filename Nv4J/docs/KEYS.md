@@ -41,7 +41,7 @@ Keys marked **Java buffer** exist only in a Java file after jdt.ls has attached.
 | `<leader>rd` | Debug the Spring Boot app (same defaults) | global | same |
 | `<leader>rp` | Pick a profile, then run (this run only; does not write `.nv4j`) | global | same |
 | `:Nv4jMark` | Create an empty `.nv4j` in the current working directory (does not overwrite) | command | `nv4j/settings.lua` |
-| `<leader>rS` | Run through Maven or Gradle (`spring-boot:run`, `bootRun`) | global | same |
+| `<leader>rS` | Run through Maven or Gradle (`spring-boot:run`, `bootRun`; Gradle: VM args go in `JAVA_TOOL_OPTIONS`, a `gradlew` without exec bit runs via `sh`) | global | same |
 | `<leader>rx` | Stop every Spring Boot run | global | same |
 | `<leader>rj` | Run a main class with plain `java` in a terminal | global | same |
 | `<C-c>` in the run split (normal mode) | Stop the app | run split | `nv4j/run.lua` |

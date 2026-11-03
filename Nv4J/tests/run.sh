@@ -130,7 +130,7 @@ fi
 export NV4J_GRADLE_FIXTURE="$HERE/fixtures/gradle-boot"
 GRADLE_MISSING=""
 for check in "${CHECKS[@]}"; do
-  case "$(basename "$check")" in 67_*|68_*|69_*|70_*) GRADLE_NEEDED=1 ;; esac
+  case "$(basename "$check")" in 67_*|68_*) GRADLE_NEEDED=1 ;; esac
 done
 if [ "${GRADLE_NEEDED:-0}" = 1 ]; then
   bash "$HERE/lib/fixture_guard.sh" "$NV4J_GRADLE_FIXTURE" "${NV4J_FIXTURE_DIRTY:-fail}" src build.gradle settings.gradle 2>&1 | tee -a "$LOG"
@@ -160,7 +160,7 @@ for check in "${CHECKS[@]}"; do
   # load and other jdt.ls/java processes at the start of each check: a slow or stalled jdt.ls run can be matched to a busy machine afterwards (flake C)
   echo "load: $(uptime | sed 's/.*averages: *//'), java processes: $(pgrep -x java | wc -l | tr -d ' ')" >>"$LOG"
   case "$name" in
-    67_*|68_*|69_*|70_*)
+    67_*|68_*)
       if [ -n "$GRADLE_MISSING" ]; then
         echo "SKIP $name: $GRADLE_MISSING (see $LOG)" | tee -a "$LOG"
         continue
