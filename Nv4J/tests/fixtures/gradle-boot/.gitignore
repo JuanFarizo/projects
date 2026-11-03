@@ -1,0 +1,7 @@
+# Gradle and jdt.ls outputs (the wrapper in gradle/wrapper and gradlew ARE committed: offline once the distribution is cached)
+.gradle/
+build/
+bin/
+.project
+.classpath
+.settings/

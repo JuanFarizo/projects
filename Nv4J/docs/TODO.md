@@ -1,6 +1,6 @@
 # Nv4J: pending work
 
-One list of what is open. Update it when you finish or add something. Newest decisions are in `specs/001-architecture.md`; how to resume is in `docs/HANDOFF-p3.md`. Last update: 2026-11-02.
+One list of what is open. Update it when you finish or add something. Newest decisions are in `specs/001-architecture.md`; how to resume is in `docs/HANDOFF-p3.md`. Last update: 2026-11-03.
 
 ## Waiting for your decision
 
@@ -19,19 +19,21 @@ One list of what is open. Update it when you finish or add something. Newest dec
 - [ ] AI agents: Claude and Cursor were never run for real; check 65 stubs `ClaudeCodeOpen`.
 - [ ] First start with Mason on a new machine: prettier, marksman, markdownlint-cli2 and markdown-toc install (needs Node).
 - [x] Cap minors (2026-11-02): a buffer the loose-file cap refused starts its jdt.ls by itself when a jdt.ls exits and the cap allows it (`root.release_refused`, cases `cap_release`, `cap_release_live`); the `start_or_attach` guard is re-applied before every start (`root.guard_start`, case `guard_reload`); `warn_loose` compares roots with `root.canon` (case `cap_canon`).
-- [x] Tests not covered (2026-11-03): JUnit 4 (`60_tests_runner` `junit4_runs`), TestNG refusal and the mixed or TestNG-only project (`testng_refused`, `testng_project_mixed`, `testng_project_only`), a multi-module Maven project run from the parent root (`multi_module`), the Mason `is_installing` guard (`50_spring_ls` `ensure_package_installing`), the three `spring-route.log` lines (`50_spring_ls` `route_log_nomatch`, `route_log_nobuf`, `route_log_rejected`). No product bug found. Still open: Gradle test runs (a P4 feature; a throwaway probe showed a plain one-module Gradle JUnit 5 project already runs through the same path, no check kept, see tests-runner.md "Open items"), a real TestNG run (the runner refuses it by design; `<leader>tT` is not checked on a TestNG file), a multi-module project whose parent is not the jdt.ls root.
+- [x] Tests not covered (2026-11-03): JUnit 4 (`60_tests_runner` `junit4_runs`), TestNG refusal and the mixed or TestNG-only project (`testng_refused`, `testng_project_mixed`, `testng_project_only`), a multi-module Maven project run from the parent root (`multi_module`), the Mason `is_installing` guard (`50_spring_ls` `ensure_package_installing`), the three `spring-route.log` lines (`50_spring_ls` `route_log_nomatch`, `route_log_nobuf`, `route_log_rejected`). No product bug found. Still open: a real TestNG run (the runner refuses it by design; `<leader>tT` is not checked on a TestNG file), a multi-module project whose parent is not the jdt.ls root.
 - [ ] Case-folding branch of the project path match runs only on a case-sensitive file system (this Mac is case-insensitive).
 
 Settled, no longer asked: the 5 s ceiling for change signature on a method with implementations stays (it only sets how long the check waits); smear-cursor and mini.animate are not ported (user ruling D26).
 
 ## Later (priorities from the plan)
 
-- [ ] P4: Gradle as a first-class build tool, JPA, TestNG polish.
+- [ ] P4: Gradle as a first-class build tool, JPA, TestNG polish. Gradle research and task order: `specs/006-p4-gradle.md` (gap list G1 to G10, decisions D28 to D32 proposed by Claude, the user can overturn). Done: T1 (fixture `tests/fixtures/gradle-boot`, check `67_gradle`, `run.sh` resolve step with SKIP) and T2 (G1: no silent 0/0/0, launcher in the Gradle cache). Next: T3 (G7 + G2, root rule and one jdt.ls per Gradle build), T4 (project JDK from Gradle files), T5 (`vm_args` for `bootRun`), T6 (build file errors, first reproduce the G6 hang), T7 (G8/G9, docs).
+- [ ] Commit the Gradle fixture and T1/T2 (nothing is committed yet): until the fixture is committed `tests/run.sh` needs `NV4J_FIXTURE_DIRTY=allow` for check 67 (the guard sees the new fixture as uncommitted).
 - [ ] JDT index save (only if a start on the second day is slow).
 - [ ] `-Xms` / `-Xmx` stay out (your rule).
 
 ## Done recently
 
+- 2026-11-03: P4 T1/T2: Gradle Spring Boot fixture and `67_gradle` (18 cases, three green runs; controls n67a to n67c and the stub/markers/wrapper controls in `specs/features/tests-runner.md`); a test JVM that dies is an error naming the cause, never `0 passed, 0 failed, 0 skipped`; the JUnit launcher is found in the Gradle cache. Decisions D28 to D32 recorded as proposed.
 - 2026-11-03: test coverage for JUnit 4, TestNG, multi-module Maven, the Mason `is_installing` guard and the spring-route.log lines: `60_tests_runner` 34 cases, `50_spring_ls` 28 cases, controls in `tests-runner.md` and `spring-language-server.md` (n60y, n60z, n50a, n50b).
 - 2026-11-02: debug-only raw stdout capture for flake A and the three cap minors (see Open work); `64_project_marker` has 36 cases. Controls n64g: all eight new real or unit cases FAIL when the capture, the release, the canon compare or the guard re-application is removed (`/tmp/nv4j/logs/test-20261102-224619.log`).
 - 2026-11-02: `61_scaffold` `compiles_all` / `edit_template` flake fixed: the Spring LS held the new file's template twice (nvim sends a pending didChange to a client that attached after the edit); `fill_buf` flushes pending changes, case `edit_template_sync` with control. The same race can hit any edit made within 150 ms before a second LS attaches (not fixed outside the scaffold).

@@ -8,30 +8,34 @@
 #   restore : run that recovery command (git checkout + git clean on those paths only), print
 #             what was restored, exit 0.
 #   allow   : print a warning and exit 0 (for work on the fixture itself before it is committed).
-# Only <fixture>/src and <fixture>/pom.xml are ever looked at or touched.
+# Only <fixture>/src and <fixture>/pom.xml are ever looked at or touched. A fixture with other build files lists its
+# paths after the mode: `fixture_guard.sh tests/fixtures/gradle-boot fail src build.gradle settings.gradle`.
 set -u
-FIX="${1:?usage: fixture_guard.sh <fixture dir> [fail|restore|allow]}"
+FIX="${1:?usage: fixture_guard.sh <fixture dir> [fail|restore|allow] [path...]}"
 MODE="${2:-fail}"
+shift; shift 2>/dev/null
+PATHS=("$@")
+[ ${#PATHS[@]} -gt 0 ] || PATHS=(src pom.xml)
 FIX="$(cd "$FIX" && pwd)" || { echo "FATAL: fixture dir '$1' not found" >&2; exit 2; }
 [ -d "$FIX/src" ] || { echo "FATAL: '$FIX' has no src/ (not the fixture?)" >&2; exit 2; }
 git -C "$FIX" rev-parse --is-inside-work-tree >/dev/null 2>&1 || { echo "WARN: $FIX is not in a git work tree: fixture guard skipped"; exit 0; }
 
 # Paths relative to the fixture dir; git resolves them against -C.
-dirty="$(git -C "$FIX" status --porcelain --untracked-files=all -- src pom.xml)"
+dirty="$(git -C "$FIX" status --porcelain --untracked-files=all -- "${PATHS[@]}")"
 [ -z "$dirty" ] && exit 0
 
-recover="git -C '$FIX' checkout -- src pom.xml && git -C '$FIX' clean -fd -- src"
+recover="git -C '$FIX' checkout -- ${PATHS[*]} && git -C '$FIX' clean -fd -- src"
 case "$MODE" in
   allow)
     echo "WARN: fixture has uncommitted changes (NV4J_FIXTURE_DIRTY=allow, running anyway):"
     printf '%s\n' "$dirty" | sed 's/^/    /'
     exit 0 ;;
   restore)
-    echo "fixture guard: restoring uncommitted changes under $FIX (src, pom.xml):"
+    echo "fixture guard: restoring uncommitted changes under $FIX (${PATHS[*]}):"
     printf '%s\n' "$dirty" | sed 's/^/    /'
-    git -C "$FIX" checkout -- src pom.xml || exit 2
+    git -C "$FIX" checkout -- "${PATHS[@]}" || exit 2
     git -C "$FIX" clean -fd -- src | sed 's/^/    /'
-    left="$(git -C "$FIX" status --porcelain --untracked-files=all -- src pom.xml)"
+    left="$(git -C "$FIX" status --porcelain --untracked-files=all -- "${PATHS[@]}")"
     [ -z "$left" ] || { echo "FATAL: fixture still dirty after restore:"; printf '%s\n' "$left"; exit 2; }
     echo "fixture guard: restored"
     exit 0 ;;

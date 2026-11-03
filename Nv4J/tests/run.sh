@@ -121,12 +121,50 @@ if [ ${#CHECKS[@]} -eq 0 ]; then
   echo "FATAL: no check matches NV4J_CHECKS='${NV4J_CHECKS:-*}' in $HERE/checks" >&2
   exit 2
 fi
+
+# Gradle fixture (P4, 67_gradle): only when a selected check needs it. The committed wrapper (gradlew +
+# gradle/wrapper, no `gradle` CLI needed: Neovim does not see SDKMAN's) works offline once its distribution and the
+# fixture's dependencies are in ~/.gradle (about 100 MB, D31): tried with --offline first, then online. Gradle 9
+# runs on any JDK from 17, so the JDK 21 of the PATH is used, only for this command. When neither works (no
+# network and nothing cached, no JDK 21) check 67 is skipped with a SKIP line, like 50-52 for the Spring package.
+export NV4J_GRADLE_FIXTURE="$HERE/fixtures/gradle-boot"
+GRADLE_MISSING=""
+for check in "${CHECKS[@]}"; do
+  case "$(basename "$check")" in 67_*) GRADLE_NEEDED=1 ;; esac
+done
+if [ "${GRADLE_NEEDED:-0}" = 1 ]; then
+  bash "$HERE/lib/fixture_guard.sh" "$NV4J_GRADLE_FIXTURE" "${NV4J_FIXTURE_DIRTY:-fail}" src build.gradle settings.gradle 2>&1 | tee -a "$LOG"
+  guard_rc=${PIPESTATUS[0]}
+  [ "$guard_rc" -eq 0 ] || exit "$guard_rc"
+  GJDK="$(find_jdk 21)"
+  if [ ! -x "$GJDK/bin/java" ]; then
+    GRADLE_MISSING="no JDK 21 found by nv4j.jdk discovery (needed to run the Gradle wrapper)"
+  elif ! [ -x "$NV4J_GRADLE_FIXTURE/gradlew" ]; then
+    GRADLE_MISSING="$NV4J_GRADLE_FIXTURE/gradlew missing or not executable"
+  else
+    gstart=$SECONDS
+    if (cd "$NV4J_GRADLE_FIXTURE" && JAVA_HOME="$GJDK" ./gradlew --offline -q testClasses >>"$LOG" 2>&1); then
+      echo "gradle fixture: resolved offline in $((SECONDS - gstart)) s" | tee -a "$LOG"
+    elif (cd "$NV4J_GRADLE_FIXTURE" && JAVA_HOME="$GJDK" ./gradlew -q testClasses >>"$LOG" 2>&1); then
+      echo "gradle fixture: resolved online in $((SECONDS - gstart)) s (dependencies are cached now)" | tee -a "$LOG"
+    else
+      GRADLE_MISSING="the Gradle wrapper could not resolve the fixture, offline or online (no network and no cached Gradle distribution/dependencies?)"
+    fi
+  fi
+  [ -z "$GRADLE_MISSING" ] || echo "WARN: Gradle fixture unavailable ($GRADLE_MISSING): check 67 is skipped" | tee -a "$LOG"
+fi
+
 for check in "${CHECKS[@]}"; do
   name="$(basename "$check")"
   echo "== $name" | tee -a "$LOG"
   # load and other jdt.ls/java processes at the start of each check: a slow or stalled jdt.ls run can be matched to a busy machine afterwards (flake C)
   echo "load: $(uptime | sed 's/.*averages: *//'), java processes: $(pgrep -x java | wc -l | tr -d ' ')" >>"$LOG"
   case "$name" in
+    67_*)
+      if [ -n "$GRADLE_MISSING" ]; then
+        echo "SKIP $name: $GRADLE_MISSING (see $LOG)" | tee -a "$LOG"
+        continue
+      fi ;;
     50_*|51_*|52_*)
       if [ "$SPRING_MISSING" = 1 ]; then
         echo "SKIP $name: vscode-spring-boot-tools not installed (Mason install failed, see $LOG)" | tee -a "$LOG"

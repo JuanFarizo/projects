@@ -1,0 +1,33 @@
+// Gradle twin of tests/fixtures/demo for 67_gradle (specs/006-p4-gradle.md): small Spring Boot 3.5 app,
+// JUnit 5 with the standard Gradle 8 test setup (Boot's own project template).
+plugins {
+    id 'java'
+    id 'org.springframework.boot' version '3.5.13'
+    id 'io.spring.dependency-management' version '1.1.7'
+}
+
+group = 'gradleboot'
+version = '0.0.1'
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_21
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation 'org.springframework.boot:spring-boot-starter-web'
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+    // Boot's template has it. (Measured: the build gets the launcher on the jdt.ls test classpath even without this line;
+    // 67_gradle `launcher_missing` therefore uses a plain, non-Boot project for the G1 case.)
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+tasks.named('test') {
+    // the failing-on-purpose class is for the editor's test runner only (as the demo's surefire excludedGroups)
+    useJUnitPlatform {
+        excludeTags 'nv4j-failing'
+    }
+}

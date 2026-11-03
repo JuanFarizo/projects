@@ -185,9 +185,12 @@ end
 --- ClassNotFoundException: org.junit.platform.engine.OutputDirectoryCreator. In some jdt.ls
 --- sessions the project classpath carries junit-platform-launcher, in others not (cause not found,
 --- see debug-run.md). Fix: replace the bundled launcher (an extracted OSGi bundle folder) by the
---- launcher of the engine's own version from the local Maven repo (sibling folder). When that jar is
---- not downloaded (or the engine is not from a Maven repo, e.g. Gradle) a one-time warning says
---- what is needed, instead of a silent ClassNotFoundException.
+--- launcher of the engine's own version from the local Maven repo (sibling folder) or, for a Gradle project, from
+--- the Gradle cache (`.../org.junit.platform/junit-platform-engine/<ver>/<hash>/junit-platform-engine-<ver>.jar`, the
+--- launcher is `.../junit-platform-launcher/<ver>/<hash>/junit-platform-launcher-<ver>.jar`; the hash folder differs
+--- per jar, hence a glob). When that jar is not downloaded (or the engine is in neither layout) a one-time
+--- warning says what is needed, instead of a silent ClassNotFoundException. A run that still dies is never
+--- reported as 0 passed / 0 failed (nv4j/tests.lua, G1 in specs/006-p4-gradle.md).
 local function is_bundled_launcher(path)
   if vim.fn.isdirectory(path) == 0 then return false end
   local ok, lines = pcall(vim.fn.readfile, path .. "/META-INF/MANIFEST.MF", "", 40)
@@ -209,26 +212,39 @@ function M.junit_launcher(config)
   if config.mainClass ~= "org.eclipse.jdt.internal.junit.runner.RemoteTestRunner" or type(config.classPaths) ~= "table" then
     return config
   end
-  local base, version, bundled
+  local base, version, bundled, gradle
   for i, p in ipairs(config.classPaths) do
     if p:find("/junit-platform-launcher-", 1, true) then return config end -- the project has one
-    if not base then base, version = p:match("^(.*)/junit%-platform%-engine/([^/]+)/junit%-platform%-engine%-[^/]+%.jar$") end
+    if not base then
+      base, version = p:match("^(.*)/junit%-platform%-engine/([^/]+)/junit%-platform%-engine%-[^/]+%.jar$") -- Maven repository
+      if not base then
+        base, version = p:match("^(.*)/junit%-platform%-engine/([^/]+)/[^/]+/junit%-platform%-engine%-[^/]+%.jar$") -- Gradle cache
+        gradle = base ~= nil
+      end
+    end
     if not bundled and is_bundled_launcher(p) then bundled = i end
   end
   if not bundled then return config end
   if not base then
     warn_once("other", "JUnit: JDT adds its bundled junit-platform-launcher to this test run and no junit-platform-engine"
-      .. " jar from a Maven repository is on the classpath (Gradle is not handled). If the run fails with"
+      .. " jar from a Maven repository or the Gradle cache is on the classpath. If the run fails with"
       .. " ClassNotFoundException or NoSuchMethodError in org.junit.platform, add junit-platform-launcher of your"
       .. " engine's version as a test dependency.")
     return config
   end
-  local launcher = ("%s/junit-platform-launcher/%s/junit-platform-launcher-%s.jar"):format(base, version, version)
-  if not vim.uv.fs_stat(launcher) then
+  local launcher
+  if gradle then
+    local dir = ("%s/junit-platform-launcher/%s"):format(base, version)
+    launcher = vim.fn.glob(("%s/*/junit-platform-launcher-%s.jar"):format(dir, version), false, true)[1]
+  else
+    launcher = ("%s/junit-platform-launcher/%s/junit-platform-launcher-%s.jar"):format(base, version, version)
+    if not vim.uv.fs_stat(launcher) then launcher = nil end
+  end
+  if not launcher then
     warn_once(version, ("JUnit: JDT adds its bundled junit-platform-launcher, which may not match junit-platform-engine %s"
-      .. " (ClassNotFoundException/NoSuchMethodError in org.junit.platform). Needed: %s. Get it with"
-      .. " `mvn dependency:get -Dartifact=org.junit.platform:junit-platform-launcher:%s` or add it as a test"
-      .. " dependency."):format(version, launcher, version))
+      .. " (ClassNotFoundException/NoSuchMethodError in org.junit.platform). Needed: junit-platform-launcher-%s.jar in %s. Add it as"
+      .. " a test dependency (Gradle: testRuntimeOnly 'org.junit.platform:junit-platform-launcher'; Maven: `mvn"
+      .. " dependency:get -Dartifact=org.junit.platform:junit-platform-launcher:%s`)."):format(version, version, base, version))
     return config
   end
   config = vim.deepcopy(config)

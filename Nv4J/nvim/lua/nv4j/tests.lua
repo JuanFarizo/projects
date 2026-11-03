@@ -17,6 +17,9 @@
 -- (one launch per project and test kind: java-test 0.43.1 refuses project/package levels, measured in
 -- Task 2, but runs a list of classes in one JVM), failed = the failed tests of the last run (method level,
 -- one launch), last = the last run again. TestNG is not handled (nvim-jdtls's <leader>tT runs it).
+-- A launch whose stream ends without %RUNTIME (the test JVM died, e.g. NoClassDefFoundError) is an error in
+-- result.error naming the last Exception/Error line of the JVM console, never 0 passed / 0 failed / 0 skipped
+-- (G1, specs/006-p4-gradle.md, check 67_gradle crash_*).
 local M = {}
 
 local NS = vim.api.nvim_create_namespace("nv4j_tests")
@@ -391,6 +394,7 @@ local function show(r, ctx, label)
         text = short(t.name) .. ": skipped" }
     end
   end
+  if r.error then items[#items + 1] = { text = r.error:match("[^\n]*"), type = "E" } end
   for b, ds in pairs(by_buf) do vim.diagnostic.set(NS, b, ds) end
   local title = ("%s: %s (%s)"):format(QF_TITLE, summary(r), label)
   local cur = vim.fn.getqflist({ title = 0 }).title or ""
@@ -434,6 +438,30 @@ local function java_home(root)
   return rts[1] and rts[1].path
 end
 
+--- The line of a test JVM's console that says why it died: the last line naming an Exception or Error that is not a
+--- stack frame, else the last non-empty line. nil when the JVM printed nothing.
+local function cause_of(lines)
+  local last
+  for i = #lines, 1, -1 do
+    local l = vim.trim(lines[i])
+    if l ~= "" and not l:find("^at ") and not l:find("^%.%.%. %d+ more") then
+      if l:find("Exception") or l:find("Error") then return l:sub(1, 240) end
+      last = last or l:sub(1, 240)
+    end
+  end
+  return last
+end
+M._cause_of = cause_of
+
+--- Why a launch that did not deliver a complete result (no %RUNTIME) is an error, never "0 passed, 0 failed, 0 skipped"
+--- (G1, specs/006-p4-gradle.md): the test JVM died or was cut off. `lines` is its console (dap output events).
+local function no_results_msg(lines)
+  local cause = cause_of(lines)
+  return "the test JVM ended without (complete) results" .. (cause and (": " .. cause) or "")
+    .. " (more in :DapShowLog, the dap-repl and the build warnings above)"
+end
+M._no_results_msg = no_results_msg
+
 --- One JVM: launch args, TCP server for the runner's stream, dap.run (P2's adapter builds first).
 --- done(parser|nil, err|nil) once: the stream ended (%RUNTIME + EOF), or the session closed (a short
 --- grace for the stream), or the run was cancelled.
@@ -447,9 +475,24 @@ local function launch_one(run, launch, done, idx)
     local server = assert(uv.new_tcp())
     local finished = false
     local socks = {}
+    -- the JVM's console (stdout and stderr, last 60 lines): the cause of a run that ends without results
+    local console = {}
+    local name = ("Nv4J tests: %s #%d.%d"):format(launch.label, run.id, idx or 1)
+    local listener_key = "nv4j_tests_" .. name
+    local out_listeners = require("dap").listeners.after.event_output
+    out_listeners[listener_key] = function(session, body)
+      if not (session and session.config and session.config.name == name) or type(body) ~= "table" or type(body.output) ~= "string" then return end
+      for _, l in ipairs(vim.split(body.output, "\n", { plain = true })) do
+        console[#console + 1] = (l:gsub("\r$", ""))
+      end
+      if #console > 120 then console = vim.list_slice(console, #console - 59) end
+    end
     local function finish(e)
       if finished then return end
       finished = true
+      out_listeners[listener_key] = nil
+      -- no %RUNTIME and no error yet: the JVM died or the stream was cut (never a green 0/0/0)
+      if not e and not parser.done then e = no_results_msg(console) end
       -- luv TCP handles: closed here (timeout, cancel, %RUNTIME) instead of waiting for the JVM's EOF
       for _, s in ipairs(socks) do
         if not s:is_closing() then pcall(function() s:read_stop() end); s:close() end
@@ -463,7 +506,6 @@ local function launch_one(run, launch, done, idx)
     -- the JVM of a finished stream must not linger: its session is closed 3 s after the results. The name is
     -- per LAUNCH (#<run>.<n>): the reap of launch n must not match launch n+1's session, which has usually
     -- registered by then (a project run has one launch per Java project and test kind)
-    local name = ("Nv4J tests: %s #%d.%d"):format(launch.label, run.id, idx or 1)
     local function reap()
       vim.defer_fn(function()
         for _, sess in pairs(require("dap").sessions()) do
@@ -498,7 +540,8 @@ local function launch_one(run, launch, done, idx)
         else
           if not sock:is_closing() then sock:close() end
           if rerr then return finish("test stream: " .. tostring(rerr)) end
-          finish(nil)
+          -- EOF before %RUNTIME: the JVM's console events (the cause) may still be on their way
+          if parser.done then finish(nil) else vim.defer_fn(function() finish(nil) end, 500) end
         end
       end))
     end)
@@ -531,8 +574,7 @@ local function launch_one(run, launch, done, idx)
         -- the stream normally ends before the session closes; give it a moment, then report
         vim.defer_fn(function()
           if not finished then
-            finish(parser.done and nil or "the test JVM ended without (complete) results: see :DapShowLog, the dap-repl"
-              .. " and the build warnings above")
+            finish(parser.done and nil or no_results_msg(console))
           end
         end, 1500)
       end,
