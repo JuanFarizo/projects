@@ -117,10 +117,31 @@ Fix wave after the final review (2026-10-29): (S-I1) the dap session of a launch
 
 Three consecutive runs 20/0 (`/tmp/nv4j/logs/test-20261022-092842.log`, `-092935.log`, `-093026.log`) and the full run 20/0 (`-093117.log`); numbers in `specs/005-p3-tests-scaffold-refactor.md` "Task 2" and the README (Capabilities: Tests).
 
+### Coverage added 2026-11-03 (no product change)
+
+Fixtures are created by the check under `/tmp/nv4j/kinds60-<pid>`, `/tmp/nv4j/ngonly60-<pid>`, `/tmp/nv4j/mm60-<pid>` and removed at its end; nothing is written under `tests/fixtures/demo`. The JUnit 4 (4.13.2) and TestNG (7.5) jars were already in `~/.m2`.
+
+| Case | What it proves |
+|------|----------------|
+| `junit4_runs` | a JUnit 4 project: nearest 1/0/0, class 1/1/1 (the `@Ignore`d test is skipped), the failure in the quickfix list at the `assertEquals(7` line, a RemoteTestRunner launch |
+| `testng_refused` | nearest and class in a TestNG file: no launch, a WARN naming `<leader>tT`, the error in the result, lock released, < 10 s |
+| `testng_project_mixed` | JUnit 4 and TestNG classes in one project: `<leader>tp` runs the JUnit 4 ones (1/1/1, one launch) and warns that TestNG was skipped |
+| `testng_project_only` | a TestNG-only project: `<leader>tp` refused with the TestNG message, no launch |
+| `multi_module` | parent pom with `.git` (jdt.ls root), modules `core` and `app`: nearest in each module's test, then `<leader>tp` from the parent: 2 launches (one per Java project), 2 passed, both classes in the result |
+
+Controls (patch the product, run, restore, `cmp` against a backup):
+
+| Id | Patch | Result | Log |
+|----|-------|--------|-----|
+| n60y | `launches_for` skips kind 1 (JUnit 4) like TestNG; `from_project` looks at the first Java project only | `junit4_runs`, `testng_project_mixed`, `multi_module` FAIL (31 PASS, 3 FAIL) | `/tmp/nv4j/logs/test-20261103-083626.log` |
+| n60z | TestNG launches are not skipped (`if false`) | `testng_refused`, `testng_project_mixed`, `testng_project_only` FAIL ("the test JVM ended without (complete) results") | `/tmp/nv4j/logs/test-20261103-083836.log` |
+
 ### Open items
 
-- TestNG is not run by Nv4J's runner (a message points to `<leader>tT`, nvim-jdtls). JUnit 4 goes through the same path (test kind 1) but no fixture covers it.
-- Project scope runs one JVM per jdt.ls Java project and test kind; a multi-module project was not measured. Gradle not tested.
+- TestNG is not run by Nv4J's runner (a message points to `<leader>tT`, nvim-jdtls); the refusal is checked (`testng_refused`, `testng_project_mixed`, `testng_project_only`), `<leader>tT` on a TestNG file is not.
+- JUnit 4 runs through the same path (test kind 1): checked (`junit4_runs`, 2026-11-03).
+- Project scope runs one JVM per jdt.ls Java project and test kind. Multi-module Maven (git-root parent pom, modules `core` and `app` as two jdt.ls Java projects under one jdt.ls) is checked: `multi_module`. A module opened without a parent root (no `.git` or `.nv4j` above the module pom) is its own jdt.ls root and only runs its own tests (same rule as every other feature, `nv4j/root.lua`); not checked here.
+- Gradle: no Gradle-specific code exists in `tests.lua` and no committed check covers it. A throwaway probe (2026-11-03, `/tmp/nv4j/logs/test-20261103-091834.log`, not kept in the suite) imported a one-module Gradle project (`java` plugin, `junit-jupiter` 5.12.2, `useJUnitPlatform()`) and ran `<leader>tr` and `<leader>tp` through the same path as Maven: 1 passed each (0.9 s and 0.5 s), "Building before test run..." shown. So a plain Gradle JUnit 5 project works today because the runner uses jdt.ls (java-test), not Gradle; multi-project Gradle, Gradle with Spring Boot and failures were not tried. First-class Gradle is P4.
 - Frames are resolved to files under `src/*/java` of the root and one module level down; deeper modules show the message entry without frames.
 - Stdout of the tests goes to the dap-repl only (`internalConsole`), not into the results.
 - (fixed, t2-n) The which-key queue strip is gone: LazyVim's test keys are off (`opts.test = false`). The check still prunes queued which-key specs of wiped buffers before loading which-key (t2-k, a headless artifact for LazyVim's extract keys).

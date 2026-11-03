@@ -42,6 +42,12 @@
 --  two_boot_index: the same Spring LS (workspace folder = project A only) answers for what exists only in B: B's request
 --                 mapping and bean (workspace/symbol) and B's configuration property key (completion in B's
 --                 application.properties), A's own still there. No workspace folder is needed: B arrives by jdt.ls classpath events.
+--  route_log_nomatch / route_log_nobuf / route_log_rejected: the three spring-route.log lines of nv4j/spring.lua (M.route_log),
+--                 each written in its situation (unmatched projectUri; current buffer without a jdt.ls; addClasspathListener
+--                 rejected, 1 + 4 retries) and not otherwise (matched, buffer in a root, accepted, rejected after remove).
+--                 Controls n50a (route_log a no-op) and n50b (lines written always).
+--  ensure_package_installing: Mason registry stubbed; while the package is_installing ensure_package never calls install()
+--                 (polls every 2 s), once it stops installing it calls it exactly once. Control n50b (guard removed).
 -- Timings: /tmp/nv4j/logs/latency.jsonl (spring_ready, spring_props_first, spring_props_warm_p95,
 -- spring_hover). The fixture file is only edited in memory and restored.
 vim.o.confirm = false
@@ -606,9 +612,140 @@ local ok5, err5 = pcall(function()
   lsp.report(P .. "classpath_retry", #bad5 == 0,
     #bad5 == 0 and "rejected addClasspathListener: retried until accepted (2 errors -> 3 sends), capped at 1+4, none after remove or stop, none after success"
       or table.concat(bad5, "; "))
+
+  -- route_log_*: the three spring-route.log lines (nv4j/spring.lua route_log), each written in its own situation and
+  -- not otherwise. The file is <logs>/spring-route.log (nv4j.paths.logs); every probe reads only what the probe appended.
+  local function logged(fn)
+    local pre = route_log_size()
+    fn()
+    return route_log_tail(pre)
+  end
+  local function lines_of(t) return vim.split(vim.trim(t), "\n", { plain = true, trimempty = true }) end
+  -- (1) no jdt.ls root contains the projectUri path
+  local bad6 = {}
+  with_stubs(all, ROUTE .. "/A/src/Cur.java", function()
+    local hit = logged(function() S.route_client({ projectUri = "file://" .. ROUTE .. "/B/src/X.java" }, all) end)
+    if hit ~= "" then bad6[#bad6 + 1] = "matched projectUri wrote: " .. hit end
+    local nopath = logged(function() S.route_client(nil, all) end)
+    if nopath:find("no jdt.ls root contains", 1, true) then bad6[#bad6 + 1] = "no projectUri wrote a no-root line: " .. nopath end
+    local miss = logged(function() S.route_client({ projectUri = "file:///nowhere/Z1/x.java" }, all) end)
+    local l = lines_of(miss)
+    if #l ~= 1 or not l[1]:find("^%d%d:%d%d:%d%d no jdt%.ls root contains /nowhere/Z1/x%.java: current buffer's jdt%.ls$") then
+      bad6[#bad6 + 1] = "unmatched projectUri line: " .. vim.inspect(miss)
+    end
+  end)
+  lsp.report(P .. "route_log_nomatch", #bad6 == 0, #bad6 == 0
+    and "unmatched projectUri: exactly one 'no jdt.ls root contains <path>' line; matched projectUri and no projectUri: none (spring-route.log)"
+    or table.concat(bad6, "; "))
+  -- (2) the current buffer has no jdt.ls: first Boot jdt.ls
+  local bad7 = {}
+  local elsewhere = "/tmp/nv4j/elsewhere/n.txt"
+  with_stubs({ sC, sA, sB }, elsewhere, function()
+    local t = logged(function() assert(S.route_client(nil, { sC, sA, sB }) == sA) end)
+    local l = lines_of(t)
+    if #l ~= 1 or not l[1]:find("current buffer '" .. elsewhere .. "' has no jdt.ls: first Boot jdt.ls (root " .. ROUTE .. "/A)", 1, true) then
+      bad7[#bad7 + 1] = "buffer without jdt.ls line: " .. vim.inspect(t)
+    end
+    local both = logged(function() S.route_client({ projectUri = "file:///nowhere/Z2/x.java" }, { sC, sA, sB }) end)
+    if #lines_of(both) ~= 2 or not both:find("Z2/x.java", 1, true) or not both:find("first Boot jdt.ls", 1, true) then
+      bad7[#bad7 + 1] = "unmatched uri + foreign buffer: want both lines, got " .. vim.inspect(both)
+    end
+    local byuri = logged(function() S.route_client({ projectUri = "file://" .. ROUTE .. "/B/src/X.java" }, { sC, sA, sB }) end)
+    if byuri ~= "" then bad7[#bad7 + 1] = "projectUri owner found, line written: " .. byuri end
+    local only_plain = logged(function() assert(S.route_client(nil, { sC }) == nil) end)
+    if only_plain ~= "" then bad7[#bad7 + 1] = "no Boot jdt.ls at all, line written: " .. only_plain end
+  end)
+  with_stubs({ sC, sA, sB }, ROUTE .. "/B/src/Cur.java", function()
+    local own = logged(function() assert(S.route_client(nil, { sC, sA, sB }) == sB) end)
+    if own ~= "" then bad7[#bad7 + 1] = "buffer inside B's root, line written: " .. own end
+  end)
+  lsp.report(P .. "route_log_nobuf", #bad7 == 0, #bad7 == 0
+    and "buffer without a jdt.ls: one 'current buffer ... has no jdt.ls: first Boot jdt.ls (root ...)' line; buffer in B's root, projectUri owner, no Boot jdt.ls: none (spring-route.log)"
+    or table.concat(bad7, "; "))
+  -- (3) addClasspathListener rejected by a jdt.ls
+  local bad8 = {}
+  local seen8 = {}
+  local ok8 = mk_stub(seen8, "OK", 141, ROUTE .. "/A")
+  local rej8 = mk_stub(seen8, "REJ", 142, ROUTE .. "/B", { fail = true })
+  local rm8 = mk_stub(seen8, "RM", 143, ROUTE .. "/D", { silent = true })
+  local late8 -- rm8's reply callback: answered with an error only after the listener was removed
+  rm8.request = function(_, _, params, cb) seen8[#seen8 + 1] = { who = "RM", cmd = params and params.command }; late8 = cb; return true end
+  local o_retry8 = S._state.retry_ms
+  S._state.retry_ms = 20
+  local function attach8(c) vim.api.nvim_exec_autocmds("LspAttach", { group = "nv4j_spring_route", data = { client_id = c.id } }) end
+  with_stubs({ ok8, rej8, rm8 }, ROUTE .. "/A/src/Cur.java", function()
+    S._state.classpath_args = { "cb8" }
+    local fine = logged(function() attach8(ok8); vim.wait(200) end)
+    if fine ~= "" then bad8[#bad8 + 1] = "accepted registration wrote: " .. fine end
+    local t = logged(function()
+      attach8(rej8)
+      vim.wait(3000, function() return count(seen8, "REJ", "sts.java.addClasspathListener") >= 5 end, 10)
+      vim.wait(400)
+    end)
+    local l = lines_of(t)
+    local want = "addClasspathListener rejected by jdt.ls 142 (root " .. ROUTE .. "/B): "
+    local n_ok = 0
+    for _, ln in ipairs(l) do if ln:find(want, 1, true) and ln:find("stub: command rejected", 1, true) then n_ok = n_ok + 1 end end
+    if #l ~= 5 or n_ok ~= 5 then bad8[#bad8 + 1] = ("always-rejecting jdt.ls: want 5 lines (1 + 4 retries), got %d (%d right): %s"):format(#l, n_ok, vim.inspect(t):sub(1, 200)) end
+    -- a rejection that arrives after the listener was removed is not an event worth a line
+    local gone = logged(function()
+      attach8(rm8)
+      S._state.classpath_args = nil
+      S._state.registered[rm8] = nil -- what removeClasspathListener does
+      if late8 then late8({ code = -32603, message = "stub: late rejection" }) end
+      vim.wait(300)
+    end)
+    if not late8 or gone:find("jdt.ls 143", 1, true) then bad8[#bad8 + 1] = "rejection after remove wrote: " .. gone end
+  end)
+  S._state.retry_ms = o_retry8
+  lsp.report(P .. "route_log_rejected", #bad8 == 0, #bad8 == 0
+    and "rejected addClasspathListener: one line per rejection (1 + 4 retries = 5, with client id and root); accepted, or rejected after remove: none (spring-route.log)"
+    or table.concat(bad8, "; "))
 end)
 if not ok5 then lsp.report(P .. "jdtls_route", false, "error: " .. tostring(err5)) end
 
+-- ensure_package_installing: the Mason `is_installing` guard in nv4j.spring ensure_package. ensure_installed (want_install)
+-- may already be installing the package: a second install() would run in parallel, so ensure_package waits (polls every 2 s)
+-- and installs only once the package is no longer installing. Registry stubbed through package.loaded["mason-registry"].
+do
+  local S = require("nv4j.spring")
+  local o_jar, o_reg, o_notify = S.ls_jar, package.loaded["mason-registry"], vim.notify
+  local notes_m, installs, gets, closed_cb = {}, 0, 0, nil
+  local installing_now = true
+  local pkg = {
+    is_installed = function() return false end,
+    is_installing = function() return installing_now end,
+    install = function()
+      installs = installs + 1
+      return { once = function(_, _, cb) closed_cb = cb end }
+    end,
+  }
+  S.ls_jar = function() return nil end
+  package.loaded["mason-registry"] = { refresh = function(cb) cb() end, get_package = function() gets = gets + 1; return pkg end }
+  vim.notify = function(msg, level) notes_m[#notes_m + 1] = tostring(msg) end
+  local okm, errm = pcall(function()
+    S.ensure_package()
+    vim.wait(4300, function() return installs > 0 end, 20) -- two polls (2 s apart) while 'installing'
+    local waited_installs, waited_gets = installs, gets
+    S.ensure_package() -- a second caller while the first waits: ignored
+    installing_now = false
+    vim.wait(3500, function() return installs > 0 end, 20) -- the next poll installs
+    vim.wait(300)
+    local bad = {}
+    if waited_installs ~= 0 then bad[#bad + 1] = ("install() ran %d time(s) while the package was installing"):format(waited_installs) end
+    if waited_gets < 3 then bad[#bad + 1] = ("polled %d time(s) in 4.3 s (want >= 3: first call + 2 retries)"):format(waited_gets) end
+    if installs ~= 1 then bad[#bad + 1] = ("install() ran %d time(s) after it finished installing elsewhere (want 1)"):format(installs) end
+    if closed_cb then closed_cb(); vim.wait(300) end -- the install closes without a jar: the WARN, `installing` reset
+    local warned = false
+    for _, m in ipairs(notes_m) do if m:find("Spring Boot LS not installed", 1, true) then warned = true end end
+    if not warned then bad[#bad + 1] = "no 'not installed' warning after the install closed" end
+    lsp.report(P .. "ensure_package_installing", #bad == 0, #bad == 0
+      and ("while Mason reports the package installing: 0 install() calls over 4.3 s (%d registry polls); once it stops: exactly 1"):format(waited_gets)
+      or table.concat(bad, "; "))
+  end)
+  S.ls_jar, package.loaded["mason-registry"], vim.notify = o_jar, o_reg, o_notify
+  if not okm then lsp.report(P .. "ensure_package_installing", false, "error: " .. tostring(errm)) end
+end
 -- Two real Boot projects: a second jdt.ls (root B), the SAME Spring LS process attached to B's files, the
 -- classpath listener registered on B's jdt.ls by the real LspAttach path, sts/* routed to each project's jdt.ls.
 local ok6, err6 = pcall(function()
@@ -701,12 +838,18 @@ local ok6, err6 = pcall(function()
       return labels
     end
     local maps, beans, props = {}, {}, {}
+    local t_b, t_ab
     local t0 = E.now()
     local deadline = vim.uv.now() + 60000 -- each request below is bounded (6 s), so is the loop
     repeat
       maps, beans, props = syms("@/"), syms("@+"), prop_items()
-      if any(maps, "twob-only-path") and any(beans, "TwoBOnlyController") and vim.tbl_contains(props, "twob.cfg.limit") then break end
-      vim.wait(2000)
+      local b_now = any(maps, "twob-only-path") and any(beans, "TwoBOnlyController") and vim.tbl_contains(props, "twob.cfg.limit")
+      local a_now = any(maps, "@/hello") and any(beans, "GreetingController")
+      -- A is re-read when B's classpath arrives: right after B appears A can be momentarily absent (seen once, run
+      -- 2026-11-03 08:56). Both must be present together; the times show how long either was missing.
+      if b_now and not t_b then t_b = E.now() - t0 end
+      if b_now and a_now then t_ab = E.now() - t0; break end
+      vim.wait(500)
     until vim.uv.now() > deadline
     local waited = E.now() - t0
     local m_ok, b_ok = any(maps, "twob-only-path"), any(beans, "TwoBOnlyController")
@@ -715,8 +858,8 @@ local ok6, err6 = pcall(function()
     local only_a = #folders == 1 and (folders[1]):find("fixtures/demo", 1, true) ~= nil
     lsp.report(P .. "two_boot_index", mvn_rc == 0 and m_ok and b_ok and p_ok and a_ok and only_a,
       ("Spring LS (workspace folder only A: %s) answers for B after %.0f ms: request mapping /twob-only-path %s, bean TwoBOnlyController %s, "
-        .. "property twob.cfg.limit %s (%d items); A's /hello and GreetingController still there: %s; B compile rc %d%s"):format(
-        tostring(only_a), waited, tostring(m_ok), tostring(b_ok), tostring(p_ok), #props, tostring(a_ok), mvn_rc,
+        .. "property twob.cfg.limit %s (%d items); A's /hello and GreetingController still there: %s (B first seen at %s ms, A and B together at %s ms); B compile rc %d%s"):format(
+        tostring(only_a), waited, tostring(m_ok), tostring(b_ok), tostring(p_ok), #props, tostring(a_ok), tostring(t_b and math.floor(t_b)), tostring(t_ab and math.floor(t_ab)), mvn_rc,
         mvn_rc ~= 0 and (" " .. mvn_out:sub(1, 200)) or ""))
   end)
   if not ok7 then lsp.report(P .. "two_boot_index", false, "error: " .. tostring(err7)) end

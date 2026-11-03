@@ -61,6 +61,14 @@
 --  no_tests_file    : nearest in a main class: visible "No tests found" message, quickly, no lock left.
 --  no_junit_project : a Maven project without JUnit (generated under /tmp/nv4j): visible message for
 --                     nearest and project, quickly.
+--  junit4_runs      : throwaway Maven project /tmp/nv4j/kinds60-<pid> (JUnit 4.13.2 + TestNG 7.5, removed afterwards): nearest 1/0/0, class
+--                     1/1/1 (@Ignore skipped), the failure at the assertEquals(7 line in the quickfix list, a RemoteTestRunner launch.
+--  testng_refused   : nearest and class in a TestNG file: no launch, WARN naming <leader>tT, error in the result, lock released.
+--  testng_project_mixed: JUnit 4 + TestNG classes in one project: project scope runs JUnit 4 (1/1/1, one launch), WARN names TestNG.
+--  testng_project_only: a TestNG-only project (/tmp/nv4j/ngonly60-<pid>): project scope refused with the TestNG message, no launch.
+--  multi_module     : parent pom with .git (/tmp/nv4j/mm60-<pid>), modules core and app under one jdt.ls root: nearest in each
+--                     module, then project from the parent: 2 launches, 2 passed, both classes.
+--                     Controls n60y (JUnit 4 skipped like TestNG, project run reads one Java project), n60z (TestNG not skipped).
 --  timeout_bounded  : product timeout set to 300 ms: the run ends with "no result within", the next run works.
 --  keys_after_whichkey: which-key loaded and VimEnter fired (which-key then creates every queued mapping):
 --                     Nv4J's keys are still the bound ones and no LazyVim test key exists (none was queued).
@@ -567,6 +575,136 @@ local ok_all, err = pcall(function()
     vim.lsp.stop_client(c2.id, true)
   end
   vim.fn.delete(nj, "rf")
+
+  -- JUnit 4 + TestNG in one throwaway Maven project (/tmp/nv4j/kinds60-<pid>, removed afterwards)
+  local function write(path, lines)
+    vim.fn.mkdir(vim.fs.dirname(path), "p")
+    vim.fn.writefile(lines, path)
+  end
+  local function dep(g, a, v) return ("<dependency><groupId>%s</groupId><artifactId>%s</artifactId><version>%s</version><scope>test</scope></dependency>"):format(g, a, v) end
+  local function pom(art, deps)
+    return { '<project xmlns="http://maven.apache.org/POM/4.0.0"><modelVersion>4.0.0</modelVersion>',
+      "<groupId>x</groupId><artifactId>" .. art .. "</artifactId><version>1</version>",
+      "<properties><maven.compiler.release>21</maven.compiler.release></properties>",
+      "<dependencies>" .. table.concat(deps, "") .. "</dependencies></project>" }
+  end
+  local J4, NG, J5 = dep("junit", "junit", "4.13.2"), dep("org.testng", "testng", "7.5"), dep("org.junit.jupiter", "junit-jupiter", "5.12.2")
+  local kd = "/tmp/nv4j/kinds60-" .. vim.fn.getpid()
+  vim.fn.delete(kd, "rf")
+  write(kd .. "/pom.xml", pom("kinds", { J4, NG }))
+  write(kd .. "/src/test/java/x/Junit4Test.java", { "package x;", "", "import static org.junit.Assert.assertEquals;", "",
+    "import org.junit.Ignore;", "import org.junit.Test;", "", "public class Junit4Test {", "    @Test", "    public void adds() {",
+    "        assertEquals(4, 2 + 2);", "    }", "", "    @Test", "    public void failsOnPurpose() {", "        assertEquals(7, 2 + 2);",
+    "    }", "", "    @Ignore", "    @Test", "    public void later() {", "    }", "}" })
+  write(kd .. "/src/test/java/x/NgTest.java", { "package x;", "", "import org.testng.Assert;", "import org.testng.annotations.Test;", "",
+    "public class NgTest {", "    @Test", "    public void adds() {", "        Assert.assertEquals(4, 2 + 2);", "    }", "}" })
+  local jb = lsp.open(kd .. "/src/test/java/x/Junit4Test.java")
+  local kc = lsp.wait_ready(jb, 120000)
+  if not kc then
+    lsp.report(P .. "junit4_runs", false, "jdt.ls did not import " .. kd)
+  else
+    local nb4 = lsp.open(kd .. "/src/test/java/x/NgTest.java")
+    vim.wait(5000)
+    local ladds = E.line_of(jb, "public void adds") + 1
+    local r4n, m4n, e4n = run("nearest", jb, ladds)
+    local r4c, m4c, e4c = run("class", jb, ladds)
+    local lfail = E.line_of(jb, "assertEquals%(7") + 1
+    local qf4 = vim.tbl_filter(function(it) return it.lnum == lfail and (it.text or ""):find("expected") end, vim.fn.getqflist())
+    local kind4 = e4c.cfg and e4c.cfg.mainClass == RUNNER
+    lsp.report(P .. "junit4_runs", counts(r4n, 1, 0, 0) and real(r4n, e4n, title_of(1, 0, 0)) and counts(r4c, 1, 1, 1)
+      and real(r4c, e4c, title_of(1, 1, 1)) and #qf4 >= 1 and kind4,
+      ("nearest %.0f ms, %s; class %.0f ms, %s; failure in qf at line %d: %s"):format(m4n, fmt(r4n, e4n), m4c, fmt(r4c, e4c),
+        lfail, #qf4 >= 1 and qf4[1].text:sub(1, 50) or "MISSING"))
+    -- TestNG: refused with a message naming <leader>tT; no launch, no lock left
+    vim.api.nvim_set_current_buf(nb4)
+    n0 = #notes
+    local lng = E.line_of(nb4, "public void adds") + 1
+    local rgn, mgn, egn = run("nearest", nb4, lng)
+    local rgc, mgc, egc = run("class", nb4, lng)
+    local seen_n = false
+    for i = n0 + 1, #notes do
+      if notes[i].msg:find("TestNG tests are not run by Nv4J's runner", 1, true) and notes[i].msg:find("<leader>tT", 1, true) then seen_n = true end
+    end
+    lsp.report(P .. "testng_refused", rgn ~= nil and rgn.error ~= nil and rgn.error:find("TestNG", 1, true) ~= nil and egn.launches == 0
+      and rgc ~= nil and rgc.error ~= nil and egc.launches == 0 and seen_n and tests._busy() == nil and mgn < 10000,
+      ("nearest %.0f ms: %s; class %.0f ms: %s; launches %d/%d; message %s; lock %s"):format(mgn, rgn and tostring(rgn.error):sub(1, 70) or "no result",
+        mgc, rgc and tostring(rgc.error):sub(1, 40) or "no result", egn.launches, egc.launches, seen_n and "seen" or "MISSING",
+        tests._busy() == nil and "released" or "HELD"))
+    -- project: JUnit 4 and TestNG classes in one project: JUnit 4 runs, TestNG is named in a WARN
+    n0 = #notes
+    local rpj, mpj, epj = run("project", jb, nil)
+    local warned = false
+    for i = n0 + 1, #notes do
+      if notes[i].msg:find("TestNG tests are not run by Nv4J's runner (kinds)", 1, true) then warned = true end
+    end
+    lsp.report(P .. "testng_project_mixed", counts(rpj, 1, 1, 1) and real(rpj, epj, title_of(1, 1, 1)) and epj.launches == 1 and warned,
+      ("%.0f ms, %s; TestNG WARN %s"):format(mpj, fmt(rpj, epj), warned and "seen" or "MISSING"))
+    vim.lsp.stop_client(kc.id, true)
+  end
+  vim.fn.delete(kd, "rf")
+
+  -- a project with TestNG only: <leader>tp is refused with the TestNG message (nothing launched), the lock is released
+  local gd = "/tmp/nv4j/ngonly60-" .. vim.fn.getpid()
+  vim.fn.delete(gd, "rf")
+  write(gd .. "/pom.xml", pom("ngonly", { NG }))
+  write(gd .. "/src/test/java/x/OnlyNgTest.java", { "package x;", "", "import org.testng.annotations.Test;", "",
+    "public class OnlyNgTest {", "    @Test", "    public void ok() {", "    }", "}" })
+  local gb = lsp.open(gd .. "/src/test/java/x/OnlyNgTest.java")
+  local gc = lsp.wait_ready(gb, 120000)
+  if not gc then
+    lsp.report(P .. "testng_project_only", false, "jdt.ls did not import " .. gd)
+  else
+    n0 = #notes
+    local rgp, mgp, egp = run("project", gb, nil)
+    local seen_g = false
+    for i = n0 + 1, #notes do
+      if notes[i].msg:find("TestNG tests are not run by Nv4J's runner (ngonly)", 1, true) then seen_g = true end
+    end
+    lsp.report(P .. "testng_project_only", rgp ~= nil and rgp.error ~= nil and egp.launches == 0 and seen_g and tests._busy() == nil and mgp < 10000,
+      ("%.0f ms, error '%s', launches %d, message %s, lock %s"):format(mgp, rgp and tostring(rgp.error):sub(1, 60) or "no result", egp.launches,
+        seen_g and "seen" or "MISSING", tests._busy() == nil and "released" or "HELD"))
+    vim.lsp.stop_client(gc.id, true)
+  end
+  vim.fn.delete(gd, "rf")
+
+  -- multi-module Maven: a git-root parent pom (jdt.ls root) with core and app; tests of both modules from the parent
+  local md = "/tmp/nv4j/mm60-" .. vim.fn.getpid()
+  vim.fn.delete(md, "rf")
+  write(md .. "/pom.xml", { '<project xmlns="http://maven.apache.org/POM/4.0.0"><modelVersion>4.0.0</modelVersion>',
+    "<groupId>x</groupId><artifactId>mm</artifactId><version>1</version><packaging>pom</packaging>",
+    "<modules><module>core</module><module>app</module></modules></project>" })
+  vim.fn.mkdir(md .. "/.git", "p") -- a git root with a pom: the jdt.ls root (nv4j.root rule 2), not a module's own pom
+  for _, m in ipairs({ "core", "app" }) do
+    local cn = m:sub(1, 1):upper() .. m:sub(2) .. "Test"
+    write(md .. "/" .. m .. "/pom.xml", pom(m, { J5 }))
+    write(md .. "/" .. m .. "/src/test/java/" .. m .. "/" .. cn .. ".java", { "package " .. m .. ";", "",
+      "import static org.junit.jupiter.api.Assertions.assertEquals;", "", "import org.junit.jupiter.api.Test;", "",
+      "class " .. cn .. " {", "    @Test", "    void works() {", "        assertEquals(4, 2 + 2);", "    }", "}" })
+  end
+  local ab = lsp.open(md .. "/app/src/test/java/app/AppTest.java")
+  local mc = lsp.wait_ready(ab, 180000)
+  if not mc then
+    lsp.report(P .. "multi_module", false, "jdt.ls did not import " .. md)
+  else
+    local cb = lsp.open(md .. "/core/src/test/java/core/CoreTest.java")
+    vim.wait(3000)
+    local sameroot = vim.lsp.get_clients({ bufnr = cb, name = "jdtls" })[1] == mc
+    local la = E.line_of(ab, "void works") + 1
+    local lc = E.line_of(cb, "void works") + 1
+    local ran, _, ena = run("nearest", ab, la)
+    local rcn, _, enc = run("nearest", cb, lc)
+    local rpa, _, epa = run("project", ab, nil)
+    local two = {}
+    for _, t in ipairs(rpa and rpa.tests or {}) do two[tostring(t.class)] = true end
+    lsp.report(P .. "multi_module", sameroot and vim.uv.fs_realpath(mc.config.root_dir) == vim.uv.fs_realpath(md) and counts(ran, 1, 0, 0) and real(ran, ena, title_of(1, 0, 0))
+      and counts(rcn, 1, 0, 0) and real(rcn, enc, title_of(1, 0, 0)) and counts(rpa, 2, 0, 0) and real(rpa, epa, title_of(2, 0, 0))
+      and epa.launches == 2 and two["app.AppTest"] and two["core.CoreTest"],
+      ("one jdt.ls root %s (same client %s); app nearest %s; core nearest %s; project from the parent: %s, %d launch(es), classes %s"):format(
+        tostring(mc.config.root_dir), tostring(sameroot), fmt(ran, ena), fmt(rcn, enc), fmt(rpa, epa), epa.launches,
+        table.concat(vim.tbl_keys(two), ",")))
+    vim.lsp.stop_client(mc.id, true)
+  end
+  vim.fn.delete(md, "rf")
 
   -- bounded run time: product timeout 300 ms
   vim.g.nv4j_test_timeout_ms = 300
