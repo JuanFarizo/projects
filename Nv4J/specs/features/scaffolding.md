@@ -66,6 +66,8 @@ Three consecutive runs 27/0 (`/tmp/nv4j/logs/test-20261026-093126.log`, `-093142
 
 | n61t | fix of the flake below reverted (`flush_lsp` removed from `fill_buf`) | `edit_template_sync` "spring-boot holds 9 lines, buffer 5" | `/tmp/nv4j/logs/test-20261102-160335.log` (first unfixed run `-160236.log`); with the fix `-160311.log` PASS |
 
+| n61u | `resync_lsp` (full-text didChange after the write) removed, `flush_lsp` kept | `edit_template_sync` "jdtls (disk reload before the first change) holds 9 lines, buffer 5" | `/tmp/nv4j/logs/test-20261103-154855.log`; with the fix `-155054.log` PASS |
+
 `compiles*` assert the budget at its mark (fix round 1): a timer per file reads its error diagnostics at creation + 3 s, they must be published and zero (`/tmp/nv4j/logs/test-20261026-093908.log`, 27/0). Deterministic twin: after the timing wait, `nv4j.debug.refresh_and_build` then 500 ms without a publish; the error count is read after that build, not from whichever publish came first.
 
 ## Decision D22 (summary; full text in 001)
@@ -99,6 +101,7 @@ Negative controls: the baseline itself is the control for "saved": the template 
 | t3-h | review fix round 1: the 3 s budget was not asserted at 3 s (only "settled <= 3 s" and the post-build read) | snapshot of the errors at creation + 3 s, must be zero; n61s FAILs it | kept |
 | t3-g | `prompts`, `edit_template`, `neotree_fill` added (the prompt path, `:e`, neo-tree handler) | pass; n61p/q/r FAIL them | kept |
 | t3-i | `compiles_all` `edit_template` failed twice in full runs of 2026-11-02 (`L1 Syntax error`, `L7 The type P3Edited is already defined`, load 7 to 10). Cause: the `:e` flow edits the buffer (template) while nvim holds the didChange in its 150 ms debounce; the Spring LS attaches in that window, gets didOpen with the template and then the pending didChange to the same group, so it held the template twice (jdt.ls was right). Fix: `fill_buf` flushes the pending changes (`vim.lsp._changetracking.flush`, guarded) right after `set_lines`. New case `edit_template_sync` replays every client's didOpen/didChange and compares with the buffer; the second client's attach is forced after `:e` so the case does not depend on timing | n61t FAILs it; 5 runs PASS | kept |
+| t3-j | second `edit_template` flake (full run `test-20261103-150533.log`): both clients were told the right text yet jdt.ls published 2E after a 0E, i.e. jdt.ls itself held the template twice. Most likely jdt.ls re-read the file from disk (the template was just written over the empty file nvim-jdtls made) before it handled the incremental didChange; not captured on the wire. Fix: `fill_buf` sends a full-text didChange (same version) to every attached client after the write (`resync_lsp`), so the client's text is the buffer's whatever its base. `edit_template_sync` now also replays each client with a disk reload before its first change (model of that ordering; control n61u). 61_scaffold failures now list the publishers and a trace of didOpen/didChange/watched-file events | kept |
 
 ## Open items
 

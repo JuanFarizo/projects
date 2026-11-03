@@ -315,6 +315,24 @@ local function flush_lsp(bufnr)
   for _, c in ipairs(vim.lsp.get_clients({ bufnr = bufnr })) do pcall(ct.flush, c, bufnr) end
 end
 
+--- After the file was written, tells every attached client the whole text (a didChange without range, same
+--- version). The incremental didChange that flush_lsp sent is relative to the empty text the client opened;
+--- a server that re-reads the new file from disk (jdt.ls: file watch / didChangeWatchedFiles of the file
+--- nvim-jdtls wrote and we rewrote) before it handles that change applies the template twice (L1 syntax
+--- error, L7 "type already defined" on jdt.ls itself, seen under load). A full-text change makes the
+--- client's text the buffer's whatever its base was; it is sent last, so it wins.
+local function resync_lsp(bufnr)
+  if not vim.api.nvim_buf_is_valid(bufnr) then return end
+  local text = table.concat(vim.api.nvim_buf_get_lines(bufnr, 0, -1, false), "\n") .. "\n"
+  local version = vim.lsp.util.buf_versions[bufnr] or 0
+  for _, c in ipairs(vim.lsp.get_clients({ bufnr = bufnr })) do
+    pcall(c.notify, c, "textDocument/didChange", {
+      textDocument = { uri = vim.uri_from_bufnr(bufnr), version = version },
+      contentChanges = { { text = text } },
+    }, bufnr)
+  end
+end
+
 --- `:e Foo.java` (BufNewFile): asks the kind, fills the buffer and writes it, so the file on disk is
 --- not the empty one nvim-jdtls writes on attach.
 function M.fill_buf(bufnr, path)
@@ -325,6 +343,7 @@ function M.fill_buf(bufnr, path)
     vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
     flush_lsp(bufnr)
     vim.api.nvim_buf_call(bufnr, function() vim.cmd("silent write!") end)
+    resync_lsp(bufnr)
     if vim.api.nvim_get_current_buf() == bufnr and has_ui() then
       vim.api.nvim_win_set_cursor(0, { cl, cc })
       if at_end then vim.api.nvim_feedkeys("S", "n", false) else vim.cmd.startinsert() end

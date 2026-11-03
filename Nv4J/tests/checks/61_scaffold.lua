@@ -57,6 +57,7 @@ local snap = F.snapshot()
 -- previous publish (or the first): when the file's diagnostics reached their state. A clean list
 -- republished because ANOTHER file was created does not move it.
 local published_at, state_at, last_errs = {}, {}, {}
+local edit_trace = {}
 local edit_pub, edit_told = {}, {} -- P3Edited: publishes per client; client id -> { name, lines } as told
 local orig_pd = vim.lsp.handlers["textDocument/publishDiagnostics"]
 vim.lsp.handlers["textDocument/publishDiagnostics"] = function(e, result, ctx, cfg)
@@ -297,33 +298,59 @@ local ok_all, err = pcall(function()
     -- (nvim shares the pending changes of all clients of one sync kind): the Spring LS held the template
     -- twice (L1 syntax error, L7 "type already defined"). The attach is forced right after `:e` so it
     -- does not depend on when the Spring LS happens to attach.
-    local told = edit_told -- client id -> { name, text lines | nil, errs }
-    local function apply(rec, ch)
-      if not rec.lines then rec.errs[#rec.errs + 1] = "didChange before didOpen" return end
-      if not ch.range then rec.lines = vim.split(ch.text, "\n", { plain = true }) return end
+    local told = edit_told -- client id -> { name, events = { { kind, ... } }, errs }
+    local function apply(lines, ch)
+      if not ch.range then return vim.split(ch.text, "\n", { plain = true }) end
       local s, e = ch.range.start, ch.range["end"]
-      local before = rec.lines[s.line + 1] or ""
-      local after = rec.lines[e.line + 1] or ""
+      local before = lines[s.line + 1] or ""
+      local after = lines[e.line + 1] or ""
       local new = vim.split(before:sub(1, s.character) .. ch.text .. after:sub(e.character + 1), "\n", { plain = true })
       local out = {}
-      for i = 1, s.line do out[#out + 1] = rec.lines[i] end
+      for i = 1, s.line do out[#out + 1] = lines[i] end
       vim.list_extend(out, new)
-      for i = e.line + 2, #rec.lines do out[#out + 1] = rec.lines[i] end
-      rec.lines = out
+      for i = e.line + 2, #lines do out[#out + 1] = lines[i] end
+      return out
+    end
+    -- What a server holds after the notifications, in order. `reload` (lines of the file on disk) models
+    -- jdt.ls re-reading the file from disk (its own file watch / didChangeWatchedFiles) right before it
+    -- handles the FIRST incremental didChange: the incremental edit then lands on a base that already has
+    -- the template. Only a change that replaces the whole text afterwards ends right.
+    local function replay(rec, reload)
+      local lines, seen_change, errs = nil, false, {}
+      for _, ev in ipairs(rec.events) do
+        if ev.kind == "open" then
+          lines = vim.split(ev.text, "\n", { plain = true })
+        elseif not lines then
+          errs[#errs + 1] = "didChange before didOpen"
+        else
+          if reload and not seen_change and ev.change.range then lines = vim.list_extend(vim.deepcopy(reload), { "" }) end
+          seen_change = true
+          lines = apply(lines, ev.change)
+        end
+      end
+      return lines, errs
     end
     local function track(c)
       if c._p3_tracked then return end
       c._p3_tracked = true
       local orig = c.notify
       c.notify = function(self, method, params, bufnr)
-        local uri = params and params.textDocument and params.textDocument.uri
+        local td = params and params.textDocument
+        local uri = td and td.uri
         if uri and uri:find("P3Edited.java", 1, true) then
-          local rec = told[self.id] or { name = self.name, errs = {} }
+          local rec = told[self.id] or { name = self.name, events = {} }
           told[self.id] = rec
           if method == "textDocument/didOpen" then
-            rec.lines = vim.split(params.textDocument.text, "\n", { plain = true })
+            rec.events[#rec.events + 1] = { kind = "open", text = td.text }
           elseif method == "textDocument/didChange" then
-            for _, ch in ipairs(params.contentChanges) do apply(rec, ch) end
+            for _, ch in ipairs(params.contentChanges) do rec.events[#rec.events + 1] = { kind = "change", change = ch } end
+          end
+          edit_trace[#edit_trace + 1] = ("%s %s %s v%s"):format(E.now() % 100000, self.name, method:gsub("^%a+/", ""), tostring(td.version))
+        elseif method == "workspace/didChangeWatchedFiles" then
+          for _, ch in ipairs(params.changes or {}) do
+            if ch.uri:find("P3Edited.java", 1, true) then
+              edit_trace[#edit_trace + 1] = ("%s %s watched type=%s"):format(E.now() % 100000, self.name, tostring(ch.type))
+            end
           end
         end
         return orig(self, method, params, bufnr)
@@ -343,25 +370,32 @@ local ok_all, err = pcall(function()
     check_file("edit_template", path, "demo.p3scaffold", "public class P3Edited", nil, ok, ms, how)
     vim.wait(400, function() return false end) -- past nvim's 150 ms didChange debounce
     local want = eb ~= -1 and vim.api.nvim_buf_get_lines(eb, 0, -1, false) or {}
+    local disk = vim.uv.fs_stat(path) and vim.fn.readfile(path) or {}
     local bad, seen = {}, {}
+    local function same(lines)
+      local got = vim.deepcopy(lines)
+      if got[#got] == "" then got[#got] = nil end -- the server's text ends with the buffer's final newline
+      return table.concat(got, "\n") == table.concat(want, "\n"), got
+    end
     for _, c in ipairs(vim.lsp.get_clients({ bufnr = eb ~= -1 and eb or 0 })) do
       local rec = told[c.id]
       seen[#seen + 1] = c.name
-      if not rec or not rec.lines then
+      if not rec or #rec.events == 0 then
         bad[#bad + 1] = c.name .. ": never opened it"
       else
-        -- the server's text ends with the buffer's final newline: compare without the trailing empty line
-        local got = vim.deepcopy(rec.lines)
-        if got[#got] == "" then got[#got] = nil end
-        if table.concat(got, "\n") ~= table.concat(want, "\n") then
-          bad[#bad + 1] = ("%s holds %d lines, buffer %d (%s)"):format(c.name, #got, #want, table.concat(got, "|"):sub(1, 120))
+        for _, scenario in ipairs({ { "in order" }, { "disk reload before the first change", disk } }) do
+          local lines, errs = replay(rec, scenario[2])
+          local good, got = same(lines or {})
+          if not good then
+            bad[#bad + 1] = ("%s (%s) holds %d lines, buffer %d (%s)"):format(c.name, scenario[1], #got, #want, table.concat(got, "|"):sub(1, 120))
+          end
+          vim.list_extend(bad, errs)
         end
-        vim.list_extend(bad, rec.errs)
       end
     end
     lsp.report(P .. "edit_template_sync", ok and eb ~= -1 and #seen >= 1 and #bad == 0,
       ("clients %s (forced attach: %s); %s"):format(table.concat(seen, ","), #forced > 0 and table.concat(forced, ",") or "none",
-        #bad == 0 and "every client's text equals the buffer" or table.concat(bad, "; ")))
+        #bad == 0 and "every client's text equals the buffer, also when it re-reads the disk before the first change" or table.concat(bad, "; ")))
   end
   -- neo-tree `a`: the file_added handler of plugins/neo-tree.lua on the empty file neo-tree made
   do
@@ -433,8 +467,8 @@ local ok_all, err = pcall(function()
     lsp.report(P .. "compiles", cls ~= nil and cls.ok, cls and cls.d or "P3Class not created")
     if #bad > 0 then
       local held = {}
-      for _, r in pairs(edit_told) do held[#held + 1] = ("%s=%s"):format(r.name, table.concat(r.lines or {}, "|"):sub(1, 120)) end
-      bad[#bad + 1] = ("P3Edited publishes [%s]; text each client was told [%s]"):format(table.concat(edit_pub, ","), table.concat(held, " ;; "))
+      for _, r in pairs(edit_told) do held[#held + 1] = ("%s: %d notifications"):format(r.name, #r.events) end
+      bad[#bad + 1] = ("P3Edited publishes [%s]; sent [%s]; trace [%s]"):format(table.concat(edit_pub, ","), table.concat(held, " ;; "), table.concat(edit_trace, " | "))
     end
     lsp.report(P .. "compiles_all", #created > 0 and #bad == 0 and built,
       ("%d files, build %s; %s%s"):format(#created, built and "done" or "NOT done", #bad > 0 and ("FAILED: " .. table.concat(bad, "; ") .. "; ALL: ") or "", table.concat(det, "; ")))
