@@ -30,6 +30,9 @@
 --  junit_launcher  : nv4j.debug.junit_launcher on a synthetic classpath: JDT's bundled
 --                    junit-platform-launcher is replaced by the engine-matching one from the Maven repo.
 --  junit_launcher_missing : same, matching jar not downloaded: config unchanged, one warning naming it.
+--  junit_launcher_versions : several launcher versions in the repo, JDT's bundled launcher + jupiter bundles:
+--                    the launcher of the engine's version is chosen, a bundled jupiter-engine that shadows
+--                    the project's jar is dropped (Jupiter 5.14 on platform 1.12 = NoSuchMethodError).
 --  gate_robust     : the launching-command gate on a stub client: a throwing handler does not stall the
 --                    queue; a stopped client answers every queued request with an error.
 --  build_guard     : build before launch on stub clients: timeout, failed build (status 0) and stopped
@@ -312,8 +315,9 @@ local ok_all, err = pcall(function()
   end)
   E.log("debug_test_breakpoint_hit", r.stopped and r.ms or -1, 1)
   report_stop("test_breakpoint_hit", r, "keepsText", tlnum, function()
-    return ("test launch never stopped; commands: %s; notifications: %s; terminal: %s"):format(table.concat(trace, " "),
-      notes[1] and table.concat(notes, " | "):sub(-300) or "none", terminal_text():gsub("%s+", " "):sub(-400))
+    return ("test launch never stopped; commands: %s; notifications: %s; JUnit hook: %s; terminal: %s"):format(table.concat(trace, " "),
+      notes[1] and table.concat(notes, " | "):sub(-300) or "none", vim.inspect(require("nv4j.debug").last_junit or "never called", { newline = " ", indent = "" }),
+      terminal_text():gsub("%s+", " "):sub(-400))
   end)
   tclient.request = trequest
   report_value("test_variable", r, "text", "hi")
@@ -323,8 +327,9 @@ local ok_all, err = pcall(function()
   wait_until(30000, function() return test_done ~= nil end, errs)
   local gone = wait_until(ORPHAN_WAIT_MS, function() return not alive() end, errs)
   lsp.report(P .. "test_finished", test_done ~= nil and #test_done.items == 0 and test_alive and gone,
-    test_done and ("test run ended after continue: %d tests, %d failures; JVM alive at the stop: %s, gone after: %s; bundled JUnit launcher replaced: %s"):format(
-      #test_done.tests, #test_done.items, tostring(test_alive), tostring(gone), (require("nv4j.debug").launchers_replaced or 0) > 0 and "yes" or "no")
+    test_done and ("test run ended after continue: %d tests, %d failures; JVM alive at the stop: %s, gone after: %s; bundled JUnit launcher replaced: %s; JUnit hook: %s"):format(
+      #test_done.tests, #test_done.items, tostring(test_alive), tostring(gone), (require("nv4j.debug").launchers_replaced or 0) > 0 and "yes" or "no",
+      vim.inspect(require("nv4j.debug").last_junit or "never called", { newline = " ", indent = "" }))
       or "test run did not end within 30 s after continue")
 
   -- 3. the JUnit launcher fix itself, on a synthetic classpath (the real mismatch shows up in part
@@ -357,6 +362,32 @@ local ok_all, err = pcall(function()
       and warn:find("junit-platform-launcher-9.9.9.jar", 1, true) ~= nil and warn:find("mvn dependency:get", 1, true) ~= nil,
     ("bundled launcher kept: %s; warnings %d then %d (want 1, once): %s"):format(tostring(kept.classPaths[2] == bundle),
       n1 - n0, #notes - n1, warn:sub(1, 160)))
+  -- several launcher versions in the repo, project jupiter-engine 5.12.2 + platform-engine 1.12.2, JDT adds its
+  -- bundled launcher, jupiter-engine and jupiter-api (5.14.4): launcher 1.12.2 is chosen (not the newest, not
+  -- the oldest), the bundled jupiter-engine that shadows the project's is dropped, the api bundle (project has
+  -- none) stays; the log line names engine, launcher and the bundles when it goes wrong.
+  local function bundle_dir(n, name)
+    local d = tmp .. "/org.eclipse.osgi/" .. n .. "/0/.cp"
+    vim.fn.mkdir(d .. "/META-INF", "p")
+    vim.fn.writefile({ "Manifest-Version: 1.0", "Bundle-SymbolicName: " .. name, "Bundle-Version: 5.14.4" }, d .. "/META-INF/MANIFEST.MF")
+    return d
+  end
+  for _, v in ipairs({ "1.10.5", "1.12.1", "1.14.4", "6.0.2" }) do
+    local j = ("%s/junit-platform-launcher/%s/junit-platform-launcher-%s.jar"):format(m2, v, v)
+    vim.fn.mkdir(vim.fs.dirname(j), "p"); vim.fn.writefile({}, j)
+  end
+  local jengine = tmp .. "/m2/org/junit/jupiter/junit-jupiter-engine/5.12.2/junit-jupiter-engine-5.12.2.jar"
+  vim.fn.mkdir(vim.fs.dirname(jengine), "p"); vim.fn.writefile({}, jengine)
+  local b_launcher, b_engine, b_api = bundle, bundle_dir(123, "junit-jupiter-engine"), bundle_dir(124, "junit-jupiter-api")
+  local v = require("nv4j.debug").junit_launcher({ mainClass = junit.mainClass,
+    classPaths = { "/x/test-classes", b_engine, jengine, engine, b_api, b_launcher } })
+  local last = require("nv4j.debug").last_junit or {}
+  local has = function(p) return vim.tbl_contains(v.classPaths, p) end
+  lsp.report(P .. "junit_launcher_versions", has(launcher) and not has(b_launcher) and not has(b_engine) and has(b_api) and has(jengine)
+      and #v.classPaths == 5 and last.engine == "1.12.2" and last.replaced_by == launcher and last.dropped == 1,
+    ("engine %s, launcher %s, classpath %d entries (want 5): bundled engine dropped %s, api bundle kept %s, jupiter %s; hook: %s"):format(
+      tostring(last.engine), vim.fs.basename(last.replaced_by or "none"), #v.classPaths, tostring(not has(b_engine)), tostring(has(b_api)),
+      tostring(has(jengine)), vim.inspect(last, { newline = " ", indent = "" }):sub(1, 400)))
   vim.fn.delete(tmp, "rf")
 
   -- 4. the launching-command gate on a stub client: a throwing handler does not stall the queue, and

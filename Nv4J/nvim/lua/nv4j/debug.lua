@@ -191,14 +191,45 @@ end
 --- per jar, hence a glob). When that jar is not downloaded (or the engine is in neither layout) a one-time
 --- warning says what is needed, instead of a silent ClassNotFoundException. A run that still dies is never
 --- reported as 0 passed / 0 failed (nv4j/tests.lua, G1 in specs/006-p4-gradle.md).
-local function is_bundled_launcher(path)
-  if vim.fn.isdirectory(path) == 0 then return false end
+local function bundle_name(path) -- Bundle-SymbolicName of an extracted OSGi bundle folder, or nil
+  if vim.fn.isdirectory(path) == 0 then return nil end
   local ok, lines = pcall(vim.fn.readfile, path .. "/META-INF/MANIFEST.MF", "", 40)
-  if not ok then return false end
+  if not ok then return nil end
   for _, l in ipairs(lines) do
-    if l:match("^Bundle%-SymbolicName: junit%-platform%-launcher") then return true end
+    local name = l:match("^Bundle%-SymbolicName: ([%w%.%-_]+)")
+    if name then return name end
   end
-  return false
+end
+
+local function is_bundled_launcher(path)
+  return (bundle_name(path) or ""):find("^junit%-platform%-launcher") ~= nil
+end
+
+--- JDT also adds its own junit-jupiter-api/-engine (5.14.x) bundle folders when its view of the project
+--- classpath lacks them. When the classpath has the project's jar of the same artifact as well, the bundle
+--- is a second copy of other version and whichever comes first is loaded: Jupiter 5.14 on platform 1.12
+--- dies with NoSuchMethodError in JupiterTestEngine.discover. The project's jar wins: the bundle is dropped.
+local function drop_shadowing_bundles(config, seen)
+  local have, drop = {}, {}
+  for i, p in ipairs(config.classPaths) do
+    local art = p:match("/(junit%-[%a%-]+)%-%d[^/]*%.jar$")
+    if art then have[art] = true end
+  end
+  for i, p in ipairs(config.classPaths) do
+    local name = bundle_name(p)
+    if name and (name:find("^junit%-jupiter") or name:find("^junit%-platform")) and not name:find("^junit%-platform%-launcher") then
+      seen.bundles[#seen.bundles + 1] = i .. ":" .. name
+      if have[name] then drop[i] = true end
+    end
+  end
+  if not next(drop) then return config end
+  config = vim.deepcopy(config)
+  local kept = {}
+  for i, p in ipairs(config.classPaths) do
+    if drop[i] then seen.dropped = (seen.dropped or 0) + 1 else kept[#kept + 1] = p end
+  end
+  config.classPaths = kept
+  return config
 end
 
 local warned = {}
@@ -213,8 +244,13 @@ function M.junit_launcher(config)
     return config
   end
   local base, version, bundled, gradle
+  -- what the hook saw, for the failure details of tests/checks/40_debug.lua (a mismatch shows up in some runs only)
+  local seen = { junit = {}, bundles = {} }
+  M.last_junit = seen
+  config = drop_shadowing_bundles(config, seen)
   for i, p in ipairs(config.classPaths) do
-    if p:find("/junit-platform-launcher-", 1, true) then return config end -- the project has one
+    if p:find("junit-platform", 1, true) or p:find("junit-jupiter", 1, true) then seen.junit[#seen.junit + 1] = i .. ":" .. p end
+    if p:find("/junit-platform-launcher-", 1, true) then seen.project_launcher = true; return config end -- the project has one
     if not base then
       base, version = p:match("^(.*)/junit%-platform%-engine/([^/]+)/junit%-platform%-engine%-[^/]+%.jar$") -- Maven repository
       if not base then
@@ -224,6 +260,7 @@ function M.junit_launcher(config)
     end
     if not bundled and is_bundled_launcher(p) then bundled = i end
   end
+  seen.engine, seen.bundled = version, bundled
   if not bundled then return config end
   if not base then
     warn_once("other", "JUnit: JDT adds its bundled junit-platform-launcher to this test run and no junit-platform-engine"
@@ -249,6 +286,20 @@ function M.junit_launcher(config)
   end
   config = vim.deepcopy(config)
   config.classPaths[bundled] = launcher
+  seen.replaced_by = launcher
+  -- the launcher is looked up by the engine's version, so those match; a Jupiter 5.x engine of another
+  -- minor than the platform engine (5.N = platform 1.N) is what NoSuchMethodError in
+  -- JupiterTestEngine.discover means, and is named instead of failing silently
+  for _, p in ipairs(config.classPaths) do
+    local jv = p:match("/junit%-jupiter%-engine%-(5%.%d+[%d%.]*)%.jar$")
+    local want = jv and tonumber(jv:match("^5%.(%d+)"))
+    local have = version and tonumber(version:match("^1%.(%d+)"))
+    if want and have and want ~= have then
+      seen.jupiter_mismatch = jv
+      warn_once("jupiter" .. jv .. version, ("JUnit: junit-jupiter-engine %s needs junit-platform-engine 1.%d but the classpath has %s"
+        .. " (NoSuchMethodError in JupiterTestEngine.discover): align the JUnit versions of the project."):format(jv, want, version))
+    end
+  end
   M.launchers_replaced = (M.launchers_replaced or 0) + 1 -- read by tests/checks/40_debug.lua
   return config
 end
