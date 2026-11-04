@@ -432,6 +432,105 @@ Logs of the new controls: n62CK, n62CL, n62CM in one run `/tmp/nv4j/logs/test-20
 - N3 (Low) `module_root` fallback now takes the nearest directory holding any marker (`vim.fs.find` upward), not `vim.fs.root`'s marker-list order: `multi_module_roots` gained `k2/pom.xml` above `k2/sub/build.gradle.kts` (file without src root: want `k2/sub`). Control n62CR (old lookup) FAIL (`k2`), `/tmp/nv4j/logs/test-20261029-101801.log`.
 - N5 counts: `62_refactor` ends `DONE ... 118 0` on a case-insensitive file system; on a case-sensitive one `rename_class_case_only` and `rename_class_case_only_undo` print SKIP and report nothing: 116.
 
+## IntelliJ behaviour vs Nv4J: rename class, rename package, move class (D23 audit, 2026-11-04)
+
+Why: the user's requirement is that class rename, package rename and move class "work properly as expected", meaning like IntelliJ IDEA, and the user does not know which edge cases differ. The audit ran every row below on real jdt.ls runs (Maven fixture `tests/fixtures/demo` plus planted files; scenario in `62_refactor.lua`, `plant_audit`: a class with javadoc `{@link}`, an annotation string, a static factory, a package-private method and package-private type of its package; a same-package user without imports, static imports, fully qualified names, a class literal, a type bound, `instanceof`, a wildcard import, a record, a subpackage in main and test, `InvoiceTest`). IntelliJ's side is read from the reference clone (`intellij-community` at `b633034bb`: `AutomaticTestRenamerFactory`, `JavaRefactoringSettings`, `RefactoringSettings`) and from the usual behaviour of F6/Shift+F6; rows marked "IntelliJ, from memory" were not checkable in the clone. The user can still overturn the move mechanism (`workspace/willRenameFiles` instead of the move code action: jdt.ls runs the same `MoveHandler.move` in both, measured identical edits in t4b-a).
+
+"Covered" = a check case asserts it on a real run. "Differs" = IntelliJ does something else; said in plain words. "Untested" = no run.
+
+### Rename class (`<leader>jr`)
+
+| IntelliJ behaviour | Nv4J | Status | Case |
+|---|---|---|---|
+| The file is renamed with the class | yes (`Bill.java`, old file gone, buffer re-pointed) | covered | `rename_class`, `audit_rename_class` |
+| Imports in other files updated | yes, also in `src/test/java` and subpackages | covered | `audit_rename_class` |
+| Users in the same package without an import | yes | covered | `audit_rename_class` (InvoiceHelper) |
+| Static imports (`import static ...Invoice.MAX`) and fully qualified names in code (`demo.billing.Invoice x`, `Map<String, demo.billing.Invoice>`) | yes | covered | `audit_rename_class` |
+| Javadoc `{@link Invoice}`, `@see Invoice` | yes | covered | `audit_rename_class` |
+| Constructors, generics, `Invoice.class`, type bounds, `instanceof`, records | yes | covered | `audit_rename_class`, `rename_class_boot` |
+| Comments (prose), string literals, strings inside annotations | not changed. IntelliJ has the option "Search in comments and strings" in the dialog; here it is never done. String literals, `.properties`/`.yml`/`.xml` and `@Qualifier`-style names that still say `Invoice` are listed in a warning; prose in comments is not listed | differs (option not built, by ruling) | `audit_rename_class`, `rename_class_strings` |
+| Test class named like the class (`InvoiceTest`): "Rename tests" is on by default | **fixed in this audit**: `InvoiceTest`, `InvoiceTests`, `InvoiceIT`, `InvoiceITCase`, `InvoiceTestCase`, `TestInvoice` (JUnit/TestNG import, in the module's other source roots) are renamed along (`BillTest`), one summary each. A name that already exists is skipped and named in a warning. `tests = false` turns it off. Narrower than IntelliJ, which also offers `InvoiceServiceTest` and lets you untick in a list; here a name that merely contains the class name is left alone (no list to confirm) | covered; differs in reach | `rename_class_tests`, `_off`, `_conflict` |
+| "Rename variables" (`Invoice invoice` -> `Bill bill`) and "Rename inheritors" (`InvoiceImpl`), both on by default with a confirm list | not done | differs (not built) | none |
+| Target name taken: error, nothing changes | yes, jdt.ls refuses with its message | covered | `rename_class_conflict`, probe S6 |
+| Rename from a usage (cursor on `new Invoice(...)`) | yes (the word under the cursor), also a record | covered by probe (T9, T10), no case | probe only |
+| Nested class, enum, interface, annotation type | same jdt.ls path; nested not checked | untested | none |
+| Unsaved buffers: IntelliJ saves everything | edited in place and left unsaved, said in the summary; the renamed file's buffer is written | differs (on purpose), covered | `rename_class_unsaved` |
+| Undo: one Ctrl+Z undoes the whole refactoring, file names included | `u` gives back the text per buffer only (the file keeps its new name). **Fixed in this audit**: `<leader>ju` runs the inverse refactor (file names, folders, package lines, imports; the test classes too); it keeps edits made since; only the last refactor is remembered; no redo | covered; differs in mechanism | `rename_class_tests` + `undo_class_tests`, `undo_move`, `undo_package`, `undo_nothing` |
+
+### Move class (`<leader>jm`, F6)
+
+| IntelliJ behaviour | Nv4J | Status | Case |
+|---|---|---|---|
+| `package` line and the file moves to the package folder | yes | covered | `move_class`, `audit_move_class` |
+| A package that does not exist yet | folder (and parents) created, said in the summary; removed again if the move is refused | covered | `move_class_new_package`, probe S3 |
+| Imports in the classes that use it | yes, main and test sources, static imports, qualified names | covered | `audit_move_class` |
+| Imports that become redundant (user is in the target package now) | dropped (Checkout, Literal) | covered | `move_class`, `audit_move_class` |
+| A user with a wildcard import of the old package | gets an import of the moved class | covered | `audit_move_class` |
+| The moved class needs imports for what it used from its old package without one | added (PriceCalculator, even a package-private type) | covered | `audit_move_class` |
+| Package-private member or type used across the move (`net()`, `Rounding`): IntelliJ lists these conflicts BEFORE moving and asks | the move is done; 3 s later a warning names the "is not visible" errors (`net() ... not visible`, `Rounding is not visible`); `<leader>ju` undoes the move | differs (warning after, not a question before) | `audit_move_class_visibility` |
+| Spring annotations and annotation-based config unaffected; component scan | annotations stay; a stereotype class moved out of the `@SpringBootApplication` package gets a warning; XML bean definitions naming the old class are listed (not rewritten) | covered | `move_class_boot`, `_boot_scan`, `move_class_stale` |
+| Test classes | stay in their package; the summary says so and the import is added. IntelliJ's F6 moves the class only (believed, from memory) | covered | `move_class_test_stays` |
+| Move a test class itself to a package that does not exist yet | works in `src/test/java` | covered by probe (S8), no case | probe only |
+| Move to a package of another source root (`src/main/java` to `src/test/java` and back) | not supported: the file stays in its source root, the package only names a folder in it | differs (not built; rare) | none |
+| Several classes at once, a whole package into another, a nested class to top level | not supported | differs | none |
+| F6 with the cursor on a reference moves the referenced class | the file's own class moves (the cursor's enclosing type) | differs | `move_not_top_level` (probe T11) |
+| Target class already exists | refused, nothing changed (also when the namesake is in the other source root) | covered | `move_conflict` |
+| Moving into the default package | not offered | untested | none |
+| Unsaved buffers, undo | as rename; `<leader>ju` moves it back and restores the imports | covered | `move_class_unsaved`, `undo_move` |
+
+### Rename package (`<leader>jp`, or `<leader>jr` on the `package` line)
+
+| IntelliJ behaviour | Nv4J | Status | Case |
+|---|---|---|---|
+| Every `package`, `import`, static import and qualified name | yes | covered | `audit_rename_package_sub` |
+| Subpackages come along | yes (`demo.billing.sub` becomes `demo.invoicing.sub`), main and test | covered | `audit_rename_package_sub` |
+| The same package in the test source root | renamed too, one root at a time | covered | `rename_package_imports`, `audit_rename_package_sub` |
+| A wildcard import of the package | follows | covered | `audit_rename_package_sub` |
+| Strings and config naming the old package | listed in a warning, not rewritten (IntelliJ: option "search in comments and strings") | differs (option not built) | `rename_package`, `rename_class_strings` |
+| Target package exists: IntelliJ asks about merging | refused, nothing changed | differs (merge not built) | `rename_package_conflict` |
+| Into itself | refused | covered | `rename_package_conflict` |
+| Same package in another module | not renamed (jdt.ls updates its imports) | untested | none |
+| Undo | `<leader>ju` | covered | `undo_package` |
+
+Gradle: rename and move only ask jdt.ls and use the module root (nearest `pom.xml`/`build.gradle*`, `module_root`); no run on `tests/fixtures/gradle-boot` in this audit (the Gradle agent works on that fixture and jdt.ls import; the code path does not depend on the build tool). Unverified.
+
+### Fixed in this audit
+
+- `rename_class` renames the test classes along (default on, like IntelliJ) and reports skipped ones; new `M.related_tests`, `M.rename_chain`.
+- `<leader>ju` / `require("nv4j.refactor").undo_last()`: undo of the last rename, package rename or move completely, by the inverse refactor. `rename_paths` records the inverse moves, the class rename records the inverse steps.
+- After a move or package rename jdt.ls is told to validate every open Java file (`java/validateDocument`, as after a class rename): in 1 of 4 early runs the "not visible" warning never came because jdt.ls published no errors for the moved file. Case `move_revalidates` (deterministic, counts the notifications) and `audit_move_class_visibility` (the warning, then `<leader>ju`).
+
+### Measured
+
+Three consecutive full runs of `62_refactor` on the final code, each `DONE 62_refactor 140 0` (load averages at the end of each run 9.65, 10.86, 13.85; the machine was busy with other agents): logs `/tmp/nv4j/logs/test-20261104-123908.log`, `-124248.log`, `-124629.log`. Before the last change (revalidate after a move) three runs gave `138 0` each: `-120249.log`, `-120625.log`, `-120956.log`.
+
+| Case | Result (budget 2 s per refactor) |
+|---|---|
+| `rename_class_tests` (Invoice -> Bill and InvoiceTest -> BillTest, 12 files) | class 637 to 824 ms, then the test class 125 to 159 ms |
+| `undo_class_tests` (two inverse renames) | 710 to 788 ms |
+| `undo_move`, `undo_package` | 202 to 223 ms, 162 to 193 ms; the fixture equals the snapshot byte for byte |
+| `audit_*` | assert content; build clean where waited |
+
+### Negative controls (product patched for one run of the whole check, restored, `cmp` against a copy: identical each time)
+
+| # | Patch | Fails | Log |
+|---|---|---|---|
+| N1 | related tests never looked for | `rename_class_tests` (BillTest missing), `rename_class_tests_conflict` (no warning); `audit_move_class` also failed once on the then-flaky warning (fixed, see above) | `/tmp/nv4j/logs/test-20261104-121401.log` |
+| N2 | `ServiceTest` added to the test suffixes | `rename_class_tests` (the decoy `InvoiceServiceTest` renamed) | `-121745.log` |
+| N3 | `tests = false` ignored | `rename_class_tests_off`, and `audit_rename_class`/`audit_move_class` (their InvoiceTest gets renamed) | `-122120.log` |
+| N4 | undo never recorded | `undo_class_tests`, `undo_move`, `undo_package` (`rename_class_cold_warm_once` failed too: its references request took 198 ms against its 100 ms bound, load; not the patch) | `-122501.log` |
+| N5 | edits outside the current buffer dropped | 44 cases incl. `audit_rename_class`, `audit_move_class`, `audit_rename_package_sub`, `rename_class_tests*` | `-122840.log` |
+| N6 | follow-up does nothing | `follow_up_warning`, `audit_move_class_visibility` | `-125005.log` |
+| N7 | no `validateDocument` after a move | `move_revalidates` | `-125412.log` |
+
+### Unverified / open
+
+- `tests/fixtures/gradle-boot` not run (see above); nested class rename, annotation-type rename, default-package move, same package in another module: no case.
+- IntelliJ side from the clone for "Rename tests" (default on, pattern: any test-framework class whose name contains the old name) and from memory for the dialogs; the clone is a sparse checkout (files read with `git show HEAD:path`).
+- `<leader>ju` remembers one refactor; after `u` in some buffers first, the inverse refactor acts on the files as they are (edits kept), so use `<leader>ju` instead of `u`.
+- The "not visible" warning depends on jdt.ls publishing diagnostics (the open item "jdt.ls never published Checkout's new errors" in 4a); with revalidate it came in all 6 later runs.
+
+
 ## Trial log
 
 | # | Change | Effect | Kept |

@@ -60,9 +60,10 @@ Put the cursor on the thing and press the key. Every refactor is one undo (`u`) 
 
 | Task | Press | Notes |
 |------|-------|-------|
-| Rename a class | `<leader>jr` | File, references and imports change. Strings such as JPQL or `application.yml` that still name the old class are listed in a warning, not rewritten |
+| Rename a class | `<leader>jr` | File, references and imports change; its test classes (`InvoiceTest`, `InvoiceTests`, `InvoiceIT`) are renamed along, like IntelliJ's "Rename tests". Strings such as JPQL or `application.yml` that still name the old class are listed in a warning, not rewritten |
 | Rename a package | `<leader>jp` | Or `<leader>jr` on the `package` line. Folders in `src/main/java` and `src/test/java` move |
 | Move a class | `<leader>jm` | Pick a package from the list or type a new one |
+| Undo a rename or move | `<leader>ju` | Puts files, folders, package lines and imports back (IntelliJ's one undo). `u` in a buffer gives back its text only |
 | Inline | `<leader>ji` | On a call: that call. On the declaration: every use, then the declaration goes |
 | Change a method signature | `<leader>js` | Type the new signature as one line: `public int total(Invoice invoice, int discount = 0)`. Call sites get the default. A method with implementations can take up to 5 s |
 | Safe delete | `<leader>jd` | With usages: nothing is deleted, usages go to the quickfix list. Without: the declaration is removed. A deleted file can come back with `:Nv4jRestoreDeleted` |
@@ -84,9 +85,9 @@ Extract uses jdt.ls: `<leader>cxv` variable, `<leader>cxc` constant, `<leader>cx
 
 1. `cd` into the project (the folder with `settings.gradle` or `build.gradle`) and open a Java file: `nv4j app/src/main/java/com/example/App.java`. The first import takes about 20 s; the Gradle wrapper (`gradlew`) is used, Neovim does not see SDKMAN's `gradle` function.
 2. A multi-project build is one project: files of `app` and `lib` share one jdt.ls, and `<leader>tp` runs the tests of every sub-project.
-3. Run as for Maven: `<leader>rs` (fast, `java -cp`), `<leader>rS` (`./gradlew bootRun`), `<leader>rd` (debug). The Java version comes from `.sdkmanrc` or the toolchain in `build.gradle`.
+3. Run as for Maven: `<leader>rs` (fast, `java -cp`), `<leader>rS` (`./gradlew bootRun`), `<leader>rd` (debug). The Java version comes from `.sdkmanrc`, the pom, or the Gradle build (toolchain, `sourceCompatibility`, also through `libs.versions.toml`, `gradle.properties` or a `buildSrc`/`build-logic` convention plugin).
 4. A red "Build file" notification means Gradle could not read the build file; it names the file and the line. Fix it and save it in Neovim (`:w`): the project is imported again.
-5. Spring features missing although it is a Boot app? Boot applied only by a binary convention plugin (a class, or one from a repository) is not recognised; use `<leader>rS`, or add `id 'org.springframework.boot'` to the app's own `build.gradle`.
+5. Spring features missing although it is a Boot app? Boot applied only by a plugin from a jar or a repository cannot be seen in the files: create `.nv4j` next to the root `build.gradle` containing `{ "spring_boot": true }` (or `{ "spring_boot": "app" }` for the module folder `app`) and restart Neovim. Boot applied by a `buildSrc`/`build-logic` plugin (script or class) or by the root's `subprojects {}` block is recognised without it.
 
 ## 9. Switch the Java version
 

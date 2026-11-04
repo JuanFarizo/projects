@@ -16,6 +16,7 @@ Keys marked **Java buffer** exist only in a Java file after jdt.ls has attached.
 | `<leader>ji` | Inline the method call, local variable or constant under the cursor | global | `config/keymaps.lua` |
 | `<leader>js` | Change the signature of the method under the cursor (declaration or call). You type it as one line, for example `public int total(Invoice invoice, int discount = 0)` | global | `config/keymaps.lua` |
 | `<leader>jd` | Safe delete the method, field, constant or type under the cursor. With usages nothing is deleted and they go to the quickfix list | global | `config/keymaps.lua` |
+| `<leader>ju` | Undo the last rename, package rename or move completely: file names, folders, package lines, imports (`u` in a buffer gives back its text only) | global | `config/keymaps.lua` |
 | `:Nv4jRestoreDeleted` | Put back the file that safe delete removed last (copy kept in the Nv4J trash, last 20) | command | `config/keymaps.lua` |
 | neo-tree `r` on a `.java` file or package folder | Same rename, with the code updated | neo-tree | `plugins/neo-tree.lua`, `nv4j/refactor.lua` |
 

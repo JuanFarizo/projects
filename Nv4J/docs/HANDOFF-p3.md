@@ -8,6 +8,7 @@ Read this first when resuming. The SDD ledger and reports live in `~/Documents/p
 - Task 5 status: docs pass done (README, `specs/001`, `003` "3c. P3 lessons", `005`, this file). NOT done yet: three consecutive full `tests/run.sh` runs recorded with every `DONE` line, whole-branch review on the most capable model, one fix wave plus scoped re-review, time-boxed look at the jdt.ls flakes, push to `main` (tell the user first), final wrap-up listing every "Ruling:" line of the ledger with the cost if wrong.
 - P4 (Gradle) 2026-11-03 outside the P3 plan: T1 to T7 of `specs/006-p4-gradle.md` are built (checks 67 to 72; T1 to T5 committed, T6/T7 not yet). The G6 "hang" was `tests/lib/lsp.lua` `wait_ready` (see `006` "Status of T6 and T7").
 - Checks added in P3: `60_tests_runner` 34 (29 until 2026-11-03), `61_scaffold` 27, `62_refactor` 118 (116 on a case-sensitive file system: two cases SKIP), `63_async_import` 28, `64_project_marker` 25, `65_dotfiles_merge` 10 (D26 dotfiles merge, outside the P3 plan).
+- Log housekeeping 2026-11-04: `nvim/lua/nv4j/logrotate.lua` (called from `nvim/init.lua`) renames `lsp.log`, `spring-route.log`, `spring-boot-ls.log` above `vim.g.nv4j_log_max_mb` (20) to `<name>.1` at start and deletes `test-*.log`/`lsp-capture-*.bin` older than `vim.g.nv4j_log_keep_days` (14); check `73_logrotate` (12 cases). Old flake evidence in `test-*.log` older than 14 days is deleted, copy it elsewhere if needed.
 - Several commits are not pushed (`git log origin/main..main`).
 
 ## How to resume
@@ -69,5 +70,5 @@ Docs are done (see Where things stand). Remaining: three consecutive full runs r
 
 - Confirm or overturn D23 move via `workspace/willRenameFiles` (instead of the code action).
 - Confirm or overturn the 5 s ceiling for change signature of a method with implementations.
-- Optional: a command or key that creates `.nv4j` (today: `touch .nv4j` in the project's top folder, restart Neovim).
+- `:Nv4jMark` creates `.nv4j` in the current folder (exists since P2; keep it).
 - Unexplained jdt.ls flakes: `INVALID_SERVER_JSON` at about 64 KB, `rename_class_errors` late errors in about 2 of 11 runs, one jdt.ls stall.

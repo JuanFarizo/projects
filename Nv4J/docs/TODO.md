@@ -6,10 +6,11 @@ One list of what is open. Update it when you finish or add something. Newest dec
 
 | Item | What to decide | Cost if wrong |
 |------|----------------|---------------|
-| D23 move via `workspace/willRenameFiles` | Keep it, or go back to the code action | Move class may behave differently from IntelliJ in edge cases |
-| Command or key that creates `.nv4j` | Build it (for example `:Nv4jInit` in the project's top folder), or keep `touch .nv4j` | None |
+| D23 move via `workspace/willRenameFiles` | Keep it, or go back to the code action. The IntelliJ audit (2026-11-04, `specs/features/refactors.md`) shows both give the same edits; the differences from IntelliJ are not caused by this choice | Move class differs from IntelliJ in the cases listed in the audit table (package-private conflicts reported after the move, no move between source roots, no variable/inheritor renaming) |
 
 ## Open work
+
+- [x] D23 audit against IntelliJ (2026-11-04): rename class / rename package / move class compared row by row on real runs (`specs/features/refactors.md`, table "IntelliJ behaviour vs Nv4J"). Fixed: related tests renamed along, `<leader>ju` complete undo. Open differences (not built, by ruling or rarity): package-private conflicts asked before a move, move between `src/main` and `src/test`, rename variables/inheritors, "search in comments and strings", merge into an existing package, same package in another module, nested-class rename, default package, `gradle-boot` run.
 
 - [x] jdt.ls flakes investigated 2026-11-02 (details in `docs/HANDOFF-p3.md`, Flakes). B fixed twice (`rename_class` revalidates every open Java file, case `rename_class_revalidates`; the cold first rename that left dependents on the old name is retried once and warned, cases `rename_class_cold_*`). A (`INVALID_SERVER_JSON`) narrowed: not Neovim's parser, the message is jdt.ls's `sts.java.classpath` data over 64 KB; the raw-bytes capture now exists (`vim.g.nv4j_lsp_capture`, see below); open: wait for the next hit. C (stall) not found: old log gone, load was 11 to 49; `run.sh` now logs the load before each check.
 - [ ] `two_boot_index` flake (about 1 in 4 at load 4-5): 8 instrumented runs were all green, cause not captured; two real defects fixed (`file:/` projectUri routing, retry of a rejected `addClasspathListener`, see spring-language-server.md s2). If it fails again, look at the `addClasspathListener rejected` lines in `/tmp/nv4j/logs/spring-route.log` and keep `spring-boot-ls.log`. 2026-11-04: 24 more green runs (14 at the machine's own load 6 to 28, 10 with 4 extra busy processes, `DONE 50_spring_ls 28 0` each, B indexed 600 to 700 ms after the second jdt.ls was ready), still not captured; NOT proven fixed. The FAIL line now carries `EVIDENCE` (listener on B's jdt.ls, B alive, spring-route.log lines the case appended, symbol counts); control with LspAttach registration off shows it (`/tmp/nv4j/logs/test-20261104-100117.log`).
@@ -27,8 +28,8 @@ Settled, no longer asked: the 5 s ceiling for change signature on a method with 
 
 ## Later (priorities from the plan)
 
-- [ ] P4: JPA, TestNG polish. Gradle (`specs/006-p4-gradle.md`, decisions D28 to D32 proposed by Claude, the user can overturn): T1 to T7 done (checks 67 to 72). Gradle still open: Boot applied by a binary convention plugin or one from a repository is not detected (G8 rest); project JDK from a version catalog, `gradle.properties` or a convention plugin (G3 rest); Gradle-only test settings are not applied (D28); breakpoint hit in a Gradle Boot app, Boot 2.x on Gradle, composite builds, offline import: unverified.
-- [ ] `/tmp/nv4j/logs/lsp.log` is never rotated (184 MB after two weeks; T6 found it cumulative, not a flood).
+- [ ] P4: JPA, TestNG polish. Gradle (`specs/006-p4-gradle.md`, decisions D28 to D32 proposed by Claude, the user can overturn): T1 to T7 and the G3/G8 rest done (checks 67 to 72; 2026-11-04: project JDK also from the version catalog, `gradle.properties` and `buildSrc`/`build-logic` convention plugins, Boot also from class plugins and root `subprojects {}` blocks, `.nv4j` `spring_boot` override). Gradle still open: a Boot plugin from a jar or repository is only reachable through the `.nv4j` `spring_boot` field (no way to see it in text); Gradle-only test settings are not applied (D28); breakpoint hit in a Gradle Boot app, Boot 2.x on Gradle, composite builds, offline import: unverified.
+- [x] `/tmp/nv4j/logs/lsp.log` rotation (2026-11-04): at start, logs above `vim.g.nv4j_log_max_mb` (20) become `<name>.1`, `test-*.log` and `lsp-capture-*.bin` older than `vim.g.nv4j_log_keep_days` (14) are deleted (`nvim/lua/nv4j/logrotate.lua`, check `73_logrotate`).
 - [ ] JDT index save (only if a start on the second day is slow).
 - [ ] `-Xms` / `-Xmx` stay out (your rule).
 
