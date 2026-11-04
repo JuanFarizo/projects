@@ -142,7 +142,7 @@ function M.run(buf)
     end
     -- nothing before and nothing now: no set, so no extra DiagnosticChanged per jdt.ls publish
     if #diags > 0 or #vim.diagnostic.get(buf, { namespace = M.ns }) > 0 then
-      vim.diagnostic.set(M.ns, buf, diags)
+      vim.diagnostic.set(M.ns, buf, require("nv4j.diagfix").fit(buf, diags))
     end
   end)
   busy[buf] = nil

@@ -395,7 +395,7 @@ local function show(r, ctx, label)
     end
   end
   if r.error then items[#items + 1] = { text = r.error:match("[^\n]*"), type = "E" } end
-  for b, ds in pairs(by_buf) do vim.diagnostic.set(NS, b, ds) end
+  for b, ds in pairs(by_buf) do vim.diagnostic.set(NS, b, require("nv4j.diagfix").fit(b, ds)) end
   local title = ("%s: %s (%s)"):format(QF_TITLE, summary(r), label)
   local cur = vim.fn.getqflist({ title = 0 }).title or ""
   vim.fn.setqflist({}, cur:sub(1, #QF_TITLE) == QF_TITLE and "r" or " ", { title = title, items = items })
