@@ -47,24 +47,32 @@ function M.wait_ready(bufnr, timeout_ms)
 
   -- 2. project imported: java.project.getAll lists a project, and the first
   --    diagnostics pass for this buffer has been published.
+  -- G6 (specs/006): when the import fails (Gradle build file that does not compile) getAll answers [] forever. The
+  -- reply of each request wakes this vim.wait at once, so the condition ran about 4000 times a second (nvim and
+  -- jdt.ls at 60 to 96% CPU), and Neovim 0.12's vim.wait never times out when every round is under 1 ms (it adds
+  -- the elapsed time in whole milliseconds, truncated): the 60 s wait did not return in 9 minutes. So getAll is
+  -- sent at most every 500 ms and the deadline is checked here, not left to vim.wait. Twin: 71_gradle_broken.
   local uri = vim.uri_from_bufnr(bufnr)
   local imported = false
-  ok = vim.wait(left(), function()
-    if client:is_stopped() then return true end
-    if not imported then
+  local last_sent = 0
+  local function expired() return vim.uv.hrtime() >= deadline end
+  vim.wait(left(), function()
+    if client:is_stopped() or expired() then return true end
+    if not imported and vim.uv.hrtime() - last_sent >= 500e6 then
+      last_sent = vim.uv.hrtime()
       local done, res = false, nil
       local sent = client:request("workspace/executeCommand", { command = "java.project.getAll" }, function(err, r)
         if not err then res = r end
         done = true
       end, bufnr)
       if sent then
-        vim.wait(math.min(5000, left()), function() return done end, 50)
+        vim.wait(math.min(5000, left()), function() return done or expired() end, 50)
       end
       imported = type(res) == "table" and #res > 0
     end
     return imported and published[uri] == true
   end, 500)
-  if not ok or client:is_stopped() then return nil end
+  if not (imported and published[uri] == true) or client:is_stopped() then return nil end
   return client
 end
 
