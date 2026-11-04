@@ -60,9 +60,9 @@ Put the cursor on the thing and press the key. Every refactor is one undo (`u`) 
 
 | Task | Press | Notes |
 |------|-------|-------|
-| Rename a class | `<leader>jr` | File, references and imports change; its test classes (`InvoiceTest`, `InvoiceTests`, `InvoiceIT`) are renamed along, like IntelliJ's "Rename tests". Strings such as JPQL or `application.yml` that still name the old class are listed in a warning, not rewritten |
-| Rename a package | `<leader>jp` | Or `<leader>jr` on the `package` line. Folders in `src/main/java` and `src/test/java` move |
-| Move a class | `<leader>jm` | Pick a package from the list or type a new one |
+| Rename a class | `<leader>jr` | File, references and imports change; its test classes (`InvoiceTest`, `InvoiceTests`, `InvoiceIT`), the variables declared with the class (`Invoice invoice` becomes `Bill bill`) and subclasses named like it (`InvoiceImpl`) are renamed along, like IntelliJ's defaults. Strings such as JPQL or `application.yml` that still name the old class are listed in a warning, not rewritten |
+| Rename a package | `<leader>jp` | Or `<leader>jr` on the `package` line. Folders in `src/main/java` and `src/test/java` move. Into the name of an existing package it merges them (refused, naming the classes, if a class name is in both) |
+| Move a class | `<leader>jm` | Pick a package of `src/main/java` or `src/test/java` or type a new one. With the cursor on another class's name, that class moves. If the moved class uses package-private code of its old package (or the reverse) you are shown the list and asked before anything moves |
 | Undo a rename or move | `<leader>ju` | Puts files, folders, package lines and imports back (IntelliJ's one undo). `u` in a buffer gives back its text only |
 | Inline | `<leader>ji` | On a call: that call. On the declaration: every use, then the declaration goes |
 | Change a method signature | `<leader>js` | Type the new signature as one line: `public int total(Invoice invoice, int discount = 0)`. Call sites get the default. A method with implementations can take up to 5 s |

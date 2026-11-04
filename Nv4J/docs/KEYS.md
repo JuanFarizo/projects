@@ -10,9 +10,9 @@ Keys marked **Java buffer** exist only in a Java file after jdt.ls has attached.
 |-----|------|-------|-------|
 | `<leader>jn` | New class, interface, record, enum, annotation, Spring controller, service, repository, entity, package or test. Asks the kind, then the name. `foo.Bar` creates package `foo` | global | `config/keymaps.lua` |
 | `<leader>jt` | Open the test class of this class, or create it in `src/test/java` | global | `config/keymaps.lua` |
-| `<leader>jr` | Rename the class under the cursor (file, references, imports). On a `package` line: rename the package | global | `config/keymaps.lua` |
+| `<leader>jr` | Rename the class under the cursor (file, references, imports; test classes, variables of that type and subclasses named like it follow). On a `package` line: rename the package (into an existing package: merge) | global | `config/keymaps.lua` |
 | `<leader>jp` | Rename the current file's package (folders in `src/main/java` and `src/test/java` move) | global | `config/keymaps.lua` |
-| `<leader>jm` | Move the class under the cursor to another package (picked, or typed: the folder is created) | global | `config/keymaps.lua` |
+| `<leader>jm` | Move the class under the cursor (or the class named under it) to another package of `src/main/java` or `src/test/java` (picked, or typed: the folder is created); package-private conflicts are listed and asked first | global | `config/keymaps.lua` |
 | `<leader>ji` | Inline the method call, local variable or constant under the cursor | global | `config/keymaps.lua` |
 | `<leader>js` | Change the signature of the method under the cursor (declaration or call). You type it as one line, for example `public int total(Invoice invoice, int discount = 0)` | global | `config/keymaps.lua` |
 | `<leader>jd` | Safe delete the method, field, constant or type under the cursor. With usages nothing is deleted and they go to the quickfix list | global | `config/keymaps.lua` |
