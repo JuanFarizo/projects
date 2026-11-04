@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Negative controls for tests/checks/69_gradle_jdk.lua (specs/006 T4, G3/D30). For each patch: take the tests/run.sh
+# Negative controls for tests/checks/69_gradle_jdk.lua (the G3-rest patches are in control_gaps.sh) (specs/006 T4, G3/D30). For each patch: take the tests/run.sh
 # lock (so no suite sees the patched file), back up nvim/lua/nv4j/jdk.lua, apply ONE sed patch, run the check
 # headless (same invocation as run.sh), restore the file, cmp against the backup, check that the cases the patch is
 # meant to break FAIL. Log per patch: /tmp/nv4j/logs/control-69-<patch>-<time>.log.  Usage: control_69.sh [patch ...]
@@ -42,9 +42,9 @@ sed_of() {
     first) echo 's|^  if root then vim.list_extend(out, gradle_majors(root)) end -- NV4J:GRADLE|  if root then out = vim.list_extend(gradle_majors(root), out) end|' ;;
     nocomments) echo 's|local text, ins = gradle_strip(src)$|local text, ins = src, {}|' ;;
     nostrings) echo 's|if not ins\[s\] and not|if not text:sub(s - 1, s - 1):find("[%w_]") and not|' ;;
-    eager) echo 's|or rest:match("^(%d\[%d%.\]\*)"))|or rest:match("(%d[%d%.]*)"))|; s|rest:match("^\[%s%.=%a%(\]\*JavaLanguageVersion%.of%(%s\*\[\\"'"'"'\]?(%d+)")|rest:match("JavaLanguageVersion%.of%(.-(%d+)")|' ;;
-    guess) echo 's|^  return vs$|  return #vs > 0 and vs or { "11" }|' ;;
-    sort) echo 's|^  return vs$|  table.sort(vs); return vs|' ;;
+    eager) echo 's|^  local v = e:match(.*$|  local v = e:match("(%d[%d%.]*)")|' ;;
+    guess) echo 's|^  return vs, text$|  return #vs > 0 and vs or { "11" }, text|' ;;
+    sort) echo 's|^  return vs, text$|  table.sort(vs); return vs, text|' ;;
     nodedupe) echo 's|if m and not seen\[m\] then|if m then|' ;;
     noinclude) echo 's|for _, rel in ipairs(gradle_included(root)) do from|for _, rel in ipairs({}) do from|' ;;
     noroot) echo 's|^  if root then vim.list_extend(out, gradle_majors(root)) end -- NV4J:GRADLE|  vim.list_extend(out, gradle_majors(root or "/tmp/nv4j/gradle-jdk-ctl"))|' ;;

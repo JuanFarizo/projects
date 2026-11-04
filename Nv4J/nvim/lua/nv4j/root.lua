@@ -340,11 +340,33 @@ end
 local function boot_id(id) return id == "org.springframework.boot" end
 local function boot_lib(c) return c:find("^org%.springframework%.boot:") ~= nil end
 
+--- Base directories (buildSrc, an included build such as build-logic or one level below it) of `dir` or above that can hold
+--- convention plugins.
+local function convention_bases(dir)
+  local out = {}
+  for _, a in ipairs(gradle_ancestors(dir)) do
+    out[#out + 1] = a .. "/buildSrc"
+    -- included builds are declared by a settings file: list children only there (no wide scan of e.g. ~/code)
+    for name, kind in has_settings(a) and vim.fs.dir(a) or function() end do
+      local sub = a .. "/" .. name
+      if kind == "directory" and name:sub(1, 1) ~= "." and name ~= "buildSrc" and name ~= "src"
+        and (vim.uv.fs_stat(sub .. "/settings.gradle") or vim.uv.fs_stat(sub .. "/settings.gradle.kts")) then
+        out[#out + 1] = sub
+        for n2, k2 in vim.fs.dir(sub) do
+          if k2 == "directory" and n2:sub(1, 1) ~= "." and n2 ~= "src" and n2 ~= "build" then out[#out + 1] = sub .. "/" .. n2 end
+        end
+      end
+    end
+  end
+  return out
+end
+
 --- Precompiled script plugin files (Groovy `<id>.gradle`, Kotlin `<id>.gradle.kts`) a build might apply, in buildSrc
 --- or an included build (a folder with a settings file, like build-logic, or one level below it) of `dir` or above.
-local function convention_files(dir, id)
+--- Also used by nv4j/jdk.lua (project JDK from a convention plugin).
+function M.convention_files(dir, id)
   local out = {}
-  local function try(base)
+  for _, base in ipairs(convention_bases(dir)) do
     for _, lang in ipairs({ "groovy", "kotlin" }) do
       for _, ext in ipairs({ ".gradle", ".gradle.kts" }) do
         local f = base .. "/src/main/" .. lang .. "/" .. id .. ext
@@ -352,16 +374,38 @@ local function convention_files(dir, id)
       end
     end
   end
-  for _, a in ipairs(gradle_ancestors(dir)) do
-    try(a .. "/buildSrc")
-    -- included builds are declared by a settings file: list children only there (no wide scan of e.g. ~/code)
-    for name, kind in has_settings(a) and vim.fs.dir(a) or function() end do
-      local sub = a .. "/" .. name
-      if kind == "directory" and name:sub(1, 1) ~= "." and name ~= "buildSrc" and name ~= "src"
-        and (vim.uv.fs_stat(sub .. "/settings.gradle") or vim.uv.fs_stat(sub .. "/settings.gradle.kts")) then
-        try(sub)
-        for n2, k2 in vim.fs.dir(sub) do
-          if k2 == "directory" and n2:sub(1, 1) ~= "." and n2 ~= "src" and n2 ~= "build" then try(sub .. "/" .. n2) end
+  return out
+end
+
+--- Source files of the binary (class) plugin registered under `id`: buildSrc / build-logic build.gradle(.kts) with
+--- `gradlePlugin { plugins { create("x") { id = "acme.boot"; implementationClass = "com.acme.BootPlugin" } } }`, the class
+--- found by its full name under src/main/{java,kotlin,groovy}. Text rules only; a plugin from a jar or a repository, or
+--- a class whose file name differs from its name, is not found.
+local function binary_plugin_files(dir, id)
+  local out = {}
+  for _, base in ipairs(convention_bases(dir)) do
+    for _, bf in ipairs(GRADLE_FILES) do
+      local b = read(base .. "/" .. bf)
+      if b then
+        b = gradle_strip(b)
+        local init = 1
+        while true do
+          local _, e, got = b:find("%f[%w]id%s*=?%s*%(?%s*[\"']([%w%._%-]+)[\"']", init)
+          if not e then break end
+          init = e + 1
+          if got == id then
+            local nxt = b:find("%f[%w]id%s*=?%s*%(?%s*[\"']", init) or #b
+            local cls = b:sub(init, nxt):match("implementationClass%s*=?%s*%(?%s*[\"']([%w%._$]+)[\"']")
+            if cls then
+              local rel = cls:gsub("%.", "/")
+              for _, lang in ipairs({ "java", "kotlin", "groovy" }) do
+                for _, ext in ipairs({ ".java", ".kt", ".groovy" }) do
+                  local f = base .. "/src/main/" .. lang .. "/" .. rel .. ext
+                  if vim.uv.fs_stat(f) then out[#out + 1] = f end
+                end
+              end
+            end
+          end
         end
       end
     end
@@ -371,9 +415,75 @@ end
 
 local CORE_PLUGINS = { java = true, ["java-library"] = true, application = true, ["java-platform"] = true, groovy = true }
 
+--- Plugin ids a Gradle build text applies (`id("x")`, `apply plugin: 'x'`), Gradle's own (java, org.gradle.*) left out:
+--- the ones that may be convention plugins. Also used by nv4j/jdk.lua.
+---@return string[]
+function M.gradle_plugin_ids(s)
+  local ids = {}
+  local function add(id)
+    if not CORE_PLUGINS[id] and not id:find("^org%.gradle%.") then ids[#ids + 1] = id end
+  end
+  for id in s:gmatch("id%s*%(?%s*[\"']([%w%._%-]+)[\"']") do add(id) end
+  for id in s:gmatch("apply%s*%(?%s*plugin%s*[:=]%s*[\"']([%w%._%-]+)[\"']") do add(id) end
+  return ids
+end
+
+--- A class source file (binary plugin) applies Spring Boot: the plugin id string or SpringBootPlugin (imports left out).
+local function class_applies_boot(t)
+  t = gradle_strip(t):gsub("\n%s*import[^\n]*", "\n")
+  return t:find("org%.springframework%.boot") ~= nil or t:find("SpringBootPlugin") ~= nil
+end
+
+--- The `{ ... }` body that opens right after the end of the match `head` found from `init`: its text and the
+--- position to continue from, nil when there is no more.
+local function brace_body(g, head, init)
+  local _, e = g:find(head, init)
+  if not e then return nil end
+  local depth = 1
+  for j = e + 1, #g do
+    local c = g:sub(j, j)
+    if c == "{" then depth = depth + 1 elseif c == "}" then depth = depth - 1 end
+    if depth == 0 then return g:sub(e + 1, j - 1), j end
+  end
+  return "", #g + 1
+end
+
+--- Whether project `dir` below a Gradle settings root gets Spring Boot from the root script: `subprojects { ... }` or
+--- `allprojects { ... }` (every project) or `project(":x") { ... }` (that project) whose block applies the Boot plugin. A block
+--- with a condition (`if`, `when`, `name ==`, `project(`) is not read: which sub-project it reaches is code, not text.
+local function root_block_boot(dir)
+  local anc = gradle_ancestors(dir)
+  local a = anc[#anc]
+  if #anc < 2 or not has_settings(a) then return false end
+  local rel = dir:sub(#a + 2)
+  if rel:match("^buildSrc") or rel:match("^%.") then return false end
+  local path = ":" .. rel:gsub("/", ":")
+  local heads = { "%f[%w]subprojects%s*{", "%f[%w]allprojects%s*{", "%f[%w]project%s*%(%s*[\"']" .. vim.pesc(path) .. "[\"']%s*%)%s*{" }
+  for _, f in ipairs(GRADLE_FILES) do
+    local g = read(a .. "/" .. f)
+    if g then
+      g = gradle_strip(g)
+      for _, head in ipairs(heads) do
+        local init = 1
+        while true do
+          local body, nxt = brace_body(g, head, init)
+          if not body then break end
+          init = nxt
+          if body:find("org%.springframework%.boot")
+            and not (body:find("%f[%w]if%f[%W]") or body:find("%f[%w]when%f[%W]") or body:find("name%s*==") or body:find("project%s*%(")) then
+            return true
+          end
+        end
+      end
+    end
+  end
+  return false
+end
+
 --- Gradle build text names Spring Boot: directly, through the catalog (an alias of plugin org.springframework.boot or
---- of a library of group org.springframework.boot), or through a convention plugin (precompiled script plugin applied
---- by id) whose own text names it (2 levels deep). Binary convention plugins (a Plugin<Project> class) are not read.
+--- of a library of group org.springframework.boot), or through a convention plugin applied by id: a precompiled script plugin whose own text names it (2 levels deep), or a
+--- class registered in buildSrc / build-logic (`gradlePlugin { ... implementationClass }`) whose source applies it. A plugin from
+--- a jar or repository is opaque (the `.nv4j` spring_boot field covers it).
 local function gradle_boot_text(s, dir, depth, seen)
   if s:find("org%.springframework%.boot") or s:find("spring%-boot%-starter")
     or s:find("libs%.plugins%.spring%.boot") or s:find("libs%.spring%.boot%.starter") then
@@ -382,15 +492,16 @@ local function gradle_boot_text(s, dir, depth, seen)
   local cat = M.gradle_catalog(dir)
   if M.catalog_uses(s, cat, "plugins", boot_id) or M.catalog_uses(s, cat, "libraries", boot_lib) then return true end
   if depth >= 2 then return false end
-  local ids = {}
-  for id in s:gmatch("id%s*%(?%s*[\"']([%w%._%-]+)[\"']") do ids[#ids + 1] = id end
-  for id in s:gmatch("apply%s*%(?%s*plugin%s*[:=]%s*[\"']([%w%._%-]+)[\"']") do ids[#ids + 1] = id end
-  for _, id in ipairs(ids) do
-    if not CORE_PLUGINS[id] and not id:find("^org%.gradle%.") and not seen[id] then
+  for _, id in ipairs(M.gradle_plugin_ids(s)) do
+    if not seen[id] then
       seen[id] = true
-      for _, f in ipairs(convention_files(dir, id)) do
+      for _, f in ipairs(M.convention_files(dir, id)) do
         local t = read(f)
         if t and gradle_boot_text(gradle_strip(t), vim.fs.dirname(f), depth + 1, seen) then return true end
+      end
+      for _, f in ipairs(binary_plugin_files(dir, id)) do
+        local t = read(f)
+        if t and class_applies_boot(t) then return true end
       end
     end
   end
@@ -404,7 +515,8 @@ end
 ---  Gradle (build.gradle(.kts), comment lines stripped): org.springframework.boot (plugin id or dependency
 ---    group), a spring-boot-starter* dependency, any catalog alias of the Boot plugin or of a Boot-group library,
 ---    a precompiled convention plugin (buildSrc, build-logic) applying it, or gradle/libs.versions.toml naming
----    org.springframework.boot next to a Gradle build/settings file.
+---    org.springframework.boot next to a Gradle build/settings file, or the root script's `subprojects {}` / `allprojects {}` /
+---    `project(":x") {}` block applying the plugin (root_block_boot).
 --- A bare "spring-boot" (e.g. a <spring-boot.version> property alone) does not count.
 ---@return boolean, "maven"|"gradle"|nil
 function M.boot_build(dir)
@@ -427,6 +539,7 @@ function M.boot_build(dir)
       if gradle_boot_text(gradle_strip(g), dir, 0, {}) then return true, "gradle" end
     end
   end
+  if gradle and root_block_boot(dir) then return true, "gradle" end
   gradle = gradle or vim.uv.fs_stat(dir .. "/settings.gradle") ~= nil or vim.uv.fs_stat(dir .. "/settings.gradle.kts") ~= nil
   if gradle then
     local toml = read(dir .. "/gradle/libs.versions.toml")
@@ -438,6 +551,20 @@ end
 local SKIP_DIRS = { target = true, build = true, out = true, bin = true, node_modules = true, src = true, gradle = true,
   buildSrc = true } -- buildSrc is Gradle build logic, never the app to run (it may name the Boot Gradle plugin)
 
+--- The directory the user marked as Spring Boot in `<root>/.nv4j`: `{"spring_boot": true}` is `root` itself,
+--- `{"spring_boot": "app"}` is the sub-directory `root/app` (a relative path, no `..`). For what detection cannot see
+--- (a plugin from a jar or a repository). nil when not set or not a directory.
+---@return string?
+function M.boot_override(root)
+  if not root then return nil end
+  local v = require("nv4j.settings").load(root).spring_boot
+  if v == true then return root end
+  if type(v) == "string" and v ~= "" and not v:find("..", 1, true) and not v:find("^[/~]") then
+    local d = vim.fs.normalize(root .. "/" .. v)
+    if vim.fn.isdirectory(d) == 1 then return d end
+  end
+end
+
 --- The directories among `root` and its modules up to 2 levels down (at most 60 directories looked at,
 --- breadth first, root first) whose own build file is Spring Boot (boot_build): an aggregator pom often
 --- only lists <modules>.
@@ -445,11 +572,13 @@ local SKIP_DIRS = { target = true, build = true, out = true, bin = true, node_mo
 function M.boot_dirs(root)
   local out = {}
   if not root then return out end
+  local override = M.boot_override(root)
+  if override then out[1] = override end
   local queue, i = { { root, 0 } }, 1
   while i <= #queue and i <= 60 do
     local dir, depth = queue[i][1], queue[i][2]
     i = i + 1
-    if M.boot_build(dir) then out[#out + 1] = dir end
+    if dir ~= override and M.boot_build(dir) then out[#out + 1] = dir end
     if depth < 2 then
       for name, kind in vim.fs.dir(dir) do
         if kind == "directory" and name:sub(1, 1) ~= "." and not SKIP_DIRS[name] then
@@ -483,7 +612,7 @@ end
 --- is not an aggregator (so `spring-boot:run` / `bootRun` does not run the whole reactor), else the
 --- first Boot dir, else nil.
 function M.boot_module(root, module)
-  if module and M.boot_build(module) and not aggregator(module) then return module end
+  if module and (M.boot_build(module) or module == M.boot_override(root)) and not aggregator(module) then return module end
   local dirs = M.boot_dirs(root)
   for _, d in ipairs(dirs) do
     if not aggregator(d) then return d end

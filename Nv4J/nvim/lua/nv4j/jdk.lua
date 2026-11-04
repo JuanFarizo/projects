@@ -169,30 +169,110 @@ local function gradle_after(text, ins, name, width, fn)
   end
 end
 
+--- The text inside the parentheses whose "(" came just before `s` (nil when they do not close in `s`).
+local function paren_arg(s)
+  local depth = 1
+  for i = 1, #s do
+    local c = s:sub(i, i)
+    if c == "(" then depth = depth + 1 elseif c == ")" then depth = depth - 1; if depth == 0 then return s:sub(1, i - 1) end end
+  end
+end
+
+local PROP_FORMS = {}
+for _, f in ipairs({ "findProperty%(Q%)", "property%(Q%)", "project%.findProperty%(Q%)", "project%.property%(Q%)",
+  "rootProject%.findProperty%(Q%)", "rootProject%.property%(Q%)", "providers%.gradleProperty%(Q%)",
+  "project%.providers%.gradleProperty%(Q%)", "properties%[Q%]", "project%.properties%[Q%]", "properties%.get%(Q%)" }) do
+  PROP_FORMS[#PROP_FORMS + 1] = "^" .. f:gsub("Q", "[\"']([%%w%%._%%-]+)[\"']") .. "$"
+end
+local WRAPS = { "%??%.toInt%(%)", "%??%.toInteger%(%)", "%??%.toString%(%)", "%??%.get%(%)", "%.orNull", "!!", "asString", "asInteger", "asInt", "asint" }
+
+--- Whether the build text itself defines `name` (a local, an `ext` property, an assignment): then a gradle.properties
+--- entry of that name is not what the build means, and nothing is resolved.
+local function gradle_shadowed(text, name)
+  local n = vim.pesc(name)
+  if text:find("%f[%w_]" .. n .. "%f[^%w_]%s*=[^=]") or text:find("ext[%.%[\"']+" .. n) or text:find("set%(%s*[\"']" .. n .. "[\"']") then
+    return true
+  end
+  for _, kw in ipairs({ "val", "var", "def", "int", "Integer", "String", "final" }) do
+    local init = 1
+    while true do
+      local _, e = text:find("%f[%w_]" .. kw .. "%s+" .. n .. "%f[^%w_]", init)
+      if not e then break end
+      init = e + 1
+      if not (text:match("^[^\n]*", e + 1)):find("by%s+project") then return true end -- `val x: String by project` is the property
+    end
+  end
+  return false
+end
+
+--- A Java version written as an expression, to a string like "21" or "1.8", or nil when it cannot be resolved by reading
+--- text: a literal ("17", 17), `libs.versions.<name>` (gradle/libs.versions.toml [versions]) and a project property
+--- (`findProperty("x")`, `property("x")`, `providers.gradleProperty("x")`, `properties["x"]`, a bare `x`) read from gradle.properties,
+--- each with `.get()`, `.toInt()`, `.toString()`, `as String`, `Integer.parseInt(...)`, `JavaLanguageVersion.of(...)` around it.
+--- ctx = { version = fn(name), prop = fn(name) } (both may be absent). Anything else (code, `?:` defaults) is nil.
+local function gradle_resolve(expr, text, ctx)
+  local e = expr:gsub("%s+", "")
+  repeat
+    local before = e
+    for _, w in ipairs(WRAPS) do e = e:gsub(w .. "$", "") end
+    e = e:gsub("^Integer%.parseInt%((.*)%)$", "%1"):gsub("^Integer%.valueOf%((.*)%)$", "%1")
+      :gsub("^JavaLanguageVersion%.of%((.*)%)$", "%1")
+  until e == before
+  local v = e:match("^[\"']?(%d[%d%.]*)[\"']?$")
+  if not v and ctx then
+    local name = e:match("^libs%.versions%.([%w%._%-]+)$")
+    if name then
+      v = ctx.version and ctx.version(name)
+    else
+      local key
+      for _, pat in ipairs(PROP_FORMS) do
+        key = key or e:match(pat)
+      end
+      if not key and e:match("^[%a_][%w_]*$") and not gradle_shadowed(text, e) then key = e end
+      v = key and ctx.prop and ctx.prop(key)
+    end
+  end
+  return v and v:match("^%d[%d%.]*$") and v or nil
+end
+
 --- Version strings in one Gradle build file (Groovy or Kotlin DSL), text rules only, nothing is evaluated,
 --- in order: `languageVersion = JavaLanguageVersion.of(N)` (java or kotlin toolchain), `jvmToolchain(N)`,
 --- `sourceCompatibility`, `targetCompatibility` (`JavaVersion.VERSION_21`, `VERSION_1_8`, `toVersion("17")`,
---- `'21'`, `21`, `1.8`). A value that is not a literal (variable, version catalog, property) is skipped.
-local function gradle_versions(src)
+--- `'21'`, `21`, `1.8`). N and those values may also be a version catalog entry, a gradle.properties property
+--- (gradle_resolve); a value that cannot be resolved that way (variable, code) is skipped.
+local function gradle_versions(src, ctx)
   local text, ins = gradle_strip(src)
   local vs = {}
   local function add(v) if v then vs[#vs + 1] = v end end
-  gradle_after(text, ins, "languageVersion", 120, function(rest)
-    add(rest:match("^[%s%.=%a%(]*JavaLanguageVersion%.of%(%s*[\"']?(%d+)"))
+  gradle_after(text, ins, "languageVersion", 200, function(rest)
+    local at = rest:match("^[%s%.=%a%(]*JavaLanguageVersion%.of%(()")
+    local arg = at and paren_arg(rest:sub(at))
+    add(arg and gradle_resolve(arg, text, ctx))
   end)
-  gradle_after(text, ins, "jvmToolchain", 120, function(rest)
-    add(rest:match("^%s*%(%s*(%d+)") or rest:match("^%s*%(%s*JavaLanguageVersion%.of%(%s*[\"']?(%d+)"))
+  gradle_after(text, ins, "jvmToolchain", 200, function(rest)
+    local at = rest:match("^%s*%(()")
+    local arg = at and paren_arg(rest:sub(at))
+    add(arg and gradle_resolve(arg, text, ctx))
   end)
   for _, name in ipairs({ "sourceCompatibility", "targetCompatibility" }) do
-    gradle_after(text, ins, name, 80, function(rest)
+    gradle_after(text, ins, name, 200, function(rest)
       rest = rest:gsub("^[%s=%(]+", "")
       local v = rest:match("^JavaVersion%.VERSION_([%d_]+)")
-      if v then v = v:gsub("_", ".") end
-      add(v or rest:match("^JavaVersion%.toVersion%(%s*[\"']?(%d[%d%.]*)") or rest:match("^[\"']([%d%.]+)[\"']")
-        or rest:match("^(%d[%d%.]*)"))
+      if v then
+        add((v:gsub("_", ".")))
+        return
+      end
+      local at = rest:match("^JavaVersion%.toVersion%(()")
+      if at then
+        local arg = paren_arg(rest:sub(at))
+        add(arg and gradle_resolve(arg, text, ctx))
+        return
+      end
+      local line = rest:match("^[^\n;]*")
+      if #line < 200 then add(gradle_resolve(line, text, ctx)) end
     end)
   end
-  return vs
+  return vs, text
 end
 
 --- Directories of the projects a settings.gradle(.kts) `include`s (":app", ":libs:core" -> app, libs/core).
@@ -228,20 +308,86 @@ local function gradle_included(root)
   return dirs
 end
 
+local function gradle_properties(dir)
+  local out = {}
+  local src = read(dir .. "/gradle.properties")
+  for line in (src or ""):gmatch("[^\r\n]+") do
+    local k, v = line:match("^%s*([%w%._%-]+)%s*[=:]%s*(.-)%s*$")
+    if k and not line:match("^%s*[#!]") then out[k] = v end
+  end
+  return out
+end
+
+--- Lookups for gradle_resolve in project `dir` of the build at `root`: [versions] of root/gradle/libs.versions.toml
+--- (`java-version` is `libs.versions.java.version`) and gradle.properties of `dir`, then of `root`. Never the user's
+--- ~/.gradle/gradle.properties and never command-line or environment overrides.
+local function gradle_ctx(root, dir)
+  local props, versions
+  return {
+    prop = function(k)
+      if not props then props = { gradle_properties(dir), dir ~= root and gradle_properties(root) or nil } end
+      for _, p in ipairs(props) do if p[k] then return p[k] end end
+    end,
+    version = function(name)
+      if not versions then
+        versions = {}
+        local toml, section = read(root .. "/gradle/libs.versions.toml"), nil
+        for line in ((toml or "") .. "\n"):gmatch("([^\n]*)\n") do
+          local sec = line:match("^%s*%[([%w_%-]+)%]")
+          if sec then
+            section = sec
+          elseif section == "versions" then
+            local key, val = line:match("^%s*([%w_%-%.]+)%s*=%s*[\"']([^\"']*)[\"']")
+            if key then versions[(key:gsub("[%-_]", "."))] = val end
+          end
+        end
+      end
+      return versions[name]
+    end,
+  }
+end
+
 --- Majors from the Gradle build files: the root's build.gradle / build.gradle.kts, then those of the
---- sub-projects named by `include` in settings.gradle(.kts); duplicates removed. Out of scope: version
---- catalogs (libs.versions.toml), gradle.properties, values computed by code, convention plugins, buildSrc.
+--- sub-projects named by `include` in settings.gradle(.kts); duplicates removed. After each build file's own settings
+--- come those of the precompiled convention plugins it applies (buildSrc, build-logic, 2 levels deep). Values may come
+--- from the version catalog or gradle.properties (gradle_resolve). Out of scope: values computed by code, binary
+--- convention plugins (a class), `options.release`, a plugin from a repository.
 local function gradle_majors(root)
   local out, seen = {}, {}
+  local rt = require("nv4j.root")
   local function from(dir)
-    for _, f in ipairs({ "build.gradle", "build.gradle.kts" }) do
-      local src = read(dir .. "/" .. f)
-      for _, v in ipairs(src and gradle_versions(src) or {}) do
+    local ctx = gradle_ctx(root, dir)
+    local function take(vs)
+      for _, v in ipairs(vs) do
         local m = v:match("^[%d%.]+$") and parse_version(v)
         if m and not seen[m] then
           seen[m] = true
           out[#out + 1] = m
         end
+      end
+    end
+    local function plugins(text, depth, done)
+      if depth > 2 then return end
+      for _, id in ipairs(rt.gradle_plugin_ids(text)) do
+        if not done[id] then
+          done[id] = true
+          for _, f in ipairs(rt.convention_files(dir, id)) do
+            local csrc = read(f)
+            if csrc then
+              local vs, ctext = gradle_versions(csrc, ctx)
+              take(vs)
+              plugins(ctext, depth + 1, done)
+            end
+          end
+        end
+      end
+    end
+    for _, f in ipairs({ "build.gradle", "build.gradle.kts" }) do
+      local src = read(dir .. "/" .. f)
+      if src then
+        local vs, text = gradle_versions(src, ctx)
+        take(vs)
+        plugins(text, 1, {})
       end
     end
   end
@@ -253,7 +399,8 @@ end
 --- Java majors the project asks for, in priority order: .sdkmanrc java=, then pom
 --- maven.compiler.release, plugin <release>, java.version, maven.compiler.source, <source>,
 --- maven.compiler.target, <target>, then the Gradle build files (gradle_majors: toolchain, jvmToolchain,
---- sourceCompatibility, targetCompatibility). Only the project's own pom is read (no parent poms).
+--- sourceCompatibility, targetCompatibility; values also from the version catalog, gradle.properties and
+--- convention plugins in buildSrc/build-logic). Only the project's own pom is read (no parent poms).
 ---@return integer[]
 function M.project_majors(root)
   local out = {}

@@ -24,8 +24,21 @@
 --                      (jdt.ls not attached: the build-tool path of run.lua, the same nv4j.jdk project runtime as the jdt.ls
 --                      path) launches with JAVA_HOME = a JDK of major N that nv4j.jdk finds, and `java -version` there says N.
 --                      SKIP when no other JDK is installed.
--- Out of scope (documented, not read): version catalogs (libs.versions.toml), gradle.properties, convention plugins/buildSrc,
--- computed values, `options.release`.
+--  catalog_version   : (G3 rest) `jvmToolchain(libs.versions.jdk.get().toInt())`, `JavaLanguageVersion.of(libs.versions.java.get())`,
+--                      `JavaVersion.toVersion(libs.versions.java.get())`, key `java-version` = `libs.versions.java.version` with
+--                      gradle/libs.versions.toml [versions] -> that major.
+--  catalog_not       : entry missing, not a number ("latest"), no catalog, a commented entry -> {} (nothing guessed).
+--  props_version     : `javaVersion=21` in gradle.properties read through JavaVersion.toVersion(javaVersion), findProperty, property,
+--                      providers.gradleProperty(..).get().toInt(), `val javaVersion: String by project`, JavaLanguageVersion.of(javaVersion);
+--                      the sub-project's gradle.properties beats the root's.
+--  props_not         : key absent, value `abc`, a commented key, `findProperty("x") ?: 17`, and a build that defines a local
+--                      `def/val javaVersion` or `ext.javaVersion` itself (the property would be the wrong value) -> {}.
+--  convention_plugin : (G3 rest) the module applies `id 'acme.java-conventions'`, buildSrc/src/main/groovy/acme.java-conventions.gradle
+--                      has the toolchain -> that major; build-logic (kts) the same; a convention applying another one; the
+--                      convention's catalog/property lookups; a convention nobody applies is not read; the module's own setting
+--                      comes first; .sdkmanrc still wins.
+-- Out of scope (documented, not read): values computed by code (`?:`, `if`), binary convention plugins (a class), a plugin from a
+-- repository, the user's ~/.gradle/gradle.properties and -P / environment overrides, `options.release`.
 -- Controls: tests/lib/control_69.sh patches nvim/lua/nv4j/jdk.lua under the run.sh lock, runs this check, restores the file
 -- and cmp's it against a backup (see the header of that script for the patch list and the cases each must fail).
 vim.o.confirm = false
@@ -119,10 +132,80 @@ local ok_all, err = pcall(function()
   }, "\n") }, { 17 })
   expect_all("not_literal", {
     { { ["build.gradle"] = "sourceCompatibility = javaVersion17\ntargetCompatibility = rootProject.ext.jdk21" }, {}, "variables" },
-    { { ["build.gradle.kts"] = "java { toolchain { languageVersion.set(JavaLanguageVersion.of(libs.versions.java17.get().toInt())) } }" }, {}, "catalog" },
+    { { ["build.gradle.kts"] = "java { toolchain { languageVersion.set(JavaLanguageVersion.of(libs.versions.java17.get().toInt())) } }" }, {}, "catalog (no catalog file)" },
     { { ["build.gradle.kts"] = "java { sourceCompatibility = JavaVersion.VERSION_HIGHER }\nkotlin { jvmToolchain(javaVer) }" }, {}, "VERSION_HIGHER" },
     { { ["build.gradle"] = "ext.mySourceCompatibility = 8\nmyjvmToolchain(11)\nsourceCompatibility_x = 9" }, {}, "longer identifiers" },
   })
+  local TOML = "[versions]\njdk = \"21\"\njava = \"17\"\njava-version = \"11\"\nlatest = \"latest\"\n# old = \"8\"\nboot = \"3.5.13\"\n"
+  expect_all("catalog_version", {
+    { { ["gradle/libs.versions.toml"] = TOML, ["build.gradle.kts"] = "kotlin {\n  jvmToolchain(libs.versions.jdk.get().toInt())\n}" }, { 21 }, "jvmToolchain kts" },
+    { { ["gradle/libs.versions.toml"] = TOML, ["build.gradle"] = "java { toolchain { languageVersion = JavaLanguageVersion.of(libs.versions.java.get()) } }" }, { 17 }, "of(libs...get()) groovy" },
+    { { ["gradle/libs.versions.toml"] = TOML, ["build.gradle.kts"] = "java { toolchain { languageVersion.set(JavaLanguageVersion.of(libs.versions.java.get().toInt())) } }" }, { 17 }, "of(...toInt()) kts" },
+    { { ["gradle/libs.versions.toml"] = TOML, ["build.gradle"] = "sourceCompatibility = JavaVersion.toVersion(libs.versions.java.get())" }, { 17 }, "toVersion" },
+    { { ["gradle/libs.versions.toml"] = TOML, ["build.gradle"] = "java.toolchain.languageVersion = JavaLanguageVersion.of(libs.versions.java.version.get().toInteger())" }, { 11 }, "java-version key" },
+    { { ["gradle/libs.versions.toml"] = TOML, ["settings.gradle"] = "include 'app'", ["app/build.gradle"] = "kotlin { jvmToolchain(libs.versions.jdk.get().toInt()) }" }, { 21 }, "sub-project, catalog at the root" },
+  })
+  expect_all("catalog_not", {
+    { { ["gradle/libs.versions.toml"] = TOML, ["build.gradle.kts"] = "kotlin { jvmToolchain(libs.versions.nothere.get().toInt()) }" }, {}, "entry missing" },
+    { { ["gradle/libs.versions.toml"] = TOML, ["build.gradle.kts"] = "kotlin { jvmToolchain(libs.versions.latest.get().toInt()) }" }, {}, "not a number" },
+    { { ["gradle/libs.versions.toml"] = TOML, ["build.gradle.kts"] = "kotlin { jvmToolchain(libs.versions.old.get().toInt()) }" }, {}, "commented entry" },
+    { { ["gradle/libs.versions.toml"] = TOML, ["build.gradle.kts"] = "kotlin { jvmToolchain(libs.versions.jdk.get().toInt() + 4) }" }, {}, "arithmetic" },
+    { { ["gradle/libs.versions.toml"] = TOML, ["build.gradle.kts"] = "kotlin { jvmToolchain(libs.plugins.jdk.get().toInt()) }" }, {}, "libs.plugins is not a version" },
+  })
+  local PROPS = "# javaVersion=11\norg.gradle.jvmargs=-Dfile.encoding=UTF-8\njavaVersion=21\nother = 17\nbad=abc\n"
+  expect_all("props_version", {
+    { { ["gradle.properties"] = PROPS, ["build.gradle"] = "sourceCompatibility = JavaVersion.toVersion(javaVersion)" }, { 21 }, "toVersion(javaVersion)" },
+    { { ["gradle.properties"] = PROPS, ["build.gradle"] = "sourceCompatibility = JavaVersion.toVersion(findProperty('javaVersion'))" }, { 21 }, "findProperty" },
+    { { ["gradle.properties"] = PROPS, ["build.gradle.kts"] = "java { sourceCompatibility = JavaVersion.toVersion(property(\"javaVersion\") as String) }" }, { 21 }, "property as String" },
+    { { ["gradle.properties"] = PROPS, ["build.gradle.kts"] = "kotlin { jvmToolchain(providers.gradleProperty(\"javaVersion\").get().toInt()) }" }, { 21 }, "providers.gradleProperty" },
+    { { ["gradle.properties"] = PROPS, ["build.gradle.kts"] = "val javaVersion: String by project\nkotlin { jvmToolchain(javaVersion.toInt()) }" }, { 21 }, "by project" },
+    { { ["gradle.properties"] = PROPS, ["build.gradle"] = "java { toolchain { languageVersion = JavaLanguageVersion.of(javaVersion) } }" }, { 21 }, "of(javaVersion)" },
+    { { ["gradle.properties"] = PROPS, ["build.gradle"] = "java { toolchain { languageVersion = JavaLanguageVersion.of(project.property('other').toInteger()) } }" }, { 17 }, "project.property, spaces around =" },
+    { { ["gradle.properties"] = "javaVersion=21", ["settings.gradle"] = "include 'app'", ["app/gradle.properties"] = "javaVersion=17",
+        ["app/build.gradle"] = "sourceCompatibility = JavaVersion.toVersion(javaVersion)" }, { 17 }, "sub-project properties win" },
+    { { ["gradle.properties"] = "javaVersion=21", ["settings.gradle"] = "include 'app'",
+        ["app/build.gradle"] = "sourceCompatibility = JavaVersion.toVersion(javaVersion)" }, { 21 }, "root properties for the sub-project" },
+  })
+  expect_all("props_not", {
+    { { ["gradle.properties"] = PROPS, ["build.gradle"] = "sourceCompatibility = JavaVersion.toVersion(nothere)" }, {}, "key absent" },
+    { { ["gradle.properties"] = PROPS, ["build.gradle"] = "sourceCompatibility = JavaVersion.toVersion(findProperty('bad'))" }, {}, "value abc" },
+    { { ["gradle.properties"] = "# javaVersion=11\n", ["build.gradle"] = "sourceCompatibility = JavaVersion.toVersion(javaVersion)" }, {}, "commented key" },
+    { { ["gradle.properties"] = PROPS, ["build.gradle"] = "sourceCompatibility = JavaVersion.toVersion(findProperty('javaVersion') ?: 17)" }, {}, "elvis default" },
+    { { ["gradle.properties"] = PROPS, ["build.gradle"] = "def javaVersion = 8\nsourceCompatibility = JavaVersion.toVersion(javaVersion)" }, {}, "local def" },
+    { { ["gradle.properties"] = PROPS, ["build.gradle.kts"] = "val javaVersion = 11\nkotlin { jvmToolchain(javaVersion) }" }, {}, "local val" },
+    { { ["gradle.properties"] = PROPS, ["build.gradle"] = "ext.javaVersion = 8\nsourceCompatibility = JavaVersion.toVersion(javaVersion)" }, {}, "ext assignment" },
+    { { ["gradle.properties"] = PROPS, ["build.gradle"] = "ext { javaVersion = 8 }\nsourceCompatibility = javaVersion" }, {}, "ext block" },
+    { { ["build.gradle"] = "sourceCompatibility = JavaVersion.toVersion(javaVersion)" }, {}, "no gradle.properties" },
+  })
+  local CONV_G = "plugins { id 'java' }\njava {\n  toolchain {\n    languageVersion = JavaLanguageVersion.of(21)\n  }\n}"
+  local c1 = project({ ["settings.gradle"] = "include 'app', 'lib'", ["build.gradle"] = "",
+    ["buildSrc/build.gradle"] = "plugins { id 'groovy-gradle-plugin' }\nsourceCompatibility = 8", ["buildSrc/src/main/groovy/acme.java-conventions.gradle"] = CONV_G,
+    ["buildSrc/src/main/groovy/acme.unused.gradle"] = "java { toolchain { languageVersion = JavaLanguageVersion.of(25) } }",
+    ["app/build.gradle"] = "plugins { id 'acme.java-conventions' }\nsourceCompatibility = 17",
+    ["lib/build.gradle"] = "plugins { id 'java' }" })
+  local c2 = project({ ["settings.gradle.kts"] = "pluginManagement { includeBuild(\"build-logic\") }\ninclude(\"app\")",
+    ["build-logic/settings.gradle.kts"] = "include(\"conventions\")",
+    ["build-logic/conventions/src/main/kotlin/acme.jvm.gradle.kts"] = "plugins { id(\"acme.base\") }\nkotlin { jvmToolchain(libs.versions.jdk.get().toInt()) }",
+    ["build-logic/conventions/src/main/kotlin/acme.base.gradle.kts"] = "plugins { java }\njava { sourceCompatibility = JavaVersion.toVersion(javaVersion) }",
+    ["gradle/libs.versions.toml"] = TOML, ["gradle.properties"] = "javaVersion=11",
+    ["app/build.gradle.kts"] = "plugins { id(\"acme.jvm\") }" })
+  local c3 = project({ ["build.gradle"] = "plugins { id 'acme.java-conventions' }",
+    ["buildSrc/src/main/groovy/acme.java-conventions.gradle"] = CONV_G, [".sdkmanrc"] = "java=17.0.9-tem" })
+  local c4 = project({ ["build.gradle"] = "plugins { id 'com.other.plugin' version '1.0' }",
+    ["buildSrc/src/main/groovy/acme.java-conventions.gradle"] = CONV_G })
+  local c5 = project({ ["settings.gradle"] = "include 'app'", ["app/build.gradle"] = "plugins { id 'acme.a' }",
+    ["buildSrc/src/main/groovy/acme.a.gradle"] = "plugins { id 'acme.b' }\nsourceCompatibility = 8",
+    ["buildSrc/src/main/groovy/acme.b.gradle"] = "plugins { id 'acme.a' }\nsourceCompatibility = 11" })
+  local g2, g3, g4, g5 = J.project_majors(c2), J.project_majors(c3), J.project_majors(c4), J.project_majors(c5)
+  local g1root = J.project_majors(c1)
+  lsp.report(P .. "convention_plugin", same(g1root, { 17, 21 }) and same(g2, { 21, 11 }) and same(g3, { 17, 21 }) and same(g4, {}) and same(g5, { 8, 11 }),
+    ("root c1 (app: own 17 then the convention's 21; buildSrc build file says 8, never read; acme.unused not applied) %s want {17, 21}; build-logic c2 (the app's `acme.jvm` -> catalog jdk 21, then the `acme.base` it applies -> property 11; root has no build file) %s want {21, 11}; "
+      .. "sdkmanrc 17 + convention 21: %s want {17, 21}; plugin from a repository, unapplied convention: %s want {}; a convention applying itself in a cycle: %s want {8, 11}")
+    :format(show(g1root), show(g2), show(g3), show(g4), show(g5)))
+  local c1app = J.project_majors(project({ ["settings.gradle"] = "include 'app'", ["app/build.gradle"] = "plugins { id 'acme.java-conventions' }\nsourceCompatibility = 17",
+    ["buildSrc/src/main/groovy/acme.java-conventions.gradle"] = CONV_G }))
+  lsp.report(P .. "convention_order", same(c1app, { 17, 21 }),
+    ("the module's own sourceCompatibility 17 comes before the convention's toolchain 21: %s want {17, 21}"):format(show(c1app)))
   expect_all("no_version", {
     { { ["build.gradle"] = "plugins { id 'java' }\nrepositories { mavenCentral() }" }, {}, "build file without version" },
     { { ["README"] = "x" }, {}, "no build file" },

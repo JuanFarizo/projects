@@ -1,5 +1,7 @@
 -- Per-project settings in `.nv4j` (D25 marker). Empty file is still only a root marker.
 -- Optional JSON: { "run": { "profile": "dev", "env": { "FOO": "bar" }, "vm_args": ["-Xmx512m"] } }
+-- Also `"spring_boot": true` (or a module directory, e.g. "app"): marks the project as Spring Boot when detection cannot
+-- see it (a plugin from a jar or repository), read by nv4j.root boot_override.
 -- <leader>rs / <leader>rd read these; <leader>rp still asks and does not write the file.
 -- Caller's opts win. Bad JSON: one warning, file stays a marker. Spec: specs/features/run-defaults.md.
 local M = {}
