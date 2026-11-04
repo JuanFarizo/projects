@@ -26,12 +26,14 @@ Settled, no longer asked: the 5 s ceiling for change signature on a method with 
 
 ## Later (priorities from the plan)
 
-- [ ] P4: Gradle as a first-class build tool, JPA, TestNG polish. Gradle research and task order: `specs/006-p4-gradle.md` (gap list G1 to G10, decisions D28 to D32 proposed by Claude, the user can overturn). Done: T1 (fixture `tests/fixtures/gradle-boot`, check `67_gradle`, `run.sh` resolve step with SKIP) and T2 (G1: no silent 0/0/0, launcher in the Gradle cache). Next: T3 (G7 + G2, root rule and one jdt.ls per Gradle build), T4 (project JDK from Gradle files), T5 (`vm_args` for `bootRun`), T6 (build file errors, first reproduce the G6 hang), T7 (G8/G9, docs).
-- [ ] Commit the Gradle fixture and T1/T2 (nothing is committed yet): until the fixture is committed `tests/run.sh` needs `NV4J_FIXTURE_DIRTY=allow` for check 67 (the guard sees the new fixture as uncommitted).
+- [ ] P4: JPA, TestNG polish. Gradle (`specs/006-p4-gradle.md`, decisions D28 to D32 proposed by Claude, the user can overturn): T1 to T7 done (checks 67 to 72). Gradle still open: Boot applied by a binary convention plugin or one from a repository is not detected (G8 rest); project JDK from a version catalog, `gradle.properties` or a convention plugin (G3 rest); Gradle-only test settings are not applied (D28); breakpoint hit in a Gradle Boot app, Boot 2.x on Gradle, composite builds, offline import: unverified.
+- [ ] `/tmp/nv4j/logs/lsp.log` is never rotated (184 MB after two weeks; T6 found it cumulative, not a flood).
 - [ ] JDT index save (only if a start on the second day is slow).
 - [ ] `-Xms` / `-Xmx` stay out (your rule).
 
 ## Done recently
+
+- 2026-11-03: P4 T6/T7: the G6 "hang" on a broken `build.gradle` was the test harness (`wait_ready` sent `java.project.getAll` 4000 times a second when the import failed, and Neovim's `vim.wait` does not time out on sub-millisecond rounds), fixed and bounded; the product now shows one "Build file" error for a build that cannot be imported (jdt.ls puts it on the project folder) and re-imports on save (`71_gradle_broken`, 7 cases). Boot detection reads catalog aliases and `buildSrc`/`build-logic` convention plugins, `buildSrc` is never the Boot module, the scaffold JUnit flavour reads the module's build file and the catalog (`72_gradle_detect`, 10 cases).
 
 - 2026-11-03: P4 T1/T2: Gradle Spring Boot fixture and `67_gradle` (18 cases, three green runs; controls n67a to n67c and the stub/markers/wrapper controls in `specs/features/tests-runner.md`); a test JVM that dies is an error naming the cause, never `0 passed, 0 failed, 0 skipped`; the JUnit launcher is found in the Gradle cache. Decisions D28 to D32 recorded as proposed.
 - 2026-11-03: P4 T3: `root.project` takes the nearest build file and the nearest `settings.gradle(.kts)` above a Gradle sub-project (D29); `68_gradle_root` 15 cases incl. one jdt.ls for two sub-projects, three green runs.

@@ -80,6 +80,14 @@ Extract uses jdt.ls: `<leader>cxv` variable, `<leader>cxc` constant, `<leader>cx
 - Terminal `<C-/>`, comment a line `<D-/>` on a Mac, `<A-/>` on Linux (or `gcc` anywhere), AI agents `<leader>a` (Claude `<leader>ac`, Cursor `<leader>ak`).
 - Next problem `]d` or `<F8>`, all problems `<leader>xx`.
 
+## 8b. A Gradle project
+
+1. `cd` into the project (the folder with `settings.gradle` or `build.gradle`) and open a Java file: `nv4j app/src/main/java/com/example/App.java`. The first import takes about 20 s; the Gradle wrapper (`gradlew`) is used, Neovim does not see SDKMAN's `gradle` function.
+2. A multi-project build is one project: files of `app` and `lib` share one jdt.ls, and `<leader>tp` runs the tests of every sub-project.
+3. Run as for Maven: `<leader>rs` (fast, `java -cp`), `<leader>rS` (`./gradlew bootRun`), `<leader>rd` (debug). The Java version comes from `.sdkmanrc` or the toolchain in `build.gradle`.
+4. A red "Build file" notification means Gradle could not read the build file; it names the file and the line. Fix it and save it in Neovim (`:w`): the project is imported again.
+5. Spring features missing although it is a Boot app? Boot applied only by a binary convention plugin (a class, or one from a repository) is not recognised; use `<leader>rS`, or add `id 'org.springframework.boot'` to the app's own `build.gradle`.
+
 ## 9. Switch the Java version
 
 ```sh

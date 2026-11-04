@@ -6,7 +6,7 @@ Read this first when resuming. The SDD ledger and reports live in `~/Documents/p
 
 - P1 and P2 are done and pushed. P3 Tasks 0 to 4 are done, plus the D25 `.nv4j` marker and the Task 2 minor fixes and the 5 s ceiling for interface-method change signature.
 - Task 5 status: docs pass done (README, `specs/001`, `003` "3c. P3 lessons", `005`, this file). NOT done yet: three consecutive full `tests/run.sh` runs recorded with every `DONE` line, whole-branch review on the most capable model, one fix wave plus scoped re-review, time-boxed look at the jdt.ls flakes, push to `main` (tell the user first), final wrap-up listing every "Ruling:" line of the ledger with the cost if wrong.
-- P4 (Gradle) started 2026-11-03 outside the P3 plan: T1 and T2 of `specs/006-p4-gradle.md` are built (`tests/fixtures/gradle-boot`, `67_gradle` 18 cases, the JUnit launcher in the Gradle cache, a dying test JVM is an error). Nothing of it is committed yet; `tests/run.sh` needs `NV4J_FIXTURE_DIRTY=allow` for check 67 until the fixture is committed. T3 to T7 are open.
+- P4 (Gradle) 2026-11-03 outside the P3 plan: T1 to T7 of `specs/006-p4-gradle.md` are built (checks 67 to 72; T1 to T5 committed, T6/T7 not yet). The G6 "hang" was `tests/lib/lsp.lua` `wait_ready` (see `006` "Status of T6 and T7").
 - Checks added in P3: `60_tests_runner` 34 (29 until 2026-11-03), `61_scaffold` 27, `62_refactor` 118 (116 on a case-sensitive file system: two cases SKIP), `63_async_import` 28, `64_project_marker` 25, `65_dotfiles_merge` 10 (D26 dotfiles merge, outside the P3 plan).
 - Several commits are not pushed (`git log origin/main..main`).
 
