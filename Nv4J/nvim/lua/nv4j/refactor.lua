@@ -20,6 +20,12 @@
 -- left the old `package` line (Task 0 baseline). jdt.ls's package rename also rewrites the namesake
 -- package in the other source roots (src/test/java): those folders move too.
 --
+-- IntelliJ gaps round: rename_class also renames variables declared with the type and inheritors (M._plan_vars,
+-- M._plan_subclasses, M._var_step; steps of M.rename_chain, undone in reverse order); move picks packages of the
+-- main and test roots (opts.root), lists conflicts before moving (M._move_conflicts, opts.force), moves the class
+-- under the cursor when it is another project class; rename_package merges into an existing package
+-- (M._merge_moves, rename_paths opts.merge).
+--
 -- Buffers: a touched buffer without unsaved changes before the refactor is written afterwards; one
 -- that had unsaved changes is edited in place and left unsaved (named in the summary). A renamed or
 -- moved file's buffer is written by the move (:saveas), its unsaved changes included (also named).
@@ -468,15 +474,297 @@ function M.related_tests(path, old, new)
   return out, skipped
 end
 
+-- ── variables and inheritors (IntelliJ's "Rename variables" / "Rename inheritors", on by default there) ──
+--
+-- After a class rename Invoice -> Bill, `Bill invoice` becomes `Bill bill` and `List<Bill> invoices` becomes
+-- `bills` (a variable, field or parameter DECLARED with exactly the renamed type, its name built from the old
+-- one), and `class InvoiceImpl extends Bill` becomes `BillImpl` (a top-level class whose name is the old name
+-- plus a capitalised suffix and whose header extends/implements the renamed type). Each is a jdt.ls rename
+-- (references follow), so every one is a step of the same chain as the test renames, with its own inverse for
+-- `<leader>ju`. A name that is taken (the new name appears anywhere in the declaring file, or the class file
+-- exists) is skipped and named in a warning. opts.variables = false / opts.subclasses = false skip them.
+local lines_of -- defined with the move helpers below
+M.variables_max = 40 -- variable renames per class rename (each is a jdt.ls request, about 100 ms)
+
+local function decap(s)
+  if #s == 1 and s:match("%u") then return s:lower() end
+  if s:match("^%u%l") then return s:sub(1, 1):lower() .. s:sub(2) end
+end
+
+--- The new name of a variable called `n` after class `old` became `new`, or nil when `n` is not built from the
+--- old name (invoice, invoices, invoiceList, pendingInvoice, pendingInvoices).
+function M._var_new_name(n, old, new)
+  local od, nd = decap(old), decap(new)
+  if not od or not nd then return nil end
+  local out
+  if n == od then out = nd
+  elseif n == od .. "s" then out = nd .. "s"
+  elseif n:sub(1, #od) == od and n:sub(#od + 1, #od + 1):match("%u") then out = nd .. n:sub(#od + 1)
+  elseif #n > #old and n:sub(-#old) == old and n:sub(-#old - 1, -#old - 1):match("%l") then out = n:sub(1, -#old - 1) .. new
+  elseif #n > #old + 1 and n:sub(-#old - 1) == old .. "s" and n:sub(-#old - 2, -#old - 2):match("%l") then
+    out = n:sub(1, -#old - 2) .. new .. "s"
+  end
+  return out and out ~= n and valid_identifier(out) and out or nil
+end
+
+--- Variables declared with type `tname` on one (code) line: { { name, col } } (col 0-based). `Type name`,
+--- `Type[] name`, `Type... name`, and one generic argument list holding the type (`List<Type> name`).
+local function var_decls(line, tname)
+  local out = {}
+  local t = vim.trim(line)
+  if t:match("^//") or t:match("^%*") or t:match("^/%*") then return out end
+  local w = word(tname)
+  local s = 1
+  while true do
+    local a, b = line:find(w, s)
+    if not a then break end
+    s = b + 1
+    local before, rest = line:sub(1, a - 1), line:sub(b + 1)
+    if not before:match("%.%s*$") then
+      local nm = rest:match("^%s+([%a_$][%w_$]*)%s*[=;,):]") or rest:match("^%s*%[%s*%]%s*([%a_$][%w_$]*)%s*[=;,):]")
+        or rest:match("^%.%.%.%s*([%a_$][%w_$]*)%s*[=;,)]")
+      if nm then
+        local c0 = line:find(nm, b + 1, true)
+        if c0 then out[#out + 1] = { name = nm, col = c0 - 1 } end
+      else -- List<Type> name: the closing `>` right after the type (or after more `>`)
+        local close = rest:match("^%s*(>[>%s]*)")
+        if close and before:find("<[^<>;()]*$") then
+          local nm2 = rest:sub(#close + 1):match("^([%a_$][%w_$]*)%s*[=;,):]")
+          if nm2 then
+            local c0 = line:find(nm2, b + #close + 1, true)
+            if c0 and #close > 0 then out[#out + 1] = { name = nm2, col = c0 - 1 } end
+          end
+        end
+      end
+    end
+  end
+  return out
+end
+M._var_decls = var_decls -- checks
+
+local function java_files(root)
+  local out, n = {}, 0
+  local function walk(dir)
+    for name, kind in vim.fs.dir(dir) do
+      local p = dir .. "/" .. name
+      if kind == "directory" and not SCAN_SKIP[name] then
+        walk(p)
+      elseif kind == "file" and name:match("%.java$") then
+        n = n + 1
+        if n <= M.scan_max_files then out[#out + 1] = p end
+      end
+    end
+  end
+  if root then walk(root) end
+  table.sort(out)
+  return out
+end
+
+--- Variable renames due after `old` became `new`: steps ({ var = true, path, line, type = new, from, to }) and
+--- the skipped ones ("file:line name (why)"). Text of loaded buffers, else the disk.
+function M._plan_vars(root, old, new)
+  local steps, skipped, seen = {}, {}, {}
+  for _, p in ipairs(java_files(root)) do
+    local lines = lines_of(p)
+    local txt
+    for i, l in ipairs(lines) do
+      if l:find(new, 1, true) then
+        for _, d in ipairs(var_decls(l, new)) do
+          local nn = M._var_new_name(d.name, old, new)
+          if nn then
+            txt = txt or table.concat(lines, "\n")
+            local where = ("%s:%d %s -> %s"):format(rel(p, root), i, d.name, nn)
+            if txt:find(word(nn)) then
+              skipped[#skipped + 1] = where .. " (the name " .. nn .. " is already used in that file)"
+            elseif #steps >= M.variables_max then
+              skipped[#skipped + 1] = where .. (" (more than %d variables: the rest are left)"):format(M.variables_max)
+            else
+              steps[#steps + 1] = { var = true, path = p, line = i - 1, type = new, from = d.name, to = nn }
+            end
+          end
+        end
+      end
+    end
+  end
+  return steps, skipped
+end
+
+--- Top-level classes named `<Old><Suffix>` whose header extends/implements `new`, to be renamed `<New><Suffix>`:
+--- steps ({ path, name }) and the skipped ones.
+function M._plan_subclasses(root, old, new, exclude)
+  local steps, skipped = {}, {}
+  for _, p in ipairs(java_files(root)) do
+    local base = vim.fs.basename(p):sub(1, -6)
+    local suffix = base:match("^" .. vim.pesc(old) .. "(%u[%w_$]*)$")
+    if suffix and not exclude[p] then
+      local src = table.concat(lines_of(p), "\n")
+      src = src:gsub("/%*.-%*/", " "):gsub("//[^\n]*", " ")
+      local header
+      for _, kw in ipairs({ "class", "interface", "record" }) do
+        header = header or src:match("%f[%w_$]" .. kw .. "%s+" .. vim.pesc(base) .. "%f[^%w_$]([^{;]*)")
+      end
+      local sup = header and (header:match("extends(.*)") or header:match("implements(.*)"))
+      if sup and sup:find(word(new)) then
+        local nn = new .. suffix
+        if vim.uv.fs_stat(vim.fs.dirname(p) .. "/" .. nn .. ".java") then
+          skipped[#skipped + 1] = ("%s (%s.java exists)"):format(rel(p, root), nn)
+        else
+          steps[#steps + 1] = { path = p, name = nn }
+        end
+      end
+    end
+  end
+  return steps, skipped
+end
+
+--- What a variable rename's edit changes, as the inverse: { path, off, len, text, new } per text edit (off = 0-based byte
+--- offset in the file's lines joined by "\n" where the NEW text sits after all earlier edits of the file are in, len = #new,
+--- text = the old text, possibly several lines: jdt.ls answers a parameter rename with ONE edit from the parameter to its
+--- last use). Undo applies this directly: asking jdt.ls to rename back could miss a declaration (it answers from its own
+--- view of files it may not have caught up on; intermittent miss seen in a full run). nil when the edit is not plain
+--- text edits on ASCII text.
+local function inverse_text_edits(edit)
+  local per = {}
+  local function add(uri, edits)
+    local p = vim.uri_to_fname(uri)
+    per[p] = per[p] or {}
+    for _, e in ipairs(edits) do per[p][#per[p] + 1] = e end
+  end
+  for _, ch in ipairs(edit.documentChanges or {}) do
+    if ch.kind ~= nil then return nil end
+    if ch.textDocument then add(ch.textDocument.uri, ch.edits or {}) end
+  end
+  for uri, edits in pairs(edit.changes or {}) do add(uri, edits) end
+  local out = {}
+  for p, edits in pairs(per) do
+    local lines = lines_of(p)
+    local starts, acc = {}, 0 -- byte offset of each line start
+    for i, l in ipairs(lines) do
+      if l:find("[\128-\255]") then return nil end
+      starts[i] = acc
+      acc = acc + #l + 1
+    end
+    local text = table.concat(lines, "\n")
+    local function off(pos)
+      local base = starts[pos.line + 1]
+      if not base then return nil end
+      return base + pos.character
+    end
+    table.sort(edits, function(a, b)
+      if a.range.start.line ~= b.range.start.line then return a.range.start.line < b.range.start.line end
+      return a.range.start.character < b.range.start.character
+    end)
+    local delta = 0
+    for _, e in ipairs(edits) do
+      local o1, o2 = off(e.range.start), off(e.range["end"])
+      if not o1 or not o2 or o2 < o1 then return nil end
+      out[#out + 1] = { path = p, off = o1 + delta, len = #e.newText, text = text:sub(o1 + 1, o2), new = e.newText }
+      delta = delta + #e.newText - (o2 - o1)
+    end
+  end
+  return out
+end
+
+--- Applies a variable rename's recorded inverse edits (see inverse_text_edits). cb(ok, text). An edit whose spot no
+--- longer holds the new text (edited since) is left and named; the rest are applied.
+local function undo_text_edits(step, cb)
+  local by = {}
+  for _, e in ipairs(step.edits) do
+    by[e.path] = by[e.path] or {}
+    table.insert(by[e.path], e)
+  end
+  local done_n, missed = 0, {}
+  local dirty = dirty_buffers()
+  for p, list in pairs(by) do
+    local b = vim.fn.bufnr(p)
+    if b == -1 or not vim.api.nvim_buf_is_loaded(b) then b = vim.fn.bufadd(p); vim.fn.bufload(b) end
+    local text = table.concat(vim.api.nvim_buf_get_lines(b, 0, -1, false), "\n")
+    table.sort(list, function(x, y) return x.off > y.off end) -- right to left keeps the offsets valid
+    for _, e in ipairs(list) do
+      if text:sub(e.off + 1, e.off + e.len) == e.new then
+        text = text:sub(1, e.off) .. e.text .. text:sub(e.off + e.len + 1)
+        done_n = done_n + 1
+      else
+        missed[#missed + 1] = ("%s@%d"):format(vim.fs.basename(p), e.off)
+      end
+    end
+    vim.api.nvim_buf_set_lines(b, 0, -1, false, vim.split(text, "\n", { plain = true }))
+    if not dirty[p] then write(p) end
+  end
+  cb(#missed == 0, ("%s: %s -> %s (%d edit(s))"):format(vim.fs.basename(step.path), step.from, step.to, done_n)
+    .. (#missed > 0 and (", NOT undone (changed since): " .. table.concat(missed, ", ")) or ""))
+end
+
+--- One variable rename: jdt.ls `textDocument/rename` on the declaration, applied and written like a class rename.
+--- cb(ok, inverse_step, text): ok false = not done (nothing changed), text = what was touched / why not.
+function M._var_step(s, cb)
+  if s.edits then -- undo of a variable rename: the recorded edits, no jdt.ls
+    return undo_text_edits(s, function(ok, text) cb(ok, nil, text) end)
+  end
+  local client = jdtls_for(s.path)
+  local function fail(why) return cb(false, nil, ("%s:%d %s -> %s: %s"):format(vim.fs.basename(s.path), s.line + 1, s.from, s.to, why)) end
+  if busy then return fail("another refactor is in progress") end
+  if not client then return fail("jdt.ls is not running") end
+  local col
+  for _, d in ipairs(var_decls(lines_of(s.path)[s.line + 1] or "", s.type)) do
+    if d.name == s.from then col = d.col end
+  end
+  if not col then return fail("the declaration is not there any more") end
+  local keep = vim.api.nvim_get_current_buf()
+  local b = vim.fn.bufnr(s.path)
+  if b == -1 or not vim.api.nvim_buf_is_loaded(b) or #vim.lsp.get_clients({ bufnr = b, name = "jdtls" }) == 0 then
+    if not pcall(vim.cmd, "silent keepalt edit " .. vim.fn.fnameescape(s.path)) then return fail("could not open the file") end
+    b = vim.api.nvim_get_current_buf()
+    vim.wait(3000, function() return #vim.lsp.get_clients({ bufnr = b, name = "jdtls" }) > 0 end, 20)
+    if vim.api.nvim_buf_is_valid(keep) then pcall(vim.api.nvim_set_current_buf, keep) end
+  end
+  busy = { label = ("rename variable %s"):format(s.from) }
+  local settled = false
+  local function finish(ok, inv, text)
+    if settled then return end
+    settled = true
+    busy = nil
+    cb(ok, inv, text)
+  end
+  local ok, sent = pcall(client.request, client, "textDocument/rename", { textDocument = { uri = vim.uri_from_fname(s.path) },
+    position = { line = s.line, character = col }, newName = s.to }, function(err, edit)
+    if settled then return end
+    if err or not edit then
+      busy = nil
+      settled = true
+      return fail(err and (err.message or "refused") or "no edit")
+    end
+    local rec = inverse_text_edits(edit)
+    local aok, files, why = apply(client, edit, dirty_buffers())
+    if not aok then return finish(false, nil, ("%s:%d %s -> %s: %s"):format(vim.fs.basename(s.path), s.line + 1, s.from, s.to, why)) end
+    finish(true, { var = true, path = s.path, line = s.line, type = s.type, from = s.to, to = s.from, edits = rec },
+      ("%s:%d %s -> %s"):format(vim.fs.basename(s.path), s.line + 1, s.from, s.to))
+  end, b)
+  if not ok or not sent then busy = nil; settled = true; return fail("the request could not be sent") end
+  vim.defer_fn(function()
+    if not settled then
+      busy = nil
+      settled = true
+      fail(("jdt.ls did not answer in %d ms"):format(M.rename_ms))
+    end
+  end, M.rename_ms)
+end
+
 --- Class renames one after another: steps = { { path, name } } (the class of each file, renamed to `name`);
 --- cb(all_ok, done_steps) with the inverse steps of those that worked ({ path = new file, name = old name }).
 --- Each step is a rename_class (own summary, own undo step per buffer).
 function M.rename_chain(steps, cb)
-  local i, all_ok, did = 0, true, {}
+  local i, all_ok, did, vars, var_failed = 0, true, {}, {}, {}
   local function nxt()
     i = i + 1
     local s = steps[i]
-    if not s then return cb(all_ok, did) end
+    if not s then return cb(all_ok, did, { vars = vars, var_failed = var_failed }) end
+    if s.var then -- a variable rename: a failure is a warning, never the chain's failure
+      return M._var_step(s, function(ok, inv, text)
+        if ok then did[#did + 1] = inv; vars[#vars + 1] = text else var_failed[#var_failed + 1] = text end
+        vim.schedule(nxt)
+      end)
+    end
     local ok = pcall(vim.cmd, "silent keepalt edit " .. vim.fn.fnameescape(s.path))
     local b = vim.api.nvim_get_current_buf()
     if ok then
@@ -636,19 +924,50 @@ function rename_class_impl(opts)
       -- IntelliJ's "Rename tests" (on by default): test classes named <Old>Test/<Old>Tests/<Old>IT/... follow
       local tests, skipped = {}, {}
       if opts.tests ~= false then tests, skipped = M.related_tests(new_path, shown, name) end
+      -- "Rename variables" and "Rename inheritors" (on by default in IntelliJ too): `Bill invoice` -> `Bill bill`,
+      -- `class InvoiceImpl extends Bill` -> `BillImpl`
+      local steps, vskipped, sskipped = {}, {}, {}
+      local project = require("nv4j.root").project(path)
+      if opts.variables ~= false then steps, vskipped = M._plan_vars(project, shown, name) end
+      local subs = {}
+      if opts.subclasses ~= false then subs, sskipped = M._plan_subclasses(project, shown, name, { [new_path] = true }) end
+      vim.list_extend(steps, subs)
+      local in_subs = {}
+      for _, x in ipairs(subs) do in_subs[x.path] = true end
+      for _, t in ipairs(tests) do
+        if not in_subs[t.path] then steps[#steps + 1] = t end
+      end
       if #skipped > 0 then
         notify("Related tests NOT renamed: " .. table.concat(skipped, "; "), vim.log.levels.WARN)
       end
-      local undo = { step }
-      if #tests == 0 then
-        M.undo_op = { label = label, steps = undo }
+      if #sskipped > 0 then
+        notify("Inheritors NOT renamed: " .. table.concat(sskipped, "; "), vim.log.levels.WARN)
+      end
+      if #steps == 0 then
+        if #vskipped > 0 then
+          notify("Variables NOT renamed: " .. table.concat(vskipped, "; "), vim.log.levels.WARN)
+        end
+        M.undo_op = { label = label, steps = { step } }
+        M.last_extras = { vars = {}, var_failed = {}, var_skipped = vskipped, sub_skipped = sskipped, subclasses = {} }
         return done(true)
       end
       if mine then busy, mine = nil, false end -- the related renames take the lock one by one
       local keep = vim.api.nvim_get_current_buf()
-      M.rename_chain(tests, function(ok, steps)
-        for i = #steps, 1, -1 do undo[#undo + 1] = steps[i] end
-        M.undo_op = { label = label, steps = undo }
+      local nvars = #vim.tbl_filter(function(x) return x.var end, steps)
+      M.rename_chain(steps, function(ok, inverses, extra)
+        -- undo = the exact reverse of what was done (a variable's inverse needs the file name it had then)
+        local undo = { step }
+        vim.list_extend(undo, inverses)
+        local rev = {}
+        for j = #undo, 1, -1 do rev[#rev + 1] = undo[j] end
+        M.undo_op = { label = label, steps = rev }
+        M.last_extras = { vars = extra.vars, var_failed = extra.var_failed, var_skipped = vskipped, sub_skipped = sskipped, subclasses = subs }
+        if nvars > 0 or #vskipped > 0 then
+          local warn = #extra.var_failed > 0 or #vskipped > 0
+          notify(("Renamed variables after %s -> %s: %d: %s"):format(shown, name, #extra.vars, #extra.vars > 0 and table.concat(extra.vars, ", ") or "none")
+            .. (#extra.var_failed > 0 and ("; NOT renamed (jdt.ls): " .. table.concat(extra.var_failed, "; ")) or "")
+            .. (#vskipped > 0 and ("; skipped: " .. table.concat(vskipped, "; ")) or ""), warn and vim.log.levels.WARN or nil)
+        end
         if vim.api.nvim_buf_is_valid(keep) then pcall(vim.api.nvim_set_current_buf, keep) end
         done(ok)
       end)
@@ -766,7 +1085,7 @@ end
 
 --- Fallback edit for a package folder: the `package` line of every .java file under `from` (subpackages
 --- too) set for its place under `to`. Text from the loaded buffer, else the disk.
-local function lines_of(p)
+lines_of = function(p)
   local b = vim.fn.bufnr(p)
   if b ~= -1 and vim.api.nvim_buf_is_loaded(b) then return vim.api.nvim_buf_get_lines(b, 0, -1, false) end
   if not vim.uv.fs_stat(p) then return {} end
@@ -837,6 +1156,41 @@ local function will_rename(client, from, to)
   return res.result or false
 end
 
+--- Imports of the file's own package (`import demo.billing.X;` in a file of demo.billing) removed: a merge moves a
+--- class into the package of the classes it imported, and jdt.ls leaves those imports behind. A blank line left
+--- doubled goes too. A buffer with unsaved changes is skipped. Returns the paths changed.
+local function drop_same_package_imports(paths, dirty)
+  local changed = {}
+  for _, p in ipairs(paths) do
+    local lines = lines_of(p)
+    local pkg
+    for _, l in ipairs(lines) do
+      pkg = l:match("^%s*package%s+([%w_$.]+)%s*;")
+      if pkg then break end
+    end
+    local b = vim.fn.bufnr(p)
+    if pkg and not dirty[p] and not (b ~= -1 and vim.api.nvim_buf_is_loaded(b) and vim.bo[b].modified) then
+      local out, gone = {}, false
+      for i, l in ipairs(lines) do
+        local ipkg = l:match("^%s*import%s+([%w_$.]+)%.[%w_$]+%s*;")
+        if ipkg == pkg and not l:match("^%s*import%s+static") then
+          gone = true
+          if (out[#out] or "") == "" and (lines[i + 1] or "") == "" then table.remove(lines, i + 1) end
+        else
+          out[#out + 1] = l
+        end
+      end
+      if gone then
+        if b == -1 or not vim.api.nvim_buf_is_loaded(b) then b = vim.fn.bufadd(p); vim.fn.bufload(b) end
+        vim.api.nvim_buf_set_lines(b, 0, -1, false, out)
+        write(p)
+        changed[#changed + 1] = p
+      end
+    end
+  end
+  return changed
+end
+
 --- Renames/moves files or folders `moves` ({ {from, to}, ... }, absolute) with jdt.ls told first:
 --- willRenameFiles for the first one (and for any other whose files that edit did not touch), edits
 --- applied and written, then each move with buffers re-pointed, then didRenameFiles. Synchronous
@@ -883,12 +1237,23 @@ function M.rename_paths(moves, label, client, opts)
   end
   for i, m in ipairs(moves) do
     local from, to = m[1], m[2]
+    if opts.mkdirs and not vim.uv.fs_stat(vim.fs.dirname(to)) then -- undoing a merge: the folder the file came from is gone
+      local made, d = {}, vim.fs.dirname(to)
+      while not vim.uv.fs_stat(d) do
+        table.insert(made, 1, d)
+        d = vim.fs.dirname(d)
+      end
+      vim.fn.mkdir(vim.fs.dirname(to), "p")
+      client:notify("workspace/didChangeWatchedFiles", { changes = vim.tbl_map(function(q)
+        return { uri = vim.uri_from_fname(q), type = 1 }
+      end, made) })
+    end
     local edit, err = will_rename(client, from, to)
     -- a later root right after the previous move: jdt.ls sometimes answers null while it is still taking
     -- that move in (measured in the check run, not alone): ask again for up to 1 s, then fall back to the
     -- package lines only (said in the summary)
     local tries = 1
-    local needs = needs_edit(from, to)
+    local needs = needs_edit(from, to) and not opts.same_package -- same package name, other source root: nothing to rewrite
     while edit == false and needs and tries < 10 do
       vim.wait(100)
       edit, err = will_rename(client, from, to)
@@ -912,7 +1277,10 @@ function M.rename_paths(moves, label, client, opts)
       if i == 1 then return fail(err) end
       return failed_part_way(label, err .. " for " .. rel(from, root), files, root, done_moves())
     end
-    if edit and edit.documentChanges then
+    if opts.merge then
+      -- a merge moves files one by one: an edit to a file that moves later (a reference to the class just moved)
+      -- is needed, there is no second rename that would put it right
+    elseif edit and edit.documentChanges then
       edit.documentChanges = vim.tbl_filter(function(ch)
         local p = ch.textDocument and vim.uri_to_fname(ch.textDocument.uri) or (ch.oldUri and vim.uri_to_fname(ch.oldUri))
         for j = i + 1, #moves do
@@ -964,6 +1332,27 @@ function M.rename_paths(moves, label, client, opts)
       end
     end
   end
+  for _, m in ipairs(moves) do -- a file moved with no edit of its own (other source root, same package) is still listed
+    if vim.fn.isdirectory(m[2]) == 0 and not vim.iter(files):any(function(f) return f.path == m[2] end) then
+      files[#files + 1] = { path = m[2], from = m[1], saved_dirty = dirty[m[1]] or nil, outside = root and not under(m[2], root) or nil }
+    end
+  end
+  if opts.merge then
+    local javas = {}
+    for _, m in ipairs(moves) do
+      if vim.fn.isdirectory(m[2]) == 1 then
+        for n, kind in vim.fs.dir(m[2], { depth = 32 }) do
+          if kind == "file" and n:match("%.java$") then javas[#javas + 1] = m[2] .. "/" .. n end
+        end
+      elseif m[2]:match("%.java$") then
+        javas[#javas + 1] = m[2]
+      end
+    end
+    local dropped = drop_same_package_imports(javas, dirty)
+    if #dropped > 0 then
+      notes[#notes + 1] = ("%d same-package import(s) removed in %s"):format(#dropped, table.concat(vim.tbl_map(function(q) return rel(q, root) end, dropped), ", "))
+    end
+  end
   local moved = table.concat(vim.tbl_map(function(m) return rel(m[1], root) .. " -> " .. rel(m[2], root) end, moves), ", ")
   local stale, cut, unread = {}, false, {}
   if opts.stale then stale, cut, unread = M.stale_refs(root, opts.stale.names) end
@@ -982,7 +1371,7 @@ function M.rename_paths(moves, label, client, opts)
   end, vim.lsp.get_buffers_by_client_id(client.id))))
   follow_up(label, before, vim.tbl_map(function(f) return f.path end, files))
   if not opts.undoing then
-    M.undo_op = { label = label, moves = vim.tbl_map(function(m) return { m[2], m[1] } end, moves) }
+    M.undo_op = { label = label, moves = vim.tbl_map(function(m) return { m[2], m[1] } end, moves), merge = opts.merge, mkdirs = opts.merge, same_package = opts.same_package }
   end
   return true
 end
@@ -1008,7 +1397,7 @@ function M.undo_last(opts)
   end
   M.undo_op = nil
   if op.moves then
-    return fin(M.rename_paths(op.moves, "Undid: " .. op.label, nil, { undoing = true }))
+    return fin(M.rename_paths(op.moves, "Undid: " .. op.label, nil, { undoing = true, merge = op.merge, mkdirs = op.mkdirs, same_package = op.same_package }))
   end
   M.rename_chain(op.steps, function(ok)
     notify(("Undid: %s%s"):format(op.label, ok and "" or " (not completely: see the messages above)"),
@@ -1044,6 +1433,31 @@ local function current_package(buf)
   end
 end
 
+--- Moves that merge folder `from` into the existing folder `to`: a file per move; a sub-folder missing in `to`
+--- moves whole. Names already in `to` are added to `clashes` ("sub/Name.java"). `label` prefixes nothing.
+function M._merge_moves(from, to, clashes, _label, prefix)
+  prefix = prefix or ""
+  local out, names = {}, {}
+  for n, kind in vim.fs.dir(from) do names[#names + 1] = { n, kind } end
+  table.sort(names, function(a, b) return a[1] < b[1] end)
+  for _, e in ipairs(names) do
+    local n, kind = e[1], e[2]
+    local f, t = from .. "/" .. n, to .. "/" .. n
+    if kind == "directory" then
+      if vim.uv.fs_stat(t) then
+        vim.list_extend(out, M._merge_moves(f, t, clashes, _label, prefix .. n .. "/"))
+      else
+        out[#out + 1] = { f, t }
+      end
+    elseif vim.uv.fs_stat(t) then
+      clashes[#clashes + 1] = prefix .. n
+    else
+      out[#out + 1] = { f, t }
+    end
+  end
+  return out
+end
+
 --- Renames the package of the current file to opts.name (prompted when missing): `package`/`import`
 --- lines in every file updated, the folder moved (with the same package folder in the project's other
 --- source roots, e.g. src/test/java), buffers re-pointed. Returns ok (nil while prompting).
@@ -1072,8 +1486,45 @@ function M.rename_package(opts)
       end
     end
     local moves = namesake_moves(module_root(path), src_root, pkg, name)
-    local ok = M.rename_paths(moves, ("Renamed package %s -> %s"):format(pkg, name), nil,
-      { stale = { names = package_names(pkg), old = pkg } })
+    -- the target package exists (in some source root): merge, like IntelliJ, when no file of the old package has
+    -- the name of one in the target; otherwise refuse, naming them. A root where the target is missing keeps
+    -- the plain folder move.
+    local merged, clashes, final, sources = false, {}, {}, {}
+    local project = require("nv4j.root").project(path)
+    for _, m in ipairs(moves) do
+      if vim.uv.fs_stat(m[2]) and not under(m[2], m[1]) and vim.fn.isdirectory(m[2]) == 1 then
+        merged = true
+        local mine = M._merge_moves(m[1], m[2], clashes, rel(m[1], src_root_of(m[1]) or project))
+        vim.list_extend(final, mine)
+        sources[#sources + 1] = m[1]
+      else
+        final[#final + 1] = m
+      end
+    end
+    if merged and #clashes > 0 then
+      local msg = ("Rename package %s -> %s: %s already exists and both hold %s; nothing changed (rename or move those classes first)"):format(
+        pkg, name, name, table.concat(clashes, ", "))
+      M.last = { label = "Rename package", files = {}, ok = false, err = msg, clashes = clashes }
+      notify(msg, vim.log.levels.ERROR)
+      if opts.on_done then opts.on_done(false) end
+      return false
+    end
+    local label = ("Renamed package %s -> %s%s"):format(pkg, name, merged and " (merged into the existing package)" or "")
+    local ok = M.rename_paths(merged and final or moves, label, nil,
+      { stale = { names = package_names(pkg), old = pkg }, merge = merged or nil })
+    if ok and merged then -- the emptied source folders go; jdt.ls is told
+      local gone = {}
+      local function prune(dir)
+        for n, kind in vim.fs.dir(dir) do
+          if kind == "directory" then prune(dir .. "/" .. n) end
+        end
+        if vim.uv.fs_rmdir(dir) then gone[#gone + 1] = { uri = vim.uri_from_fname(dir), type = 3 } end
+      end
+      for _, d in ipairs(sources) do prune(d) end
+      local client = jdtls_for(path) or jdtls_for(final[1][2])
+      if client and #gone > 0 then client:notify("workspace/didChangeWatchedFiles", { changes = gone }) end
+      if M.last then M.last.merged, M.last.pruned = true, #gone end
+    end
     if opts.on_done then opts.on_done(ok) end
     return ok
   end
@@ -1245,12 +1696,211 @@ local function spring_scan_warning(path, module, name, target)
     name, ann, target, bases[1].pkg, bases[1].app, target)
 end
 
+-- ── conflicts found BEFORE a move (IntelliJ lists them and asks) ─────────────────────────────────
+--
+-- Moving a class out of its package breaks what only the package allowed: package-private (and protected,
+-- when not inherited) members and types of the old package that the moved class uses, and members or the class
+-- itself, when not public, that the old package's other classes use. Text pass (comments and strings blanked)
+-- finds the candidates, jdt.ls `textDocument/references` on a member confirms the use (a name that merely appears
+-- is not a conflict); a references request that gives no answer makes it "possible". Moving between source roots
+-- (main <-> test) adds: a main class that would depend on test code; a test class using test libraries moved to main.
+M.conflict_ms = 3000 -- per references request
+M.conflict_refs_max = 30 -- references requests per analysis; the rest are reported as "not checked"
+
+local function blank_code(src)
+  src = src:gsub("/%*.-%*/", function(m) return (m:gsub("[^\n]", " ")) end)
+  src = src:gsub('"""(.-)"""', function(m) return '""' .. (m:gsub("[^\n]", " ")) end)
+  src = src:gsub('"[^"\n]*"', '""'):gsub("'[^'\n]*'", "''"):gsub("//[^\n]*", "")
+  return src
+end
+
+--- { name, kind, public, members = { { name, vis, line, col } } } of the file's own top-level type, text only.
+--- vis: "public", "private", "protected" or "package". Interface members are public; enum and record bodies are
+--- not listed (constants, components).
+local function type_facts(path)
+  local own = vim.fn.fnamemodify(path, ":t:r")
+  local src = blank_code(table.concat(lines_of(path), "\n"))
+  local facts = { name = own, public = false, kind = nil, members = {}, extends = {} }
+  local depth = 0
+  local in_own = false
+  local i = 0
+  for line in (src .. "\n"):gmatch("(.-)\n") do
+    i = i + 1
+    local d0 = depth
+    if d0 == 0 then
+      local mods, kw = line:match("^(.-)%f[%w_$](class)%s+" .. vim.pesc(own) .. "%f[^%w_$]")
+      if not kw then mods, kw = line:match("^(.-)%f[%w_$](interface)%s+" .. vim.pesc(own) .. "%f[^%w_$]") end
+      if not kw then mods, kw = line:match("^(.-)%f[%w_$](enum)%s+" .. vim.pesc(own) .. "%f[^%w_$]") end
+      if not kw then mods, kw = line:match("^(.-)%f[%w_$](record)%s+" .. vim.pesc(own) .. "%f[^%w_$]") end
+      if kw then
+        in_own, facts.kind = true, kw
+        facts.public = (mods .. " "):find("%f[%w_$]public%f[^%w_$]") ~= nil
+        local ext = line:match("extends%s+([%w_$.<>, ]+)")
+        if ext then facts.extends[#facts.extends + 1] = ext end
+      end
+    elseif d0 == 1 and in_own and (facts.kind == "class" or facts.kind == "interface") then
+      local head = line:gsub("@[%w_.]+%b()", ""):gsub("@[%w_.]+", "")
+      head = head:match("^([^{;=]*)") or ""
+      local name, vis
+      local pm = head:match("([%a_$][%w_$]*)%s*%(")
+      if pm and not head:match("^%s*}") then name = pm
+      else name = (line:gsub("@[%w_.]+%b()", "")):match("([%a_$][%w_$]*)%s*[=;]") end
+      if name and not head:match("%f[%w_$]class%f[^%w_$]") and not head:match("%f[%w_$]interface%f[^%w_$]")
+          and not head:match("%f[%w_$]enum%f[^%w_$]") and not head:match("%f[%w_$]record%f[^%w_$]") and not head:match("^%s*return") then
+        local h = head .. " "
+        if h:find("%f[%w_$]public%f[^%w_$]") or facts.kind == "interface" then vis = "public"
+        elseif h:find("%f[%w_$]private%f[^%w_$]") then vis = "private"
+        elseif h:find("%f[%w_$]protected%f[^%w_$]") then vis = "protected"
+        else vis = "package" end
+        local col = line:find(name, 1, true)
+        if col and (pm or line:find("[=;]")) then
+          facts.members[#facts.members + 1] = { name = name, vis = vis, line = i - 1, col = col - 1 }
+        end
+      end
+    end
+    for ch in line:gmatch("[{}]") do depth = depth + (ch == "{" and 1 or -1) end
+  end
+  return facts
+end
+M._type_facts = type_facts -- checks
+
+local function has_word(txt, w) return txt:find(word(w)) ~= nil end
+
+--- Files of package directory `rel_dir` (relative to a source root) in the given roots: { path }.
+local function package_files(roots, rel_dir)
+  local out = {}
+  for _, r in ipairs(roots) do
+    local d = r .. (rel_dir ~= "" and ("/" .. rel_dir) or "")
+    for name, kind in vim.fs.dir(d) do
+      if kind == "file" and name:match("%.java$") then out[#out + 1] = d .. "/" .. name end
+    end
+  end
+  table.sort(out)
+  return out
+end
+
+--- Conflicts of moving the class in `path` (package `pkg`, source root `src_root`) to `target` in `troot`.
+--- Returns a list of messages (empty = none) and the number of references requests made.
+function M._move_conflicts(client, buf, path, pkg, src_root, target, troot, roots)
+  local out, requests = {}, 0
+  local name = vim.fn.fnamemodify(path, ":t:r")
+  local project = require("nv4j.root").project(path)
+  local mtxt = blank_code(table.concat(lines_of(path), "\n"))
+  local mfacts = type_facts(path)
+  local function add(s) out[#out + 1] = s end
+  local function refs(p, l, c)
+    if requests >= M.conflict_refs_max then return nil end
+    requests = requests + 1
+    local res = client:request_sync("textDocument/references", { textDocument = { uri = vim.uri_from_fname(p) },
+      position = { line = l, character = c }, context = { includeDeclaration = false } }, M.conflict_ms, buf)
+    if not res or res.err or type(res.result) ~= "table" then return nil end
+    local files = {}
+    for _, r in ipairs(res.result) do
+      if r.uri and r.uri:match("^file:") then files[vim.uri_to_fname(r.uri)] = true end
+    end
+    return files
+  end
+  if pkg ~= target and pkg ~= "" then
+    local pdir = pkg:gsub("%.", "/")
+    local use_roots = {}
+    for _, r in ipairs(roots) do
+      if not (src_root:match("/src/main/java$") and r:match("/src/test/java$")) then use_roots[#use_roots + 1] = r end
+    end
+    local pkg_label = pkg
+    -- what the moved class uses from the old package
+    for _, f in ipairs(package_files(use_roots, pdir)) do
+      if f ~= path then
+        local ff = type_facts(f)
+        local ftxt
+        if ff.kind and not ff.public and has_word(mtxt, ff.name) then
+          add(("%s uses %s, a package-private %s of %s (not visible from %s)"):format(name, ff.name, ff.kind or "type", pkg_label, target))
+        elseif ff.public or ff.kind then
+          for _, m in ipairs(ff.members) do
+            if (m.vis == "package" or m.vis == "protected") and has_word(mtxt, m.name)
+                and not (m.vis == "protected" and vim.iter(mfacts.extends):any(function(e) return e:find(word(ff.name)) end)) then
+              ftxt = ftxt or true
+              local got = refs(f, m.line, m.col)
+              if got == nil or got[path] then
+                add(("%s uses %s%s of %s, which is %s (not visible from %s)%s"):format(name, m.name, ff.kind == "interface" and "" or "()", ff.name,
+                  m.vis == "protected" and "protected" or "package-private", target, got == nil and " [possible: jdt.ls gave no answer]" or ""))
+              end
+            end
+          end
+        end
+      end
+    end
+    -- what the old package's other classes use from the moved class
+    local others = {}
+    for _, f in ipairs(package_files(roots, pdir)) do
+      if f ~= path then others[#others + 1] = { path = f, txt = blank_code(table.concat(lines_of(f), "\n")) } end
+    end
+    if not mfacts.public then
+      for _, o in ipairs(others) do
+        if has_word(o.txt, name) then
+          add(("%s is package-private and %s (%s) uses it (not visible from %s)"):format(name, vim.fs.basename(o.path):sub(1, -6), pkg_label, target))
+        end
+      end
+    end
+    for _, m in ipairs(mfacts.members) do
+      if m.vis == "package" or m.vis == "protected" then
+        local cand = vim.tbl_filter(function(o)
+          return has_word(o.txt, m.name) and not (m.vis == "protected" and o.txt:find("extends%s+" .. word(name)))
+        end, others)
+        if #cand > 0 then
+          local got = refs(path, m.line, m.col)
+          if got == nil then
+            add(("%s() of %s is %s and may be used by %s (not visible from %s) [possible: jdt.ls gave no answer]"):format(m.name, name,
+              m.vis == "protected" and "protected" or "package-private", vim.fs.basename(cand[1].path):sub(1, -6), target))
+          else
+            for _, o in ipairs(cand) do
+              if got[o.path] then
+                add(("%s%s of %s is %s and %s (%s) uses it (not visible from %s)"):format(m.name, "()", name,
+                  m.vis == "protected" and "protected" or "package-private", vim.fs.basename(o.path):sub(1, -6), pkg_label, target))
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+  -- across source roots
+  if troot ~= src_root then
+    if troot:match("/src/test/java$") and src_root:match("/src/main/java$") then
+      for _, r in ipairs(roots) do
+        if r:match("/src/main/java$") then
+          for n2, kind in vim.fs.dir(r, { depth = 32 }) do
+            if kind == "file" and n2:match("%.java$") and r .. "/" .. n2 ~= path
+                and has_word(blank_code(table.concat(lines_of(r .. "/" .. n2), "\n")), name) then
+              add(("main code would depend on test code: %s uses %s, which moves to %s"):format(rel(r .. "/" .. n2, project), name, rel(troot, project)))
+            end
+          end
+        end
+      end
+    elseif troot:match("/src/main/java$") and src_root:match("/src/test/java$") then
+      for _, l in ipairs(lines_of(path)) do
+        if l:match("^%s*import%s+static%s+org%.junit") or l:match("^%s*import%s+org%.junit") or l:match("^%s*import%s+org%.testng")
+            or l:match("^%s*import%s+org%.mockito") or l:match("^%s*import%s+org%.assertj") or l:match("^%s*import%s+org%.hamcrest")
+            or l:match("^%s*import%s+org%.springframework%.boot%.test") or l:match("^%s*import%s+org%.springframework%.test") then
+          add(("%s uses test libraries (%s) that are not on the main classpath"):format(name, vim.trim(l):gsub("^import%s+static%s+", ""):gsub("^import%s+", ""):gsub(";.*", "")))
+          break
+        end
+      end
+    end
+  end
+  return out, requests
+end
+
 --- Moves the class at the cursor (the file's own top-level type) to package opts.package (picked with
---- vim.ui.select / vim.ui.input when missing): the file moves to that package's folder in the same source
---- root (created when missing), its `package` line and every import/reference updated by jdt.ls, touched
---- files written (unsaved ones left unsaved), the buffer re-pointed (undo kept), a summary shown.
---- Refused with nothing changed: invalid package, same package (a message), a class of that name already
---- in the target package (any source root), cursor in a nested/second type. opts.on_done(ok) afterwards.
+--- vim.ui.select / vim.ui.input when missing) of this source root, or of opts.root ("main", "test", another
+--- `src/<set>/java` name, or its absolute path): the file moves to that package's folder (created when
+--- missing), its `package` line and every import/reference updated by jdt.ls, touched files written (unsaved
+--- ones left unsaved), the buffer re-pointed (undo kept), a summary shown. With the cursor on a reference to
+--- another class of the project (textDocument/definition resolves it to another file), that class moves, as
+--- in IntelliJ; a library class is refused. Before the move, conflicts (package-private members used across
+--- the package border, main code depending on test code, see M._move_conflicts) are listed and the user is
+--- asked (vim.ui.select); opts.force = true moves without asking (the conflicts stay in the summary).
+--- Refused with nothing changed: invalid package, same package and root (a message), a class of that name
+--- already in the target package (any source root), cursor in a nested/second type. opts.on_done(ok) afterwards.
 --- Returns ok (nil while prompting).
 function M.move(opts)
   opts = opts or {}
@@ -1273,93 +1923,183 @@ function M.move(opts)
   if not (path:match("%.java$") and src_root) then
     return refuse("this file is not a .java file in a source root (src/<set>/java)")
   end
-  local t_sym = vim.uv.hrtime()
-  local name, why = movable_type(buf, client, path)
-  local symbols_ms = (vim.uv.hrtime() - t_sym) / 1e6
-  if not name then return refuse(why .. "; nothing changed") end
   local project = require("nv4j.root").project(path)
+  -- the cursor on a reference to another class: that class moves (IntelliJ F6); a library class is refused
+  local name, why
+  local cword = vim.fn.expand("<cword>")
+  local cur = vim.api.nvim_win_get_cursor(0)
+  local at = (vim.api.nvim_get_current_line():sub(cur[2] + 1, cur[2] + 1))
+  if cword:match("^%u[%w_$]*$") and cword:match("%l") and at:match("[%w_$]") and cword ~= vim.fn.fnamemodify(path, ":t:r") then
+    local res = client:request_sync("textDocument/definition", { textDocument = { uri = vim.uri_from_bufnr(buf) },
+      position = { line = cur[1] - 1, character = cur[2] } }, M.symbols_timeout_ms, buf)
+    local loc = res and res.result
+    if type(loc) == "table" and loc.uri == nil and loc.targetUri == nil then loc = loc[1] end
+    local uri = type(loc) == "table" and (loc.uri or loc.targetUri)
+    if uri and uri ~= vim.uri_from_bufnr(buf) then
+      if uri:sub(1, 5) ~= "file:" then
+        return refuse(("%s is a library class (%s); only classes of this project can be moved; nothing changed"):format(cword, uri:match("^(%a+):") or "jar"))
+      end
+      local rp = vim.fs.normalize(vim.uri_to_fname(uri))
+      local rsr = rp:match("%.java$") and src_root_of(vim.fs.dirname(rp))
+      if not (rsr and under(rp, project)) then
+        return refuse(("%s is declared outside this project's source roots (%s); only classes of this project can be moved; nothing changed"):format(cword, rp))
+      end
+      if vim.fn.fnamemodify(rp, ":t:r") ~= cword or not declares_own_type(rp) then
+        return refuse(("%s is not a top-level class of its own file (%s): only those move; nothing changed"):format(cword, rel(rp, project)))
+      end
+      path, name = rp, cword
+      src_root, pkg = src_root_of(vim.fs.dirname(path))
+    end
+  end
+  local symbols_ms = 0
+  if not name then
+    local t_sym = vim.uv.hrtime()
+    name, why = movable_type(buf, client, path)
+    symbols_ms = (vim.uv.hrtime() - t_sym) / 1e6
+    if not name then return refuse(why .. "; nothing changed") end
+  end
   local modroot = module_root(path)
   local roots = source_roots(modroot, src_root)
-  local function run(target)
+  local function root_named(spec)
+    if spec == nil then return src_root end
+    for _, r in ipairs(roots) do
+      if r == spec or r:match("/src/" .. vim.pesc(spec) .. "/java$") then return r end
+    end
+  end
+  local function run(target, troot)
     if target == nil then return done(false) end -- cancelled
     target = vim.trim(target)
     if target == "" then return done(false) end
+    troot = troot or root_named(opts.root)
+    if not troot then
+      return refuse(("'%s' is not a source root of this module (%s); nothing changed"):format(tostring(opts.root),
+        table.concat(vim.tbl_map(function(r) return rel(r, modroot) end, roots), ", ")), vim.log.levels.ERROR)
+    end
     for _, part in ipairs(vim.split(target, ".", { plain = true })) do
       if not valid_identifier(part) then
         return refuse(("'%s' is not a valid package name; nothing changed"):format(target), vim.log.levels.ERROR)
       end
     end
-    if target == pkg then
+    if target == pkg and troot == src_root then
       return refuse(("%s is already in package %s; nothing to do"):format(name, target), vim.log.levels.INFO)
     end
     local rel_to = target:gsub("%.", "/") .. "/" .. name .. ".java"
     for _, r in ipairs(roots) do
-      if vim.uv.fs_stat(r .. "/" .. rel_to) then
+      if r .. "/" .. rel_to ~= path and vim.uv.fs_stat(r .. "/" .. rel_to) then
         return refuse(("%s.%s already exists (%s); nothing changed, nothing overwritten"):format(target, name,
           rel(r .. "/" .. rel_to, project)), vim.log.levels.ERROR)
       end
     end
-    local to = src_root .. "/" .. rel_to
-    -- the target package's folder (and parents) when missing; jdt.ls is told so it can compute the move
-    local created, d = {}, vim.fs.dirname(to)
-    while not vim.uv.fs_stat(d) do
-      table.insert(created, 1, d)
-      d = vim.fs.dirname(d)
-    end
-    for _, dir in ipairs(created) do
-      if not vim.uv.fs_mkdir(dir, 493) then
-        for j = #created, 1, -1 do vim.uv.fs_rmdir(created[j]) end
-        return refuse(("could not create %s; nothing changed"):format(rel(dir, project)), vim.log.levels.ERROR)
+    local to = troot .. "/" .. rel_to
+    local function proceed(conflicts)
+      -- the target package's folder (and parents) when missing; jdt.ls is told so it can compute the move
+      local created, d = {}, vim.fs.dirname(to)
+      while not vim.uv.fs_stat(d) do
+        table.insert(created, 1, d)
+        d = vim.fs.dirname(d)
       end
-    end
-    if #created > 0 then
-      client:notify("workspace/didChangeWatchedFiles", { changes = vim.tbl_map(function(p)
-        return { uri = vim.uri_from_fname(p), type = 1 }
-      end, created) })
-    end
-    -- notes: the class's test stays where it is (jdt.ls moves the one file); Spring component scanning
-    local info, warn = {}, {}
-    if #created > 0 then
-      info[#info + 1] = ("created package folder %s"):format(rel(created[#created], project))
-    end
-    for _, r in ipairs(roots) do
-      if r ~= src_root then
-        for _, suffix in ipairs({ "Test", "Tests", "IT" }) do
-          local t = r .. "/" .. (pkg or ""):gsub("%.", "/") .. "/" .. name .. suffix .. ".java"
-          if vim.uv.fs_stat(t) then
-            info[#info + 1] = ("%s stays in package %s (only %s moves; move it too with <leader>jm to keep them together)"):format(
-              rel(t, project), pkg ~= "" and pkg or "(default)", name)
+      for _, dir in ipairs(created) do
+        if not vim.uv.fs_mkdir(dir, 493) then
+          for j = #created, 1, -1 do vim.uv.fs_rmdir(created[j]) end
+          return refuse(("could not create %s; nothing changed"):format(rel(dir, project)), vim.log.levels.ERROR)
+        end
+      end
+      if #created > 0 then
+        client:notify("workspace/didChangeWatchedFiles", { changes = vim.tbl_map(function(p)
+          return { uri = vim.uri_from_fname(p), type = 1 }
+        end, created) })
+      end
+      -- notes: the class's test stays where it is (jdt.ls moves the one file); Spring component scanning
+      local info, warn = {}, {}
+      if troot ~= src_root then
+        info[#info + 1] = ("moved from %s to %s"):format(rel(src_root, modroot), rel(troot, modroot))
+      end
+      if #created > 0 then
+        info[#info + 1] = ("created package folder %s"):format(rel(created[#created], project))
+      end
+      if #conflicts > 0 then
+        warn[#warn + 1] = ("conflicts accepted: %s"):format(table.concat(conflicts, "; "))
+      end
+      for _, r in ipairs(roots) do
+        if r ~= src_root and troot == src_root then
+          for _, suffix in ipairs({ "Test", "Tests", "IT" }) do
+            local t = r .. "/" .. (pkg or ""):gsub("%.", "/") .. "/" .. name .. suffix .. ".java"
+            if vim.uv.fs_stat(t) then
+              info[#info + 1] = ("%s stays in package %s (only %s moves; move it too with <leader>jm to keep them together)"):format(
+                rel(t, project), pkg ~= "" and pkg or "(default)", name)
+            end
           end
         end
       end
-    end
-    local sw = spring_scan_warning(path, modroot, name, target)
-    if sw then warn[#warn + 1] = sw end
-    local label = ("Moved class %s to package %s"):format(name, target)
-    local ok = M.rename_paths({ { path, to } }, label, client,
-      { stale = { names = move_names(name, pkg), old = (pkg ~= "" and (pkg .. ".") or "") .. name }, info = info, warn = warn })
-    if not ok then
-      -- nothing moved (or part-way): the folders made for it go when empty
-      local gone = {}
-      for j = #created, 1, -1 do
-        if vim.uv.fs_rmdir(created[j]) then gone[#gone + 1] = { uri = vim.uri_from_fname(created[j]), type = 3 } end
+      local sw = troot:match("/src/main/java$") and spring_scan_warning(path, modroot, name, target)
+      if sw then warn[#warn + 1] = sw end
+      local label = ("Moved class %s to package %s"):format(name, target)
+      local ok = M.rename_paths({ { path, to } }, label, client,
+        { stale = target ~= pkg and { names = move_names(name, pkg), old = (pkg ~= "" and (pkg .. ".") or "") .. name } or nil,
+          info = info, warn = warn, same_package = target == pkg or nil })
+      if not ok then
+        -- nothing moved (or part-way): the folders made for it go when empty
+        local gone = {}
+        for j = #created, 1, -1 do
+          if vim.uv.fs_rmdir(created[j]) then gone[#gone + 1] = { uri = vim.uri_from_fname(created[j]), type = 3 } end
+        end
+        if #gone > 0 then client:notify("workspace/didChangeWatchedFiles", { changes = gone }) end
+      elseif M.last then
+        M.last.created, M.last.symbols_ms, M.last.conflicts = created, symbols_ms, conflicts
       end
-      if #gone > 0 then client:notify("workspace/didChangeWatchedFiles", { changes = gone }) end
-    elseif M.last then
-      M.last.created, M.last.symbols_ms = created, symbols_ms
+      return done(ok)
     end
-    return done(ok)
+    local t_conf = vim.uv.hrtime()
+    local conflicts, requests = M._move_conflicts(client, buf, path, pkg, src_root, target, troot, roots)
+    M.last_conflict_check = { ms = (vim.uv.hrtime() - t_conf) / 1e6, requests = requests, conflicts = conflicts }
+    if #conflicts == 0 then return proceed(conflicts) end
+    local text = ("Move class %s to %s%s: %d conflict(s): %s"):format(name, target,
+      troot ~= src_root and (" (" .. rel(troot, modroot) .. ")") or "", #conflicts, table.concat(conflicts, "; "))
+    if opts.force then
+      notify(text .. ". Moving anyway (force)", vim.log.levels.WARN)
+      return proceed(conflicts)
+    end
+    notify(text, vim.log.levels.WARN)
+    vim.ui.select({ "Move anyway", "Cancel" }, { prompt = ("%d conflict(s) moving %s to %s (listed above): move anyway?"):format(#conflicts, name, target) },
+      function(choice)
+        if choice ~= "Move anyway" then
+          M.last = { label = "Move class " .. name, files = {}, ok = false, err = "cancelled", conflicts = conflicts }
+          return refuse(("cancelled by you because of %d conflict(s); nothing changed"):format(#conflicts), vim.log.levels.INFO)
+        end
+        return proceed(conflicts)
+      end)
   end
   if opts.package then return run(opts.package) end
   local NEW = "New package..."
-  local items = vim.tbl_filter(function(p) return p ~= pkg end, project_packages(roots))
-  items[#items + 1] = NEW
-  vim.ui.select(items, { prompt = ("Move class %s (package %s) to:"):format(name, pkg ~= "" and pkg or "(default)") }, function(choice)
-    if choice == NEW then
-      vim.ui.input({ prompt = ("Move class %s to package: "):format(name), default = pkg }, run)
-    else
-      run(choice)
+  local pick, items = {}, {}
+  for _, r in ipairs(roots) do
+    local tag = r == src_root and "" or ("  [" .. rel(r, modroot) .. "]")
+    for _, p in ipairs(project_packages({ r })) do
+      if not (p == pkg and r == src_root) then
+        local label = p .. tag
+        items[#items + 1] = label
+        pick[label] = { p, r }
+      end
     end
+  end
+  items[#items + 1] = NEW
+  for _, r in ipairs(roots) do
+    if r ~= src_root then
+      local label = ("New package in %s..."):format(rel(r, modroot))
+      items[#items + 1] = label
+      pick[label] = { nil, r }
+    end
+  end
+  vim.ui.select(items, { prompt = ("Move class %s (package %s) to:"):format(name, pkg ~= "" and pkg or "(default)") }, function(choice)
+    if choice == nil then return done(false) end
+    local pk = pick[choice]
+    local function typed(r)
+      vim.ui.input({ prompt = ("Move class %s to package: "):format(name), default = pkg }, function(v) run(v, r) end)
+    end
+    if choice == NEW then typed(src_root)
+    elseif pk and pk[1] == nil then typed(pk[2])
+    elseif pk then run(pk[1], pk[2])
+    else run(choice) end
   end)
 end
 

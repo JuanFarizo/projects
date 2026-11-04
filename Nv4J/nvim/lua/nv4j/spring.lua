@@ -180,6 +180,26 @@ local registered = setmetatable({}, { __mode = "k" })
 -- classpath_args: the Spring LS's addClasspathListener arguments while a listener is wanted (tests read/restore it)
 local state = { registered = registered }
 M._state = state
+-- classpath events received per jdt.ls client id: { n = count, last = "<first argument, short>", at = ms }. Debug evidence for
+-- the two_boot_index flake (check 50 quotes it): was a classpath event for B's jdt.ls ever delivered to the Spring LS?
+state.events = {}
+local wrapped_cb = setmetatable({}, { __mode = "k" })
+
+--- Count the events the listener callback `id` (a vim.lsp.commands entry set by spring_boot.nvim) receives, per client.
+local function count_events(id)
+  local cb = id and vim.lsp.commands[id]
+  if type(cb) ~= "function" or wrapped_cb[cb] then return end
+  local function counted(param, ctx)
+    local cid = ctx and ctx.client_id or 0
+    local e = state.events[cid] or { n = 0 }
+    state.events[cid] = e
+    e.n, e.at = e.n + 1, vim.uv.now()
+    e.last = (type(param) == "table" and type(param[1]) == "string") and param[1]:sub(1, 120) or type(param)
+    return cb(param, ctx)
+  end
+  wrapped_cb[counted] = true
+  vim.lsp.commands[id] = counted
+end
 
 -- A jdt.ls that rejects addClasspathListener (error reply, e.g. its Spring bundle not active yet on a loaded
 -- machine) would never send that project's classpath to the Spring LS: retried RETRIES times, RETRY_MS * 2^n apart.
@@ -222,6 +242,7 @@ function M.route_jdtls()
   jdtls_mod.execute_command = function(command, param, timeout_ms)
     if command == ADD or command == REMOVE then
       state.classpath_args = command == ADD and param or nil
+      if command == ADD and param then count_events(param[1]) end
       local list = boot_clients()
       if #list == 0 then return vim.NIL end -- none yet: LspAttach registers each one as it starts
       local primary = M.route_client(nil)
@@ -366,7 +387,10 @@ local function start()
     log_level = "warn",
     -- Same as the VS Code client (vscode-spring-boot Main.ts): no web server in the LS process,
     -- and Boot's nested jars open on newer JDKs.
-    jvm_args = { "-Dspring.main.web-application-type=NONE", "-Djdk.util.zip.disableZip64ExtraFieldValidation=true" },
+    jvm_args = vim.list_extend({ "-Dspring.main.web-application-type=NONE", "-Djdk.util.zip.disableZip64ExtraFieldValidation=true" },
+      -- debug only (NV4J_LSP_CAPTURE=1 / vim.g.nv4j_lsp_capture): the index's own log lines ("scan java files done, number of
+      -- index elements created: N" per project) into spring-boot-ls.log
+      require("nv4j.lspcapture").enabled() and { "-Dlogging.level.org.springframework.ide.vscode.boot.java.utils.SpringIndexerJava=INFO" } or {}),
     jdtls_name = "jdtls",
     -- One Spring LS process for every Boot project in the session; sts/* pick jdt.ls by projectUri.
     server = {

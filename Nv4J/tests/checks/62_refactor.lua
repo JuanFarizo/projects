@@ -139,6 +139,17 @@
 --                       conflicts named after the move; move_revalidates: jdt.ls told to validate every open file after a move.
 --  rename_class_tests (+ _off, _conflict), undo_class_tests: test classes renamed along (InvoiceTest -> BillTest), the decoy
 --                       InvoiceServiceTest not; undo_last brings everything back. undo_move, undo_package, undo_nothing: <leader>ju.
+-- IntelliJ gaps round (specs/features/refactors.md): older cases call rename_class/move through a wrapper that defaults variables = false,
+-- subclasses = false, force = true (they predate the new defaults); the new cases call the real functions.
+--  rename_class_variables (+ _undo), _off, _parse: Bill invoice / List<Bill> invoices / pendingInvoice / parameters renamed with the class, a taken
+--                       name skipped with a warning, InvoiceImpl -> BillImpl; variables/subclasses = false; the naming rule and declaration finder (unit).
+--  move_cross_root (+ _undo), _new_package, _depends, _test_libs, _picker: move between src/main/java and src/test/java (same package: only the file
+--                       moves), main code depending on test code and JUnit in main asked first, the picker lists both roots.
+--  move_conflicts_asked (+ _undo), _force_none, _no_answer: package-private Rounding / net() listed and asked BEFORE the move; Cancel changes nothing;
+--                       force skips the question; no references answer = "possible".
+--  move_reference_cursor (+ _undo), move_reference_library: the class under the cursor (another file) moves; String (jdt://) refused.
+--  rename_package_merge (+ _undo), _merge_clash: demo.shop merged into demo.billing (main, test, subpackage); a shared class name refuses.
+--  Every undo case compares the whole source tree with the state before the refactor, byte for byte.
 -- The fixture is snapshot before and restored after every case (tests/lib/fixture.lua), jdt.ls told.
 -- Development: NV4J_CASE=<Lua pattern> runs only the matching cases. jdt.ls answers a very first rename with
 -- the declaration only (no references) when nothing warmed it: run a group (e.g. '^rename_class_[uc]'), not a single case.
@@ -171,6 +182,25 @@ if not client then return lsp.finish() end
 pcall(require, "config.keymaps")
 
 local ok_mod, refactor = pcall(require, "nv4j.refactor")
+-- The product renames variables/inheritors with the class and asks before a move with conflicts (IntelliJ's defaults).
+-- Every older case here predates that and asserts the plain rename/move: through this wrapper they default to
+-- variables = false, subclasses = false and force = true. The new cases (the "IntelliJ gaps" block) call the real
+-- functions: rc_orig (rename defaults on) and refactor.move with force = false.
+local rc_orig, mv_orig
+if ok_mod then
+  rc_orig, mv_orig = refactor.rename_class, refactor.move
+  refactor.rename_class = function(o)
+    o = o or {}
+    if o.variables == nil then o.variables = false end
+    if o.subclasses == nil then o.subclasses = false end
+    return rc_orig(o)
+  end
+  refactor.move = function(o)
+    o = o or {}
+    if o.force == nil then o.force = true end
+    return mv_orig(o)
+  end
+end
 -- Built per function (Task 4 is split: 4a rename class/package, 4b move, 4c inline, 4d change
 -- signature, 4e safe delete): each case uses its function when it exists, else today's path; `api` and
 -- `keys` check the built ones and list the rest as pending (a pending case still fails on its own).
@@ -697,6 +727,8 @@ end)
 -- nothing changed, an error message each.
 case("rename_package_conflict", function()
   if not has("rename_package") then return lsp.report(P .. "rename_package_conflict", false, "pending: no nv4j.refactor.rename_package") end
+  -- demo.shop -> demo.billing merges when no name clashes (case rename_package_merge); a planted demo.shop.Invoice clashes
+  local f = assert(io.open(main .. "demo/shop/Invoice.java", "w")); f:write("package demo.shop;\n\npublic class Invoice {\n}\n"); f:close()
   local chk = lsp.open(CHECKOUT)
   vim.api.nvim_set_current_buf(chk); vim.api.nvim_win_set_cursor(0, { 1, 0 })
   local got, stop = capture()
@@ -707,6 +739,7 @@ case("rename_package_conflict", function()
   local m1 = find_msg(got, "already exists", vim.log.levels.ERROR)
   local m2 = find_msg(got, "into itself", vim.log.levels.ERROR)
   local d = F.diff(snap)
+  d.added = vim.tbl_filter(function(p) return p ~= main .. "demo/shop/Invoice.java" end, d.added) -- the planted clash
   lsp.report(P .. "rename_package_conflict", m1 ~= nil and m2 ~= nil and #d.added + #d.changed + #d.missing + #d.dirs == 0
     and loaded(CHECKOUT) ~= nil and not vim.bo[chk].modified,
     ("existing: %s; into itself: %s; disk %s"):format(tostring(m1), tostring(m2), F.fmt(d)))
@@ -4308,6 +4341,471 @@ case("undo_nothing", function()
   stop()
   local m = find_msg(got, "nothing to undo", vim.log.levels.WARN)
   lsp.report(P .. "undo_nothing", r == false and m ~= nil, "returned " .. tostring(r) .. "; message " .. tostring(m))
+end)
+
+-- ── IntelliJ gaps (D23, specs/features/refactors.md "IntelliJ behaviour vs Nv4J") ─────────────────────────────────
+-- 1 (related tests that merely contain the name): not built, see the spec. 2: variables and inheritors renamed with the
+-- class. 3: move between source roots. 4: package-private conflicts asked BEFORE the move. 5: F6 on a reference to another
+-- class. 6: a package renamed into an existing package merges. Each has a case that undoes with <leader>ju and compares the
+-- whole source tree byte for byte with the state before the refactor (`base`).
+local function write_file(p, s)
+  vim.fn.mkdir(vim.fs.dirname(p), "p")
+  local f = assert(io.open(p, "w")); f:write(s); f:close()
+end
+local function plant_files(files)
+  local list = {}
+  for p, s in pairs(files) do write_file(p, s); list[#list + 1] = p end
+  table.sort(list)
+  for _, p in ipairs(list) do lsp.open(p) end
+  vim.wait(6000, function()
+    for _, p in ipairs(list) do
+      if (published_at[vim.uri_from_fname(p)] or 0) == 0 then return false end
+    end
+    return true
+  end, 20)
+  return list
+end
+local function undo_matches(base, budget)
+  local t1, ures = E.now(), {}
+  refactor.undo_last({ on_done = function(o) ures.done = o end })
+  local uok = done_wait(ures)
+  local ums = E.now() - t1
+  vim.wait(500, function() return false end, 20)
+  local d = F.diff(base)
+  local first = {}
+  for _, p in ipairs(d.changed) do
+    local a, b = vim.split(base.files[p] or "", "\n"), vim.split(disk(p) or "", "\n")
+    for i = 1, math.max(#a, #b) do
+      if a[i] ~= b[i] then first[#first + 1] = ("%s:%d was %q now %q"):format(vim.fs.basename(p), i, a[i] or "", b[i] or ""); break end
+    end
+  end
+  return uok and #d.added + #d.missing + #d.changed == 0 and ums <= (budget or APPLY_MS), ("undo_last done %s in %d ms; tree vs before: %s%s"):format(tostring(ures.done), ums, F.fmt(d),
+    #first > 0 and (" (" .. table.concat(first, "; ") .. ")") or "")
+end
+local rc_default = rc_orig
+local function results(a, all)
+  local parts = {}
+  for _, x in ipairs(a) do all = all and x[2]; parts[#parts + 1] = x[1] .. " " .. (x[2] and "ok" or "WRONG") end
+  return all, table.concat(parts, ", ")
+end
+
+local VARS = main .. "demo/shop/Vars.java"
+local CLASH = main .. "demo/shop/Clash.java"
+local IMPL = main .. "demo/billing/InvoiceImpl.java"
+local VAR_FILES = {
+  [VARS] = "package demo.shop;\n\nimport java.util.List;\n\nimport demo.billing.Invoice;\n\npublic class Vars {\n    Invoice invoice;\n    List<Invoice> invoices;\n    Invoice pendingInvoice;\n    Invoice other;\n    String invoiceName = \"x\";\n\n    int use(Invoice invoice) {\n        Invoice invoiceCopy = invoice;\n        return invoiceCopy.quantity();\n    }\n}\n",
+  [CLASH] = "package demo.shop;\n\nimport demo.billing.Invoice;\n\npublic class Clash {\n    Invoice invoice;\n    String bill = \"taken\";\n}\n",
+  [IMPL] = "package demo.billing;\n\npublic class InvoiceImpl extends Invoice {\n    public InvoiceImpl() {\n        super(1, 1);\n    }\n}\n",
+}
+
+-- unit: the variable naming rule and the declaration finder
+case("rename_class_variables_parse", function()
+  local nn = refactor._var_new_name
+  local want = { { "invoice", "bill" }, { "invoices", "bills" }, { "invoiceList", "billList" }, { "pendingInvoice", "pendingBill" },
+    { "pendingInvoices", "pendingBills" }, { "invoiceX", "billX" } }
+  local bad = {}
+  for _, w in ipairs(want) do
+    if nn(w[1], "Invoice", "Bill") ~= w[2] then bad[#bad + 1] = w[1] .. "=" .. tostring(nn(w[1], "Invoice", "Bill")) end
+  end
+  for _, n in ipairs({ "invoicer", "total", "Invoice", "bill", "invoiceless" }) do
+    if nn(n, "Invoice", "Bill") then bad[#bad + 1] = n .. " should stay" end
+  end
+  if nn("uRLParser", "URLParser", "Parser") then bad[#bad + 1] = "acronym class" end
+  local d = refactor._var_decls
+  local function names(line, t) return table.concat(vim.tbl_map(function(x) return x.name end, d(line, t)), ",") end
+  local cases = {
+    { "    Bill invoice = new Bill(1, 2);", "invoice" }, { "    private final List<Bill> invoices;", "invoices" },
+    { "    int f(Bill invoice, Bill other) {", "invoice,other" }, { "    Bill[] invoices;", "invoices" }, { "    void g(Bill... invoices) {", "invoices" },
+    { "    Map<String, List<Bill>> byName = null;", "byName" }, { "    // Bill invoice in a comment", "" }, { "    return new Bill(1, 2);", "" },
+    { "import demo.billing.Bill;", "" }, { "    demo.billing.Bill invoice;", "" }, { "    for (Bill invoice : all) {", "invoice" },
+  }
+  for _, c in ipairs(cases) do
+    if names(c[1], "Bill") ~= c[2] then bad[#bad + 1] = ("'%s' -> '%s' (want '%s')"):format(c[1]:gsub("^%s+", ""), names(c[1], "Bill"), c[2]) end
+  end
+  lsp.report(P .. "rename_class_variables_parse", #bad == 0, #bad == 0 and "naming rule and declaration finder as designed" or table.concat(bad, "; "))
+end)
+
+-- rename_class_variables (default on) + undo: variables declared with the type and inheritors follow Invoice -> Bill;
+-- a taken name is skipped with a warning; strings/other types stay; undo_last restores the tree byte for byte.
+case("rename_class_variables", function()
+  plant_audit()
+  plant_files(VAR_FILES)
+  local base = F.snapshot()
+  at_decl(INVOICE)
+  local got, stop = capture()
+  local res, t0 = {}, E.now()
+  rc_default({ name = "Bill", tests = false, on_done = function(ok) res.done = ok end })
+  local ok = done_wait(res)
+  local total = E.now() - t0
+  stop()
+  local vt, ct, calc, impl = disk(VARS), disk(CHECKOUT), disk(CALC), disk(main .. "demo/billing/BillImpl.java")
+  local warn = find_msg(got, "Renamed variables after Invoice -> Bill") or ""
+  local ex = refactor.last_extras or {}
+  local a = {
+    { "Vars: field, List, pending, copy, parameter", select(1, has_all(vt, { "Bill bill;", "List<Bill> bills;", "Bill pendingBill;", "Bill billCopy = bill;", "int use(Bill bill)" })) },
+    { "other names/types untouched (other, invoiceName String)", select(1, has_all(vt, { "Bill other;", 'String invoiceName = "x";' })) },
+    { "Checkout and PriceCalculator parameters", select(1, has_all(ct, { "payTwice(Bill bill)", "calculator.total(bill) + calculator.total(bill)" })) and select(1, has_all(calc, { "total(Bill bill)", "gross(bill)" })) },
+    { "taken name skipped: Clash.java keeps `Bill invoice`", select(1, has_all(disk(CLASH), { "Bill invoice;", 'String bill = "taken"' })) and warn:find("Clash.java", 1, true) ~= nil },
+    { "inheritor InvoiceImpl -> BillImpl (file, class, extends Bill)", select(1, has_all(impl, { "public class BillImpl extends Bill", "public BillImpl()" })) and vim.uv.fs_stat(IMPL) == nil },
+    { "summary lists the variables", warn:find("Vars.java:", 1, true) ~= nil and #(ex.vars or {}) >= 8 },
+    { ("whole rename %d ms (class <= %d plus variables/inheritors <= %d)"):format(total, APPLY_MS, 2 * APPLY_MS), total <= 3 * APPLY_MS },
+  }
+  local all, txt = results(a, ok)
+  local ok_clean, why = clean({ VARS, CHECKOUT, CALC, BILL, main .. "demo/billing/BillImpl.java" }, t0)
+  lsp.report(P .. "rename_class_variables", all and ok_clean, txt .. (ok_clean and "; build clean" or ("; NOT clean: " .. why)))
+  local uok, utxt = undo_matches(base, 6 * APPLY_MS)
+  lsp.report(P .. "rename_class_variables_undo", uok, utxt)
+end)
+
+-- rename_class_variables_undo_no_jdtls (deterministic twin of an intermittent miss): undo restores the variables from the edits
+-- recorded at rename time, so a jdt.ls that refuses or misses a variable rename (stubbed: every lower-case rename errors) cannot leave one
+-- renamed. The class rename itself is undone through jdt.ls as before.
+case("rename_class_variables_undo_no_jdtls", function()
+  plant_audit()
+  plant_files(VAR_FILES)
+  local base = F.snapshot()
+  at_decl(INVOICE)
+  local res = {}
+  rc_default({ name = "Bill", tests = false, on_done = function(ok) res.done = ok end })
+  local ok = done_wait(res)
+  local real = client.request
+  local refused = 0
+  client.request = function(self, method, params, handler, bufnr)
+    if method == "textDocument/rename" and params.newName:match("^%l") then
+      refused = refused + 1
+      vim.schedule(function() handler({ code = -32603, message = "stub: variable rename refused" }, nil) end)
+      return true, 1
+    end
+    return real(self, method, params, handler, bufnr)
+  end
+  local uok, utxt = undo_matches(base, 6 * APPLY_MS)
+  client.request = real
+  lsp.report(P .. "rename_class_variables_undo_no_jdtls", ok and uok and refused == 0, utxt .. ("; stubbed variable renames asked of jdt.ls during undo: %d (must be 0)"):format(refused))
+end)
+
+-- rename_class_variables_off: variables = false, subclasses = false: only the class (and its references) changes.
+case("rename_class_variables_off", function()
+  plant_audit()
+  plant_files(VAR_FILES)
+  at_decl(INVOICE)
+  local res = {}
+  rc_default({ name = "Bill", tests = false, variables = false, subclasses = false, on_done = function(ok) res.done = ok end })
+  local ok = done_wait(res)
+  local a = {
+    { "variables untouched", select(1, has_all(disk(VARS), { "Bill invoice;", "List<Bill> invoices;", "int use(Bill invoice)" })) },
+    { "InvoiceImpl keeps its name and extends Bill", select(1, has_all(disk(IMPL), { "class InvoiceImpl extends Bill" })) and vim.uv.fs_stat(main .. "demo/billing/BillImpl.java") == nil },
+  }
+  local all, txt = results(a, ok)
+  lsp.report(P .. "rename_class_variables_off", all, txt)
+end)
+
+-- ── 3: move between source roots ─────────────────────────────────────────────────────────────────────────────
+local RATE = main .. "demo/billing/Rate.java"
+local RATE_T = TEST .. "demo/billing/Rate.java"
+local RATE_FILES = {
+  [RATE] = "package demo.billing;\n\npublic class Rate {\n    public static int of() {\n        return 2;\n    }\n}\n",
+  [TEST .. "demo/billing/RateTest.java"] = "package demo.billing;\n\nclass RateTest {\n    int r = Rate.of();\n}\n",
+  [TEST .. "demo/shop/RatePeek.java"] = "package demo.shop;\n\nimport demo.billing.Rate;\n\nclass RatePeek {\n    int r = Rate.of();\n}\n",
+}
+case("move_cross_root", function()
+  plant_files(RATE_FILES)
+  local base = F.snapshot()
+  local b = lsp.open(RATE)
+  vim.api.nvim_set_current_buf(b); vim.api.nvim_win_set_cursor(0, { 3, 14 })
+  local got, stop = capture()
+  local res, t0 = {}, E.now()
+  refactor.move({ package = "demo.billing", root = "test", on_done = function(ok) res.done = ok end })
+  local ok = done_wait(res)
+  local ms = E.now() - t0
+  stop()
+  local sum = find_msg(got, "Moved class Rate to package demo.billing") or ""
+  local rt = disk(RATE_T)
+  local a = {
+    { "Rate.java now in src/test/java, gone from main", rt ~= nil and vim.uv.fs_stat(RATE) == nil },
+    { "package line kept", select(1, has_all(rt, { "package demo.billing;", "public class Rate" })) },
+    { "other test class: import kept/valid", select(1, has_all(disk(TEST .. "demo/shop/RatePeek.java"), { "import demo.billing.Rate;" })) },
+    { "summary names the roots", sum:find("src/main/java to src/test/java", 1, true) ~= nil or sum:find("moved from", 1, true) ~= nil },
+    { ("applied in %d ms (budget %d)"):format(ms, APPLY_MS), ms <= APPLY_MS },
+  }
+  local all, txt = results(a, ok)
+  local ok_clean, why = clean({ RATE_T, TEST .. "demo/billing/RateTest.java", TEST .. "demo/shop/RatePeek.java" }, t0)
+  lsp.report(P .. "move_cross_root", all and ok_clean, txt .. (ok_clean and "; build clean" or ("; NOT clean: " .. why))
+    .. (all and "" or ("; messages: " .. table.concat(vim.tbl_map(function(m) return m.msg:sub(1, 300) end, got), " | "))))
+  local uok, utxt = undo_matches(base)
+  lsp.report(P .. "move_cross_root_undo", uok, utxt)
+end)
+
+-- a test class moved into src/main/java under a new package, back and forth: package line follows (new package), imports fixed.
+case("move_cross_root_new_package", function()
+  plant_files(RATE_FILES)
+  local base = F.snapshot()
+  local b = lsp.open(RATE)
+  vim.api.nvim_set_current_buf(b); vim.api.nvim_win_set_cursor(0, { 3, 14 })
+  local res, t0 = {}, E.now()
+  refactor.move({ package = "demo.pricing", root = "test", on_done = function(ok) res.done = ok end })
+  local ok = done_wait(res)
+  local MOVED = TEST .. "demo/pricing/Rate.java"
+  local a = {
+    { "in the test root, package demo.pricing", select(1, has_all(disk(MOVED), { "package demo.pricing;" })) },
+    { "users import it (RateTest, RatePeek)", select(1, has_all(disk(TEST .. "demo/billing/RateTest.java"), { "import demo.pricing.Rate;" })) and select(1, has_all(disk(TEST .. "demo/shop/RatePeek.java"), { "import demo.pricing.Rate;" })) },
+  }
+  local all, txt = results(a, ok)
+  lsp.report(P .. "move_cross_root_new_package", all, txt)
+  local uok, utxt = undo_matches(base)
+  lsp.report(P .. "move_cross_root_new_package_undo", uok, utxt)
+end)
+
+-- main -> test with a main class using it: the conflict is listed and asked; Cancel changes nothing; "Move anyway" moves.
+local RATE_USER = main .. "demo/shop/RateUser.java"
+case("move_cross_root_depends", function()
+  local files = vim.deepcopy(RATE_FILES)
+  files[RATE_USER] = "package demo.shop;\n\nimport demo.billing.Rate;\n\npublic class RateUser {\n    int r = Rate.of();\n}\n"
+  plant_files(files)
+  local base = F.snapshot()
+  local b = lsp.open(RATE)
+  vim.api.nvim_set_current_buf(b); vim.api.nvim_win_set_cursor(0, { 3, 14 })
+  local got, stop = capture()
+  local seen = answer_select_exact("Cancel")
+  local res = {}
+  refactor.move({ package = "demo.billing", root = "test", force = false, on_done = function(ok) res.done = ok end })
+  done_wait(res)
+  local listed = find_msg(got, "main code would depend on test code", vim.log.levels.WARN) or ""
+  local d1 = F.diff(base)
+  local a = {
+    { "question asked with Move anyway / Cancel", vim.deep_equal(seen.items, { "Move anyway", "Cancel" }) },
+    { "conflict names RateUser", listed:find("RateUser", 1, true) ~= nil },
+    { "Cancel: nothing changed", res.done == false and #d1.added + #d1.changed + #d1.missing == 0 },
+  }
+  if vim.uv.fs_stat(RATE) == nil then -- moved without a question
+    stop()
+    return lsp.report(P .. "move_cross_root_depends", false, "moved without asking although main code uses Rate; the question was " .. (seen.items and "asked" or "NOT asked"))
+  end
+  seen = answer_select_exact("Move anyway")
+  local res2 = {}
+  vim.api.nvim_set_current_buf(lsp.open(RATE)); vim.api.nvim_win_set_cursor(0, { 3, 14 })
+  refactor.move({ package = "demo.billing", root = "test", force = false, on_done = function(ok) res2.done = ok end })
+  local ok2 = done_wait(res2)
+  stop()
+  a[#a + 1] = { "Move anyway: moved", ok2 and vim.uv.fs_stat(RATE_T) ~= nil and vim.uv.fs_stat(RATE) == nil }
+  a[#a + 1] = { "summary keeps the accepted conflicts", (find_msg(got, "conflicts accepted") or ""):find("RateUser", 1, true) ~= nil }
+  local all, txt = results(a, true)
+  lsp.report(P .. "move_cross_root_depends", all, txt)
+  local uok, utxt = undo_matches(base)
+  lsp.report(P .. "move_cross_root_depends_undo", uok, utxt)
+end)
+
+-- test class with JUnit moved to src/main/java: the test-library warning
+case("move_cross_root_test_libs", function()
+  plant_audit()
+  local base = F.snapshot()
+  local b = lsp.open(ITEST)
+  vim.api.nvim_set_current_buf(b); vim.api.nvim_win_set_cursor(0, { 7, 8 })
+  local got, stop = capture()
+  local seen = answer_select_exact("Cancel")
+  local res = {}
+  refactor.move({ package = "demo.billing", root = "main", force = false, on_done = function(ok) res.done = ok end })
+  done_wait(res)
+  stop()
+  local listed = find_msg(got, "test libraries", vim.log.levels.WARN) or ""
+  local d1 = F.diff(base)
+  local all, txt = results({
+    { "asked, names the JUnit import", listed:find("org.junit", 1, true) ~= nil and seen.items ~= nil },
+    { "Cancel: nothing changed", res.done == false and #d1.added + #d1.changed + #d1.missing == 0 },
+  }, true)
+  lsp.report(P .. "move_cross_root_test_libs", all, txt)
+end)
+
+-- the picker lists the packages of the module's test root too (tagged), and "New package in <root>..."
+case("move_cross_root_picker", function()
+  local b = lsp.open(INVOICE)
+  vim.api.nvim_set_current_buf(b); vim.api.nvim_win_set_cursor(0, { 1, 0 })
+  local seen = answer_select_exact("demo.shop")
+  refactor.move({ force = true })
+  vim.wait(3000, function() return vim.uv.fs_stat(SHOP_INV) ~= nil end, 20)
+  local items = seen.items or {}
+  local function has_item(s) return vim.tbl_contains(items, s) end
+  lsp.report(P .. "move_cross_root_picker", has_item("demo.billing  [src/test/java]") and has_item("demo.shop") and has_item("New package...")
+    and has_item("New package in src/test/java...") and not has_item("demo.billing"),
+    "items: " .. table.concat(items, " | "))
+end)
+
+-- ── 4: package-private conflicts before the move ─────────────────────────────────────────────────────────────
+case("move_conflicts_asked", function()
+  -- only the three files that carry the package-private uses: jdt.ls reorders the static imports of the other planted
+  -- files when it touches them, which an exact byte comparison after undo would flag
+  plant_files({ [INVOICE] = AUDIT_FILES[INVOICE], [main .. "demo/billing/Rounding.java"] = AUDIT_FILES[main .. "demo/billing/Rounding.java"],
+    [HELPER] = AUDIT_FILES[HELPER] })
+  local base = F.snapshot()
+  at_decl(INVOICE)
+  local got, stop = capture()
+  local seen = answer_select_exact("Cancel")
+  local res = {}
+  local t0 = E.now()
+  refactor.move({ package = "demo.shop", force = false, on_done = function(ok) res.done = ok end })
+  done_wait(res)
+  local ms = E.now() - t0
+  local chk = refactor.last_conflict_check or {}
+  local listed = find_msg(got, "conflict(s)", vim.log.levels.WARN) or ""
+  local d1 = F.diff(base)
+  local a = {
+    { "package-private type Rounding named", listed:find("Rounding", 1, true) ~= nil },
+    { "package-private net() used by InvoiceHelper named", listed:find("net()", 1, true) ~= nil and listed:find("InvoiceHelper", 1, true) ~= nil },
+    { "asked before the move (Move anyway / Cancel)", vim.deep_equal(seen.items, { "Move anyway", "Cancel" }) and (seen.prompt or ""):find("move anyway", 1, true) ~= nil },
+    { "Cancel: nothing changed, Invoice.java in place", res.done == false and #d1.added + #d1.changed + #d1.missing == 0 and vim.uv.fs_stat(INVOICE) ~= nil },
+    { ("analysis %.0f ms with %d references request(s) (budget %d)"):format(chk.ms or -1, chk.requests or -1, APPLY_MS), (chk.ms or 1e9) <= APPLY_MS },
+  }
+  if vim.uv.fs_stat(INVOICE) == nil then -- moved without a question
+    stop()
+    return lsp.report(P .. "move_conflicts_asked", false, "moved without asking although the class has package-private conflicts; conflicts listed: " .. listed:sub(1, 120))
+  end
+  -- Move anyway: moved; the warning after the move still comes from the follow-up
+  seen = answer_select_exact("Move anyway")
+  local res2 = {}
+  at_decl(INVOICE)
+  refactor.move({ package = "demo.shop", force = false, on_done = function(ok) res2.done = ok end })
+  local ok2 = done_wait(res2)
+  stop()
+  a[#a + 1] = { "Move anyway moves it", ok2 and vim.uv.fs_stat(SHOP_INV) ~= nil }
+  local all, txt = results(a, true)
+  lsp.report(P .. "move_conflicts_asked", all, txt)
+  local uok, utxt = undo_matches(base)
+  lsp.report(P .. "move_conflicts_asked_undo", uok, utxt)
+end)
+
+-- force = true skips the question; the conflicts stay in the summary. No conflicts: no question at all (select stubbed to fail).
+case("move_conflicts_force_none", function()
+  plant_audit()
+  at_decl(INVOICE)
+  local got, stop = capture()
+  local asked = false
+  local real = vim.ui.select
+  vim.ui.select = function() asked = true end
+  local res = {}
+  refactor.move({ package = "demo.shop", force = true, on_done = function(ok) res.done = ok end })
+  local ok = done_wait(res)
+  vim.ui.select = real
+  stop()
+  local a1 = ok and not asked and vim.uv.fs_stat(SHOP_INV) ~= nil and (find_msg(got, "conflicts accepted") or ""):find("Rounding", 1, true) ~= nil
+  F.restore(snap, client)
+  -- the plain fixture: Invoice to demo.shop has no conflict, so no question even with force = false
+  local b = lsp.open(INVOICE)
+  vim.api.nvim_set_current_buf(b); vim.api.nvim_win_set_cursor(0, { 5, 14 })
+  vim.ui.select = function() asked = true end
+  local res2 = {}
+  refactor.move({ package = "demo.shop", force = false, on_done = function(ok2) res2.done = ok2 end })
+  local ok2 = done_wait(res2)
+  vim.ui.select = real
+  lsp.report(P .. "move_conflicts_force_none", a1 and ok2 and not asked and (refactor.last_conflict_check or {}).conflicts and #refactor.last_conflict_check.conflicts == 0,
+    ("force: moved %s, no question %s, conflicts kept in the summary; plain fixture: moved %s, question asked %s"):format(tostring(ok), tostring(not asked), tostring(ok2), tostring(asked)))
+end)
+
+-- references unanswered (stub): the candidate is reported as "possible", not dropped
+case("move_conflicts_no_answer", function()
+  plant_audit()
+  at_decl(INVOICE)
+  local real = client.request_sync
+  client.request_sync = function(self, m, params, t, b)
+    if m == "textDocument/references" then return nil end
+    return real(self, m, params, t, b)
+  end
+  local got, stop = capture()
+  local seen = answer_select_exact("Cancel")
+  local res = {}
+  refactor.move({ package = "demo.shop", force = false, on_done = function(ok) res.done = ok end })
+  done_wait(res)
+  client.request_sync = real
+  stop()
+  local listed = find_msg(got, "conflict(s)", vim.log.levels.WARN) or ""
+  lsp.report(P .. "move_conflicts_no_answer", listed:find("possible", 1, true) ~= nil and listed:find("net()", 1, true) ~= nil,
+    "listed: " .. listed:sub(1, 300))
+end)
+
+-- ── 5: F6 on a reference to another class ────────────────────────────────────────────────────────────────────
+local LIBUSE = main .. "demo/shop/LibUse.java"
+case("move_reference_cursor", function()
+  plant_files({ [LIBUSE] = "package demo.shop;\n\npublic class LibUse {\n    String s = \"x\";\n}\n" })
+  local base = F.snapshot()
+  local chk = lsp.open(CHECKOUT)
+  lsp.open(CALC)
+  vim.api.nvim_set_current_buf(chk)
+  local l, c = pos(chk, "private final PriceCalculator calculator", "PriceCalculator")
+  vim.api.nvim_win_set_cursor(0, { l + 1, c + 3 })
+  local res, t0 = {}, E.now()
+  local got, stop = capture()
+  refactor.move({ package = "demo.shop", on_done = function(ok) res.done = ok end })
+  local ok = done_wait(res)
+  local ms = E.now() - t0
+  stop()
+  local NP = main .. "demo/shop/PriceCalculator.java"
+  local a = {
+    { "PriceCalculator (referenced) moved, Checkout stayed", vim.uv.fs_stat(NP) ~= nil and vim.uv.fs_stat(CHECKOUT) ~= nil and vim.uv.fs_stat(CALC) == nil },
+    { "package line and Checkout's import dropped", select(1, has_all(disk(NP), { "package demo.shop;" })) and select(1, has_none(disk(CHECKOUT), { "import demo.billing.PriceCalculator;" })) },
+    { ("applied in %d ms (budget %d)"):format(ms, APPLY_MS), ms <= APPLY_MS },
+  }
+  local all, txt = results(a, ok)
+  lsp.report(P .. "move_reference_cursor", all, txt)
+  local uok, utxt = undo_matches(base)
+  lsp.report(P .. "move_reference_cursor_undo", uok, utxt)
+  -- a library class: refused with a clear message, nothing changed
+  local lb = lsp.open(LIBUSE)
+  vim.api.nvim_set_current_buf(lb)
+  local l2, c2 = pos(lb, "String s", "String")
+  vim.api.nvim_win_set_cursor(0, { l2 + 1, c2 + 2 })
+  local got2, stop2 = capture()
+  local res2 = {}
+  refactor.move({ package = "demo.billing", on_done = function(o) res2.done = o end })
+  stop2()
+  local msg = find_msg(got2, "library class") or ""
+  local d = F.diff(base)
+  lsp.report(P .. "move_reference_library", res2.done == false and msg:find("String", 1, true) ~= nil and msg:find("nothing changed", 1, true) ~= nil and #d.added + #d.changed + #d.missing == 0,
+    "message: " .. msg)
+end)
+
+-- ── 6: package rename into an existing package merges ────────────────────────────────────────────────────────
+local SHOP_TEST = TEST .. "demo/shop/CheckoutTest.java"
+case("rename_package_merge", function()
+  plant_files({ [SHOP_TEST] = "package demo.shop;\n\nclass CheckoutTest {\n    Checkout c = new Checkout();\n}\n",
+    [main .. "demo/shop/sub/Deep.java"] = "package demo.shop.sub;\n\nimport demo.shop.Checkout;\n\npublic class Deep {\n    Checkout c;\n}\n" })
+  local base = F.snapshot()
+  local b = lsp.open(CHECKOUT); lsp.open(INVOICE); lsp.open(CALC)
+  vim.api.nvim_set_current_buf(b); vim.api.nvim_win_set_cursor(0, { 1, 9 })
+  local got, stop = capture()
+  local res, t0 = {}, E.now()
+  refactor.rename_package({ name = "demo.billing", on_done = function(ok) res.done = ok end })
+  local ok = done_wait(res)
+  local ms = E.now() - t0
+  stop()
+  local MC = main .. "demo/billing/Checkout.java"
+  local a = {
+    { "Checkout.java in demo/billing with the new package line, the shop folder gone", select(1, has_all(disk(MC), { "package demo.billing;" })) and vim.uv.fs_stat(main .. "demo/shop") == nil },
+    { "imports of billing classes dropped (same package now)", select(1, has_none(disk(MC), { "import demo.billing." })) },
+    { "subpackage moved too (demo.billing.sub.Deep, import follows)", select(1, has_all(disk(main .. "demo/billing/sub/Deep.java"), { "package demo.billing.sub;", "import demo.billing.Checkout;" })) },
+    { "test root merged too, no redundant import left", select(1, has_all(disk(TEST .. "demo/billing/CheckoutTest.java"), { "package demo.billing;" }))
+      and select(1, has_none(disk(TEST .. "demo/billing/CheckoutTest.java"), { "import demo." })) and vim.uv.fs_stat(TEST .. "demo/shop") == nil },
+    { "summary says merged", (find_msg(got, "merged into the existing package") or "") ~= "" },
+    { "existing classes untouched", disk(INVOICE) == snap.files[INVOICE] },
+  }
+  local all, txt = results(a, ok)
+  local ok_clean, why = clean({ MC, TEST .. "demo/billing/CheckoutTest.java", main .. "demo/billing/sub/Deep.java" }, t0)
+  lsp.report(P .. "rename_package_merge", all and ok_clean and ms <= APPLY_MS, txt .. (ok_clean and "; build clean" or ("; NOT clean: " .. why)) .. ("; %d ms (file moves, budget %d)"):format(ms, APPLY_MS))
+  local uok, utxt = undo_matches(base, 4 * APPLY_MS)
+  lsp.report(P .. "rename_package_merge_undo", uok, utxt)
+end)
+
+-- a name in both packages: refused naming it, nothing changed
+case("rename_package_merge_clash", function()
+  plant_files({ [SHOP_INV] = "package demo.shop;\n\npublic class Invoice {\n}\n" })
+  local base = F.snapshot()
+  local b = lsp.open(CHECKOUT)
+  vim.api.nvim_set_current_buf(b); vim.api.nvim_win_set_cursor(0, { 1, 9 })
+  local got, stop = capture()
+  local ok = refactor.rename_package({ name = "demo.billing" })
+  vim.wait(300)
+  stop()
+  local msg = find_msg(got, "already exists and both hold", vim.log.levels.ERROR) or ""
+  local d = F.diff(base)
+  lsp.report(P .. "rename_package_merge_clash", ok == false and msg:find("Invoice.java", 1, true) ~= nil and msg:find("nothing changed", 1, true) ~= nil
+    and #d.added + #d.changed + #d.missing + #d.dirs == 0, "message: " .. msg)
 end)
 
 local left = F.diff(snap)

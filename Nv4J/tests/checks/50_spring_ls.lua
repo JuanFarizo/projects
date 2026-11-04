@@ -858,10 +858,15 @@ local ok6, err6 = pcall(function()
     local p_ok = vim.tbl_contains(props, "twob.cfg.limit")
     local a_ok = any(maps, "@/hello") and any(beans, "GreetingController")
     local only_a = #folders == 1 and (folders[1]):find("fixtures/demo", 1, true) ~= nil
-    -- Evidence for a failure (flake: cause never captured): was the listener registered on B's jdt.ls at the end
-    -- (state.registered), did jdt.ls reject it (spring-route.log lines appended by this case), which kinds of answer
-    -- were empty. Nothing here is asserted; it only goes into the FAIL line.
-    local ev = ""
+    -- Evidence for a failure (flake: cause so far only known to be "B never indexed although its listener was registered"):
+    -- the listener on B's jdt.ls (state.registered), the spring-route.log lines this case appended (rejections), how many
+    -- classpath events each jdt.ls delivered to the Spring LS, and (NV4J_LSP_CAPTURE=1) the Spring LS's own "index elements
+    -- created" lines. Nothing here is asserted; it only goes into the FAIL line.
+    local function evs(c)
+      local e = c and S._state.events[c.id]
+      return e and ("%d (last %s, %d ms ago)"):format(e.n, tostring(e.last), vim.uv.now() - e.at) or "0"
+    end
+    local ev = ("; classpath events delivered to the Spring LS: B's jdt.ls %s, A's jdt.ls %s"):format(evs(bj), evs(jdtls))
     if not (m_ok and b_ok and p_ok and a_ok) then
       local rf = io.open(route_path, "r")
       local appended = {}
@@ -870,10 +875,21 @@ local ok6, err6 = pcall(function()
         for l in rf:lines() do appended[#appended + 1] = l end
         rf:close()
       end
-      ev = ("; EVIDENCE listener on B's jdt.ls %s (want %s), B jdt.ls %s, %d spring-route.log line(s) during the case%s; symbols @/ %d, @+ %d"):format(
+      local idx = {}
+      local lf = io.open(require("nv4j.paths").logs .. "/spring-boot-ls.log", "r")
+      if lf then
+        lf:seek("set", math.max(0, lf:seek("end") - 400000))
+        for l in lf:lines() do
+          if l:find("scan java files", 1, true) then idx[#idx + 1] = l:sub(12, 23) .. l:sub(-110) end
+        end
+        lf:close()
+      end
+      ev = ("; EVIDENCE listener on B's jdt.ls %s (want %s), B jdt.ls %s, %d spring-route.log line(s) during the case%s; "
+        .. "classpath events delivered: B's jdt.ls %s, A's jdt.ls %s; symbols @/ %d, @+ %d; Spring LS 'scan java files' lines (last 4 of %d): %s"):format(
         tostring(bj and S._state.registered[bj]), tostring(S._state.classpath_args and S._state.classpath_args[1]),
         bj and (bj:is_stopped() and "STOPPED" or "alive") or "nil", #appended,
-        #appended > 0 and (" (last: " .. appended[#appended]:sub(1, 160) .. ")") or "", #maps, #beans)
+        #appended > 0 and (" (last: " .. appended[#appended]:sub(1, 160) .. ")") or "", evs(bj), evs(jdtls), #maps, #beans,
+        #idx, table.concat(vim.list_slice(idx, math.max(1, #idx - 3)), " | "))
     end
     lsp.report(P .. "two_boot_index", mvn_rc == 0 and m_ok and b_ok and p_ok and a_ok and only_a,
       ("Spring LS (workspace folder only A: %s) answers for B after %.0f ms: request mapping /twob-only-path %s, bean TwoBOnlyController %s, "
