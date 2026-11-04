@@ -74,20 +74,39 @@ function M.derive(path)
   return class_name, (pkg ~= nil and pkg ~= "") and pkg or nil
 end
 
---- JUnit flavour from the project build file: 5 unless the build names only JUnit 4.
+--- JUnit flavour from the build files: 5 unless the build names only JUnit 4. The module's own build file first (the
+--- nearest pom.xml / build.gradle(.kts) above the new file: since D29 the project root of a Gradle sub-project is the
+--- settings dir, whose build file often says nothing), then the project root's (a root `subprojects {}` block). Gradle
+--- catalog aliases (`testImplementation libs.junit`) are resolved through gradle/libs.versions.toml (G9, specs/006).
 local function junit(path)
-  local root = require("nv4j.root").project(path)
-  for _, f in ipairs({ "pom.xml", "build.gradle", "build.gradle.kts" }) do
-    local fh = io.open(root .. "/" .. f, "r")
-    if fh then
-      local s = fh:read("*a")
-      fh:close()
-      if s:find("junit%-jupiter") or s:find("spring%-boot%-starter%-test") or s:find("org%.junit%.jupiter") then return 5 end
-      if s:find("<artifactId>junit</artifactId>") or s:find("junit:junit") then return 4 end
+  local R = require("nv4j.root")
+  local root = R.project(path)
+  local files = { "pom.xml", "build.gradle", "build.gradle.kts" }
+  local module = vim.fs.root(path, { files })
+  local dirs = { module }
+  if root and root ~= module then dirs[#dirs + 1] = root end
+  local is5 = function(c) return c:find("^org%.junit%.jupiter:") ~= nil or c == "org.springframework.boot:spring-boot-starter-test" end
+  local is4 = function(c) return c == "junit:junit" end
+  for _, dir in ipairs(dirs) do
+    local cat
+    for _, f in ipairs(files) do
+      local fh = io.open(dir .. "/" .. f, "r")
+      if fh then
+        local s = fh:read("*a")
+        fh:close()
+        if s:find("junit%-jupiter") or s:find("spring%-boot%-starter%-test") or s:find("org%.junit%.jupiter") then return 5 end
+        if s:find("<artifactId>junit</artifactId>") or s:find("junit:junit") then return 4 end
+        if f ~= "pom.xml" then
+          cat = cat or R.gradle_catalog(dir)
+          if R.catalog_uses(s, cat, "libraries", is5) then return 5 end
+          if R.catalog_uses(s, cat, "libraries", is4) then return 4 end
+        end
+      end
     end
   end
   return 5
 end
+M.junit = junit
 
 --- Template lines for a type. kind: a TYPE_KINDS kind or "test" (opts.junit 4|5).
 ---@return string[] lines, integer cursor_line (1-based), integer cursor_col (0-based), boolean insert_at_end
