@@ -540,9 +540,9 @@ end
 local roots_made = {}
 local function open_ready(file)
   local buf = lsp.open(file)
-  local c = lsp.wait_ready(buf, 180000)
+  local c, why = lsp.wait_ready(buf, 180000)
   if c then roots_made[c.config.root_dir] = true end
-  return buf, c
+  return buf, c, why
 end
 -- A file's errors settle after its own publish; one more pass for the cross-directory reference.
 local function settle(buf, want_errors, ms)
@@ -559,9 +559,9 @@ write(PR .. "/gamma/C.java", "public class C {\n  int c() { String s = 1; return
 local ok_all, err = pcall(function()
   local bufs, ready, not_ready = {}, 0, {}
   for _, f in ipairs({ "alpha/A.java", "beta/B.java", "gamma/C.java" }) do
-    local b, c = open_ready(PR .. "/" .. f)
+    local b, c, why = open_ready(PR .. "/" .. f)
     bufs[#bufs + 1] = b
-    if c then ready = ready + 1 else not_ready[#not_ready + 1] = f end
+    if c then ready = ready + 1 else not_ready[#not_ready + 1] = f .. ": " .. tostring(why) end
   end
   local clients = vim.lsp.get_clients({ name = "jdtls" })
   local a_err, c_err = settle(bufs[1], 0, 10000), settle(bufs[3], 1, 10000)
@@ -570,7 +570,7 @@ local ok_all, err = pcall(function()
     ready == 3 and #clients == 1 and clients[1].config.root_dir == PR and #a_err == 0
       and #c_err == 1 and c_err[1].message:find("cannot convert from int to String", 1, true) ~= nil,
     ("%d of 3 files ready%s, %d jdt.ls client(s) [%s] (want 1 at %s); alpha/A.java errors %d (want 0: B resolves), gamma/C.java errors %d (want 1 planted)%s; log %s")
-      :format(ready, #not_ready > 0 and (" (not: " .. table.concat(not_ready, ", ") .. ")") or "", #clients, table.concat(rs, ", "), PR, #a_err, #c_err,
+      :format(ready, #not_ready > 0 and (" (not ready: " .. table.concat(not_ready, "; ") .. ")") or "", #clients, table.concat(rs, ", "), PR, #a_err, #c_err,
         a_err[1] and (": " .. a_err[1].message) or "", log))
 
   local cands = { PR, PR .. "/alpha", PR .. "/beta", PR .. "/gamma" }

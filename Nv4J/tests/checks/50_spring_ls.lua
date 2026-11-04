@@ -751,6 +751,8 @@ end
 local ok6, err6 = pcall(function()
   local S = require("nv4j.spring")
   local dir = "/tmp/nv4j/50_two/B"
+  local route_path = require("nv4j.paths").logs .. "/spring-route.log"
+  local route_from = (vim.uv.fs_stat(route_path) or { size = 0 }).size -- two_boot_index quotes what this case appended
   vim.fn.delete("/tmp/nv4j/50_two", "rf")
   vim.fn.mkdir(dir .. "/src/main/java/twob", "p")
   vim.fn.mkdir(dir .. "/src/main/resources", "p")
@@ -856,11 +858,28 @@ local ok6, err6 = pcall(function()
     local p_ok = vim.tbl_contains(props, "twob.cfg.limit")
     local a_ok = any(maps, "@/hello") and any(beans, "GreetingController")
     local only_a = #folders == 1 and (folders[1]):find("fixtures/demo", 1, true) ~= nil
+    -- Evidence for a failure (flake: cause never captured): was the listener registered on B's jdt.ls at the end
+    -- (state.registered), did jdt.ls reject it (spring-route.log lines appended by this case), which kinds of answer
+    -- were empty. Nothing here is asserted; it only goes into the FAIL line.
+    local ev = ""
+    if not (m_ok and b_ok and p_ok and a_ok) then
+      local rf = io.open(route_path, "r")
+      local appended = {}
+      if rf then
+        rf:seek("set", route_from)
+        for l in rf:lines() do appended[#appended + 1] = l end
+        rf:close()
+      end
+      ev = ("; EVIDENCE listener on B's jdt.ls %s (want %s), B jdt.ls %s, %d spring-route.log line(s) during the case%s; symbols @/ %d, @+ %d"):format(
+        tostring(bj and S._state.registered[bj]), tostring(S._state.classpath_args and S._state.classpath_args[1]),
+        bj and (bj:is_stopped() and "STOPPED" or "alive") or "nil", #appended,
+        #appended > 0 and (" (last: " .. appended[#appended]:sub(1, 160) .. ")") or "", #maps, #beans)
+    end
     lsp.report(P .. "two_boot_index", mvn_rc == 0 and m_ok and b_ok and p_ok and a_ok and only_a,
       ("Spring LS (workspace folder only A: %s) answers for B after %.0f ms: request mapping /twob-only-path %s, bean TwoBOnlyController %s, "
         .. "property twob.cfg.limit %s (%d items); A's /hello and GreetingController still there: %s (B first seen at %s ms, A and B together at %s ms); B compile rc %d%s"):format(
         tostring(only_a), waited, tostring(m_ok), tostring(b_ok), tostring(p_ok), #props, tostring(a_ok), tostring(t_b and math.floor(t_b)), tostring(t_ab and math.floor(t_ab)), mvn_rc,
-        mvn_rc ~= 0 and (" " .. mvn_out:sub(1, 200)) or ""))
+        mvn_rc ~= 0 and (" " .. mvn_out:sub(1, 200)) or "") .. ev)
   end)
   if not ok7 then lsp.report(P .. "two_boot_index", false, "error: " .. tostring(err7)) end
 end)

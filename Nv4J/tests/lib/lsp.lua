@@ -27,7 +27,8 @@ function M.open(path)
   return buf
 end
 
---- Returns the jdtls client once attached AND the project is imported, else nil.
+--- Returns the jdtls client once attached AND the project is imported, else nil plus the reason (which condition
+--- never held and how long it waited), so a check can say why a file was not ready.
 function M.wait_ready(bufnr, timeout_ms)
   local deadline = vim.uv.hrtime() + timeout_ms * 1e6
   local left = function() return math.max(0, (deadline - vim.uv.hrtime()) / 1e6) end
@@ -42,7 +43,7 @@ function M.wait_ready(bufnr, timeout_ms)
     end
     return jdtls_client(bufnr) ~= nil
   end, 200)
-  if not ok then return nil end
+  if not ok then return nil, ("no jdtls client attached after %.0f s"):format(timeout_ms / 1000) end
   local client = jdtls_client(bufnr)
 
   -- 2. project imported: java.project.getAll lists a project, and the first
@@ -54,7 +55,8 @@ function M.wait_ready(bufnr, timeout_ms)
   -- sent at most every 500 ms and the deadline is checked here, not left to vim.wait. Twin: 71_gradle_broken.
   local uri = vim.uri_from_bufnr(bufnr)
   local imported = false
-  local last_sent = 0
+  local last_sent, asked, last_res = 0, 0, "no answer yet"
+  local t_import = vim.uv.hrtime()
   local function expired() return vim.uv.hrtime() >= deadline end
   vim.wait(left(), function()
     if client:is_stopped() or expired() then return true end
@@ -69,10 +71,16 @@ function M.wait_ready(bufnr, timeout_ms)
         vim.wait(math.min(5000, left()), function() return done or expired() end, 50)
       end
       imported = type(res) == "table" and #res > 0
+      asked = asked + 1
+      last_res = done and (res == nil and "error or empty reply" or ("%d project(s)"):format(type(res) == "table" and #res or -1)) or "request unanswered"
     end
     return imported and published[uri] == true
   end, 500)
-  if not (imported and published[uri] == true) or client:is_stopped() then return nil end
+  if client:is_stopped() then return nil, "jdtls client stopped while waiting" end
+  if not (imported and published[uri] == true) then
+    return nil, ("%s after %.0f s: java.project.getAll asked %d time(s), last answer %s; diagnostics published for this file: %s"):format(
+      imported and "no diagnostics published" or "project not imported", (vim.uv.hrtime() - t_import) / 1e9, asked, last_res, tostring(published[uri] == true))
+  end
   return client
 end
 
