@@ -133,6 +133,12 @@
 --  rename_class_case_only: Invoice -> INVOICE really renames the file (case-insensitive FS only; SKIP printed otherwise).
 --  multi_module_roots: module_root / rename_package moves / move conflict, test-stays note and Spring warning on a /tmp/nv4j layout.
 --  safe_delete_trash_order, _restore_failed; rename_package_part_way_message; inline_errors now requires ret == true.
+--  D23 audit against IntelliJ (specs/features/refactors.md "IntelliJ behaviour vs Nv4J"):
+--  audit_rename_class, audit_move_class, audit_rename_package_sub: every kind of use (same package, static imports, qualified names,
+--                       javadoc, class literal, wildcard import, subpackage, test root); audit_move_class_visibility: the package-private
+--                       conflicts named after the move; move_revalidates: jdt.ls told to validate every open file after a move.
+--  rename_class_tests (+ _off, _conflict), undo_class_tests: test classes renamed along (InvoiceTest -> BillTest), the decoy
+--                       InvoiceServiceTest not; undo_last brings everything back. undo_move, undo_package, undo_nothing: <leader>ju.
 -- The fixture is snapshot before and restored after every case (tests/lib/fixture.lua), jdt.ls told.
 -- Development: NV4J_CASE=<Lua pattern> runs only the matching cases. jdt.ls answers a very first rename with
 -- the declaration only (no references) when nothing warmed it: run a group (e.g. '^rename_class_[uc]'), not a single case.
@@ -204,7 +210,7 @@ do
   local want = {
     { "<leader>jr", "rename_class", "ename" }, { "<leader>jp", "rename_package", "ackage" },
     { "<leader>jm", "move", "ove" }, { "<leader>ji", "inline", "nline" }, { "<leader>js", "change_signature", "ignature" },
-    { "<leader>jd", "safe_delete", "elete" },
+    { "<leader>jd", "safe_delete", "elete" }, { "<leader>ju", "undo_last", "ndo" },
   }
   local bad, okk, pending = {}, {}, {}
   for _, w in ipairs(want) do
@@ -3863,6 +3869,445 @@ case("rename_class_case_only_undo", function()
   end
   lsp.report(P .. "rename_class_case_only_undo", res.done == true and #bad == 0,
     res.done == true and (#bad == 0 and "one u restored every touched buffer" or ("not restored by one u: " .. table.concat(bad, ", "))) or "rename not done")
+end)
+
+
+-- ── D23 audit against IntelliJ (specs/features/refactors.md "IntelliJ behaviour vs Nv4J") ────────────────────
+-- A planted scenario: Invoice with a javadoc {@link}, an annotation string, a static factory, a package-private
+-- method and a package-private type of its package; a same-package user without imports (InvoiceHelper: generic,
+-- string literal, comment, annotation string); static imports and fully qualified names (Statics); a class
+-- literal, a type bound and instanceof (Literal); a wildcard import (Wild); a record (Money); a subpackage
+-- (billing.sub) in main and test; InvoiceTest in src/test/java.
+local AUDIT_FILES = {
+  [main .. "demo/billing/Invoice.java"] = [[
+package demo.billing;
+
+import demo.MyAnno;
+
+/**
+ * An invoice. See {@link Invoice#of(int)} and {@link Invoice}.
+ * @see Invoice
+ */
+@MyAnno("Invoice")
+public class Invoice {
+    public static final int MAX = 10;
+    private final int quantity;
+    private final int unitPrice;
+
+    public Invoice(int quantity, int unitPrice) {
+        this.quantity = quantity;
+        this.unitPrice = unitPrice;
+    }
+
+    public static Invoice of(int quantity) {
+        return new Invoice(quantity, 1);
+    }
+
+    int net() { // package-private
+        return quantity;
+    }
+
+    Rounding rounding() { // package-private type of the old package
+        return new Rounding();
+    }
+
+    public int viaCalc() {
+        return new PriceCalculator().total(this);
+    }
+
+    public int quantity() {
+        return quantity;
+    }
+
+    public int unitPrice() {
+        return unitPrice;
+    }
+}
+]],
+  [main .. "demo/billing/Rounding.java"] = "package demo.billing;\n\nclass Rounding {\n    int round(int x) {\n        return x;\n    }\n}\n",
+  [main .. "demo/billing/InvoiceHelper.java"] = [[
+package demo.billing;
+
+import java.util.ArrayList;
+import java.util.List;
+
+import demo.MyAnno;
+
+/** Uses {@link Invoice} and a mention of Invoice in prose. */
+class InvoiceHelper {
+    // Invoice in a line comment
+    List<Invoice> all = new ArrayList<Invoice>();
+    String label = "Invoice";
+
+    Invoice make() {
+        return Invoice.of(1);
+    }
+
+    int net(Invoice invoice) {
+        return invoice.net();
+    }
+
+    @MyAnno("Invoice")
+    void marked() {
+    }
+}
+]],
+  [main .. "demo/shop/Statics.java"] = [[
+package demo.shop;
+
+import static demo.billing.Invoice.MAX;
+import static demo.billing.Invoice.of;
+
+import java.util.Map;
+
+public class Statics {
+    demo.billing.Invoice fq = of(2);
+    Map<String, demo.billing.Invoice> byName = Map.of();
+    int max = MAX;
+}
+]],
+  [main .. "demo/web/Wild.java"] = "package demo.web;\n\nimport demo.billing.*;\n\npublic class Wild {\n    Invoice i;\n    PriceCalculator c;\n}\n",
+  [main .. "demo/billing/Money.java"] = "package demo.billing;\n\npublic record Money(int cents) {\n    public Money plus(Money o) {\n        return new Money(cents + o.cents());\n    }\n}\n",
+  [main .. "demo/shop/Literal.java"] = [[
+package demo.shop;
+
+import demo.billing.Invoice;
+import demo.billing.Money;
+
+public class Literal {
+    Class<Invoice> c = Invoice.class;
+    Money m = new Money(1);
+
+    <T extends Invoice> int bound(T t) {
+        return t.quantity();
+    }
+
+    boolean is(Object o) {
+        return o instanceof Invoice;
+    }
+}
+]],
+  [TEST .. "demo/billing/InvoiceTest.java"] = [[
+package demo.billing;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+
+import org.junit.jupiter.api.Test;
+
+class InvoiceTest {
+    @Test
+    void quantity() {
+        assertEquals(2, new Invoice(2, 3).quantity());
+    }
+}
+]],
+  [main .. "demo/billing/sub/Thing.java"] = "package demo.billing.sub;\n\nimport demo.billing.Invoice;\n\npublic class Thing {\n    Invoice i = Invoice.of(1);\n}\n",
+  [TEST .. "demo/billing/sub/ThingTest.java"] = "package demo.billing.sub;\n\nimport demo.billing.Invoice;\n\nclass ThingTest {\n    Invoice i = Invoice.of(1);\n}\n",
+}
+
+local function plant_audit()
+  for p, s in pairs(AUDIT_FILES) do
+    vim.fn.mkdir(vim.fs.dirname(p), "p")
+    local f = assert(io.open(p, "w")); f:write(s); f:close()
+  end
+  local list = { CHECKOUT, CALC }
+  for p in pairs(AUDIT_FILES) do list[#list + 1] = p end
+  table.sort(list)
+  for _, p in ipairs(list) do lsp.open(p) end
+  vim.wait(6000, function()
+    for _, p in ipairs(list) do
+      if (published_at[vim.uri_from_fname(p)] or 0) == 0 then return false end
+    end
+    return true
+  end, 20)
+end
+
+local function has_all(txt, list)
+  local bad = {}
+  for _, w in ipairs(list) do
+    if not (txt or ""):find(w, 1, true) then bad[#bad + 1] = w end
+  end
+  return #bad == 0, table.concat(bad, " | ")
+end
+local function has_none(txt, list)
+  local bad = {}
+  for _, w in ipairs(list) do
+    if (txt or ""):find(w, 1, true) then bad[#bad + 1] = w end
+  end
+  return #bad == 0, table.concat(bad, " | ")
+end
+local HELPER = main .. "demo/billing/InvoiceHelper.java"
+local STATICS = main .. "demo/shop/Statics.java"
+local LITERAL = main .. "demo/shop/Literal.java"
+local WILD = main .. "demo/web/Wild.java"
+local ITEST = TEST .. "demo/billing/InvoiceTest.java"
+local function at_decl(path)
+  local b = lsp.open(path)
+  local l, c = pos(b, "^public class Invoice", "Invoice")
+  vim.api.nvim_set_current_buf(b); vim.api.nvim_win_set_cursor(0, { l + 1, c })
+  return b
+end
+local function done_wait(res, ms)
+  vim.wait(ms or 15000, function() return res.done ~= nil end, 10)
+  return res.done == true
+end
+
+-- audit_rename_class: what IntelliJ's class rename does to every kind of use (all by jdt.ls here), and what it
+-- leaves alone: javadoc {@link}/@see follow; constructors, generics, `Invoice.class`, a type bound, instanceof,
+-- same-package use without import, static imports and fully qualified names follow; the string literal, the
+-- annotation string, the comment and the prose in a javadoc are NOT rewritten (IntelliJ offers that as an
+-- option, "Search in comments and strings", on by default; here the string/config hits are listed in a warning).
+case("audit_rename_class", function()
+  plant_audit()
+  at_decl(INVOICE)
+  local got, stop = capture()
+  local res = {}
+  refactor.rename_class({ name = "Bill", tests = false, on_done = function(ok) res.done = ok end })
+  local ok = done_wait(res)
+  stop()
+  local bt, ht, st, lt, wt, tt = disk(BILL), disk(HELPER), disk(STATICS), disk(LITERAL), disk(WILD), disk(ITEST)
+  local warn = find_msg(got, "NOT rewritten", vim.log.levels.WARN) or ""
+  local a = {
+    { "declaration, javadoc {@link}/@see, constructor", select(1, has_all(bt, { "public class Bill", "{@link Bill#of(int)} and {@link Bill}", "@see Bill\n", "public Bill(int quantity", "new Bill(quantity, 1)" })) },
+    { "same-package helper without import, generic, static call, parameter", select(1, has_all(ht, { "{@link Bill}", "List<Bill> all = new ArrayList<Bill>()", "Bill make()", "Bill.of(1)", "int net(Bill invoice)" })) },
+    { "string literal, comments and annotation strings untouched", select(1, has_all(ht, { 'String label = "Invoice";', "// Invoice in a line comment", "mention of Invoice in prose", '@MyAnno("Invoice")' }))
+      and select(1, has_all(bt, { '@MyAnno("Invoice")', "An invoice." })) },
+    { "static imports and fully qualified names", select(1, has_all(st, { "import static demo.billing.Bill.MAX;", "import static demo.billing.Bill.of;", "demo.billing.Bill fq", "Map<String, demo.billing.Bill>" })) },
+    { "class literal, type bound, instanceof, import", select(1, has_all(lt, { "import demo.billing.Bill;", "Class<Bill> c = Bill.class", "<T extends Bill>", "instanceof Bill" })) },
+    { "wildcard-import user and test source", select(1, has_all(wt, { "Bill i;" })) and select(1, has_all(tt, { "new Bill(2, 3)" })) },
+    { "subpackage main and test", select(1, has_all(disk(main .. "demo/billing/sub/Thing.java"), { "import demo.billing.Bill;", "Bill i = Bill.of(1)" }))
+      and select(1, has_all(disk(TEST .. "demo/billing/sub/ThingTest.java"), { "import demo.billing.Bill;" })) },
+    { "the string hits are listed (not rewritten)", warn:find("InvoiceHelper.java:12", 1, true) ~= nil and warn:find("Bill.java:9", 1, true) ~= nil },
+    { "Invoice.java gone", vim.uv.fs_stat(INVOICE) == nil },
+  }
+  local all, parts = ok, {}
+  for _, x in ipairs(a) do all = all and x[2]; parts[#parts + 1] = x[1] .. " " .. (x[2] and "ok" or "WRONG") end
+  local ok_clean, why = clean({ BILL, HELPER, STATICS, LITERAL, CHECKOUT }, E.now() - 2000)
+  lsp.report(P .. "audit_rename_class", all and ok_clean, table.concat(parts, ", ") .. (ok_clean and "; build clean" or ("; NOT clean: " .. why)))
+end)
+
+-- audit_move_class: Invoice to demo.shop. The package line, the imports of the dependents, the import that
+-- becomes redundant (Checkout was in the target package), the imports the moved class now needs for what it used
+-- from its old package (PriceCalculator, and the package-private Rounding), static imports, qualified names and
+-- a wildcard-import user (it gets an import of the moved class). What jdt.ls cannot keep working, the
+-- package-private net() and Rounding, is NOT stopped (IntelliJ asks first, listing them as conflicts): the
+-- warning names them after the move and `<leader>ju` undoes it.
+case("audit_move_class", function()
+  plant_audit()
+  at_decl(INVOICE)
+  local got, stop = capture()
+  local res = {}
+  refactor.move({ package = "demo.shop", on_done = function(ok) res.done = ok end })
+  local ok = done_wait(res)
+  stop()
+  local mt, ct, ht, st, lt, wt = disk(SHOP_INV), disk(CHECKOUT), disk(HELPER), disk(STATICS), disk(LITERAL), disk(WILD)
+  local a = {
+    { "package line, class moved", select(1, has_all(mt, { "package demo.shop;", "public class Invoice" })) and vim.uv.fs_stat(INVOICE) == nil },
+    { "moved class imports what it used from the old package", select(1, has_all(mt, { "import demo.billing.PriceCalculator;", "import demo.billing.Rounding;" })) },
+    { "redundant import dropped from Checkout (same package now)", select(1, has_none(ct, { "import demo.billing.Invoice;", "import demo.shop.Invoice;" })) },
+    { "same-package helper and calculator import the new place", select(1, has_all(ht, { "import demo.shop.Invoice;" }))
+      and select(1, has_all(disk(CALC), { "import demo.shop.Invoice;" })) },
+    { "wildcard-import user gets an import", select(1, has_all(wt, { "import demo.billing.*;", "import demo.shop.Invoice;" })) },
+    { "static imports, qualified names, type bound", select(1, has_all(st, { "import static demo.shop.Invoice.MAX;", "demo.shop.Invoice fq", "Map<String, demo.shop.Invoice>" }))
+      and select(1, has_all(lt, { "Class<Invoice> c = Invoice.class", "<T extends Invoice>" })) and select(1, has_none(lt, { "import demo.billing.Invoice;", "import demo.shop.Invoice;" })) },
+    { "test sources follow (import)", select(1, has_all(disk(ITEST), { "import demo.shop.Invoice;" })) },
+    { "string literal and comments untouched", select(1, has_all(ht, { 'String label = "Invoice";', "// Invoice in a line comment" })) },
+  }
+  local all, parts = ok, {}
+  for _, x in ipairs(a) do all = all and x[2]; parts[#parts + 1] = x[1] .. " " .. (x[2] and "ok" or "WRONG") end
+  lsp.report(P .. "audit_move_class", all, table.concat(parts, ", "))
+end)
+
+-- audit_move_class_visibility: the package-private net() and Rounding no longer reach the moved Invoice. IntelliJ lists
+-- these conflicts before the move; here the move is done and the warning (3 s, 8 s when nothing yet) names them, and
+-- `<leader>ju` undoes the move. Race-prone part (jdt.ls publishing the errors) = this case alone; its twin below is
+-- deterministic: jdt.ls is told to validate every open Java file after a move (the fix for a missing warning).
+case("audit_move_class_visibility", function()
+  plant_audit()
+  at_decl(INVOICE)
+  local got, stop = capture()
+  local res = {}
+  refactor.move({ package = "demo.shop", on_done = function(ok) res.done = ok end })
+  local ok = done_wait(res)
+  local warned = vim.wait(12000, function() return find_msg(got, "is not visible") ~= nil end, 20)
+  stop()
+  local warn = find_msg(got, "is not visible") or ""
+  local t1, ures = E.now(), {}
+  refactor.undo_last({ on_done = function(o) ures.done = o end })
+  local uok = done_wait(ures)
+  lsp.report(P .. "audit_move_class_visibility", ok and warned and warn:find("net()", 1, true) ~= nil and warn:find("Rounding", 1, true) ~= nil
+    and uok and vim.uv.fs_stat(INVOICE) ~= nil and vim.uv.fs_stat(SHOP_INV) == nil,
+    ("move done %s; warning %s: %s; undo_last done %s in %d ms, Invoice.java back %s"):format(tostring(ok), tostring(warned), warn:sub(1, 200),
+      tostring(ures.done), E.now() - t1, tostring(vim.uv.fs_stat(INVOICE) ~= nil)))
+end)
+
+case("move_revalidates", function()
+  plant_audit()
+  local GC = main .. "demo/GreetingController.java"
+  lsp.open(GC) -- not touched by the move of Invoice
+  at_decl(INVOICE)
+  local sent, real = {}, client.notify
+  client.notify = function(self, method, params)
+    if method == "java/validateDocument" then sent[#sent + 1] = params.textDocument.uri end
+    return real(self, method, params)
+  end
+  local res = {}
+  local ok_call, err = pcall(function()
+    refactor.move({ package = "demo.shop", on_done = function(ok) res.done = ok end })
+    vim.wait(8000, function() return res.done ~= nil end, 10)
+  end)
+  client.notify = nil
+  local has_u = function(p) return vim.tbl_contains(sent, vim.uri_from_fname(p)) end
+  lsp.report(P .. "move_revalidates", ok_call and res.done == true and has_u(GC) and has_u(CHECKOUT) and has_u(SHOP_INV),
+    ("done %s (%s); validateDocument sent for the untouched GreetingController %s, Checkout %s, the moved Invoice %s (%d sent)"):format(
+      tostring(res.done), tostring(err), tostring(has_u(GC)), tostring(has_u(CHECKOUT)), tostring(has_u(SHOP_INV)), #sent))
+end)
+
+-- audit_rename_package_sub: demo.billing -> demo.invoicing with a subpackage in main and test, a namesake test
+-- folder, a wildcard import, static imports and qualified names.
+case("audit_rename_package_sub", function()
+  plant_audit()
+  local b = lsp.open(INVOICE)
+  vim.api.nvim_set_current_buf(b); vim.api.nvim_win_set_cursor(0, { 1, 9 })
+  local res = {}
+  refactor.rename_package({ name = "demo.invoicing", on_done = function(ok) res.done = ok end })
+  local ok = done_wait(res)
+  local NM = main .. "demo/invoicing/"
+  local NT = TEST .. "demo/invoicing/"
+  local a = {
+    { "main folder and subpackage moved", vim.uv.fs_stat(NM .. "Invoice.java") ~= nil and vim.uv.fs_stat(NM .. "sub/Thing.java") ~= nil and vim.uv.fs_stat(main .. "demo/billing") == nil },
+    { "test namesake folder and its subpackage moved", vim.uv.fs_stat(NT .. "InvoiceTest.java") ~= nil and vim.uv.fs_stat(NT .. "sub/ThingTest.java") ~= nil and vim.uv.fs_stat(TEST .. "demo/billing") == nil },
+    { "package lines", select(1, has_all(disk(NM .. "Invoice.java"), { "package demo.invoicing;" })) and select(1, has_all(disk(NM .. "sub/Thing.java"), { "package demo.invoicing.sub;", "import demo.invoicing.Invoice;" }))
+      and select(1, has_all(disk(NT .. "InvoiceTest.java"), { "package demo.invoicing;" })) },
+    { "import in another package, static imports, qualified names", select(1, has_all(disk(CHECKOUT), { "import demo.invoicing.Invoice;", "import demo.invoicing.PriceCalculator;" }))
+      and select(1, has_all(disk(STATICS), { "import static demo.invoicing.Invoice.MAX;", "demo.invoicing.Invoice fq", "Map<String, demo.invoicing.Invoice>" })) },
+    { "wildcard import", select(1, has_all(disk(WILD), { "import demo.invoicing.*;" })) },
+    { "no old package name left in Java code", select(1, has_none(disk(CHECKOUT) .. disk(STATICS) .. disk(LITERAL) .. disk(WILD), { "demo.billing" })) },
+  }
+  local all, parts = ok, {}
+  for _, x in ipairs(a) do all = all and x[2]; parts[#parts + 1] = x[1] .. " " .. (x[2] and "ok" or "WRONG") end
+  local ok_clean, why = clean({ CHECKOUT, STATICS, LITERAL }, E.now() - 2000)
+  lsp.report(P .. "audit_rename_package_sub", all and ok_clean, table.concat(parts, ", ") .. (ok_clean and "; build clean" or ("; NOT clean: " .. why)))
+end)
+
+-- rename_class_tests (IntelliJ's "Rename tests", on by default): InvoiceTest follows Invoice -> Bill as BillTest
+-- (file, class name, reference); InvoiceServiceTest is not caught (only <Old>Test/Tests/IT/ITCase/TestCase and
+-- Test<Old>). Then `undo_last` brings everything back, file names included.
+local DECOY = TEST .. "demo/billing/InvoiceServiceTest.java"
+local DECOY_TXT = "package demo.billing;\n\nimport org.junit.jupiter.api.Test;\n\nclass InvoiceServiceTest {\n    @Test\n    void t() {\n        new Invoice(1, 1);\n    }\n}\n"
+local function plant_decoy()
+  local f = assert(io.open(DECOY, "w")); f:write(DECOY_TXT); f:close()
+  lsp.open(DECOY)
+  vim.wait(6000, function() return (published_at[vim.uri_from_fname(DECOY)] or 0) > 0 end, 20)
+end
+case("rename_class_tests", function()
+  plant_audit(); plant_decoy()
+  local orig = { [INVOICE] = disk(INVOICE), [ITEST] = disk(ITEST), [CHECKOUT] = disk(CHECKOUT), [HELPER] = disk(HELPER), [STATICS] = disk(STATICS), [CALC] = disk(CALC) }
+  at_decl(INVOICE)
+  local got, stop = capture()
+  local res, t0 = {}, E.now()
+  refactor.rename_class({ name = "Bill", on_done = function(ok) res.done = ok end })
+  local main_ok, main_ms = until_ms(t0, function() return vim.uv.fs_stat(BILL) ~= nil and (disk(CHECKOUT) or ""):find("import demo.billing.Bill;", 1, true) ~= nil end)
+  local ok = done_wait(res)
+  local total = E.now() - t0
+  stop()
+  local BT = TEST .. "demo/billing/BillTest.java"
+  local bt = disk(BT)
+  local sums = 0
+  for _, m in ipairs(got) do if m.msg:find("Renamed class", 1, true) then sums = sums + 1 end end
+  local a = {
+    { "BillTest.java declares BillTest, InvoiceTest.java gone", select(1, has_all(bt, { "class BillTest", "new Bill(2, 3)" })) and vim.uv.fs_stat(ITEST) == nil },
+    { "InvoiceServiceTest not renamed (name only contains Invoice), its reference updated", select(1, has_all(disk(DECOY), { "class InvoiceServiceTest", "new Bill(1, 1)" })) and vim.uv.fs_stat(TEST .. "demo/billing/BillServiceTest.java") == nil },
+    { "two summaries (class, test)", find_msg(got, "Renamed class Invoice -> Bill") ~= nil and find_msg(got, "Renamed class InvoiceTest -> BillTest") ~= nil },
+    { ("main rename %d ms and test rename %d ms, each within %d ms"):format(main_ms, total - main_ms, APPLY_MS), main_ok and main_ms <= APPLY_MS and total - main_ms <= APPLY_MS },
+  }
+  local all, parts = ok, {}
+  for _, x in ipairs(a) do all = all and x[2]; parts[#parts + 1] = x[1] .. " " .. (x[2] and "ok" or "WRONG") end
+  local ok_clean, why = clean({ BT, BILL, CHECKOUT }, t0)
+  lsp.report(P .. "rename_class_tests", all and ok_clean, table.concat(parts, ", ") .. (ok_clean and "; build clean" or ("; NOT clean: " .. why)))
+  -- undo_last: the inverse refactors
+  local t1, ures = E.now(), {}
+  refactor.undo_last({ on_done = function(uok) ures.done = uok end })
+  local uok = done_wait(ures)
+  local ums = E.now() - t1
+  local back = {}
+  for p, txt in pairs(orig) do
+    if disk(p) ~= txt then back[#back + 1] = vim.fs.basename(p) end
+  end
+  local gone = vim.uv.fs_stat(BILL) == nil and vim.uv.fs_stat(BT) == nil
+  lsp.report(P .. "undo_class_tests", uok and #back == 0 and gone and ums <= 2 * APPLY_MS and refactor.undo_op == nil,
+    ("undo_last done %s in %d ms (two renames, budget %d); differs from before: [%s]; Bill/BillTest gone %s; nothing left to undo %s"):format(
+      tostring(ures.done), ums, 2 * APPLY_MS, table.concat(back, ", "), tostring(gone), tostring(refactor.undo_op == nil)))
+end)
+
+-- rename_class_tests_off: opts.tests = false: the test class keeps its name (its reference to Invoice is updated).
+-- rename_class_tests_conflict: BillTest.java exists: InvoiceTest stays and a warning says why.
+for _, k in ipairs({ "rename_class_tests_off", "rename_class_tests_conflict" }) do
+  case(k, function()
+    plant_audit()
+    local BT = TEST .. "demo/billing/BillTest.java"
+    if k:find("conflict") then
+      local f = assert(io.open(BT, "w")); f:write("package demo.billing;\n\nimport org.junit.jupiter.api.Test;\n\nclass BillTest {\n    @Test\n    void t() {}\n}\n"); f:close()
+      lsp.open(BT)
+    end
+    at_decl(INVOICE)
+    local got, stop = capture()
+    local res = {}
+    local tests_opt = nil
+    if k:find("off") then tests_opt = false end
+    refactor.rename_class({ name = "Bill", tests = tests_opt, on_done = function(ok) res.done = ok end })
+    local ok = done_wait(res)
+    stop()
+    local warn = find_msg(got, "Related tests NOT renamed", vim.log.levels.WARN)
+    local a = {
+      { "InvoiceTest stays, reference updated", select(1, has_all(disk(ITEST), { "class InvoiceTest", "new Bill(2, 3)" })) },
+      k:find("conflict") and { "warning names BillTest.java exists: " .. tostring(warn), warn ~= nil and warn:find("InvoiceTest.java", 1, true) ~= nil and warn:find("BillTest.java exists", 1, true) ~= nil }
+        or { "no warning", warn == nil },
+    }
+    local all, parts = ok, {}
+    for _, x in ipairs(a) do all = all and x[2]; parts[#parts + 1] = x[1] .. " " .. (x[2] and "ok" or "WRONG") end
+    lsp.report(P .. k, all, table.concat(parts, ", "))
+  end)
+end
+
+-- undo_move / undo_package: `<leader>ju` after a move / a package rename puts the files, folders, package lines and
+-- imports back (the fixture on disk equals the snapshot).
+for _, k in ipairs({ "undo_move", "undo_package" }) do
+  case(k, function()
+    local ok = false
+    local res = {}
+    if k == "undo_move" then
+      at_decl(INVOICE); lsp.open(CHECKOUT); lsp.open(CALC)
+      refactor.move({ package = "demo.shop", on_done = function(o) res.done = o end })
+      ok = done_wait(res)
+    else
+      local b = lsp.open(CHECKOUT); lsp.open(INVOICE); lsp.open(CALC)
+      vim.api.nvim_set_current_buf(b); vim.api.nvim_win_set_cursor(0, { 1, 9 })
+      refactor.rename_package({ name = "demo.store", on_done = function(o) res.done = o end })
+      ok = done_wait(res)
+    end
+    local moved = #F.diff(snap).missing > 0
+    local t1, ures = E.now(), {}
+    local keep_buf = vim.api.nvim_get_current_buf()
+    refactor.undo_last({ on_done = function(o) ures.done = o end })
+    local uok = done_wait(ures)
+    local ums = E.now() - t1
+    vim.wait(500, function() return false end, 20)
+    local d = F.diff(snap)
+    lsp.report(P .. k, ok and moved and uok and #d.added + #d.missing == 0 and #d.changed == 0 and ums <= APPLY_MS and refactor.undo_op == nil,
+      ("%s done %s (files moved before: %s); undo_last done %s in %d ms (budget %d); fixture vs snapshot: %s"):format(
+        k:gsub("undo_", ""), tostring(res.done), tostring(moved), tostring(ures.done), ums, APPLY_MS, F.fmt(d)))
+  end)
+end
+
+-- undo_nothing: with nothing remembered the key says so (no error, nothing changed); a second undo after one is the same.
+case("undo_nothing", function()
+  refactor.undo_op = nil
+  local got, stop = capture()
+  local r = refactor.undo_last()
+  stop()
+  local m = find_msg(got, "nothing to undo", vim.log.levels.WARN)
+  lsp.report(P .. "undo_nothing", r == false and m ~= nil, "returned " .. tostring(r) .. "; message " .. tostring(m))
 end)
 
 local left = F.diff(snap)

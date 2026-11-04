@@ -38,6 +38,7 @@ local ERROR = vim.diagnostic.severity.ERROR
 --- Last refactor outcome (summary and checks): { label, ok, err?, files = { { path, from?, unsaved?,
 --- saved_dirty?, outside?, write_err? } }, errors? (filled by the follow-up) }.
 M.last = nil
+M.undo_op = nil -- the last rename/move, undone by M.undo_last
 
 local function notify(msg, level)
   vim.notify(msg, level or vim.log.levels.INFO, { title = TITLE })
@@ -425,6 +426,77 @@ end
 local UNVERIFIED = "WARNING: could not verify that all usages were renamed (jdt.ls gave no usable answer to textDocument/references, even after a second request); check that the project still compiles"
 local references, untouched_refs -- defined with change_signature/inline below; the cold-rename check shares them
 
+--- Test classes of `old` (IntelliJ's "Rename tests", on by default there): in the module's other source roots,
+--- `<Old>Test`, `<Old>Tests`, `<Old>IT`, `<Old>ITCase`, `<Old>TestCase`, `Test<Old>` (a JUnit/TestNG import in the
+--- file). IntelliJ matches any test class whose name CONTAINS the old name and asks which to rename; with no
+--- list to confirm, only these suffixes are taken, so `UserServiceTest` is not caught by renaming `User`.
+--- Returns { { path, name } } (each to be renamed to the new name) and the list of those skipped (target exists).
+local TEST_SUFFIXES = { "Test", "Tests", "IT", "ITCase", "TestCase" }
+function M.related_tests(path, old, new)
+  local sr = src_root_of(vim.fs.dirname(path))
+  if not sr then return {}, {} end
+  local function is_test(p)
+    for _, l in ipairs(vim.fn.readfile(p, "", 200)) do
+      if l:match("^%s*import%s+static%s+org%.junit") or l:match("^%s*import%s+org%.junit") or l:match("^%s*import%s+org%.testng")
+          or l:match("^%s*import%s+junit%.") then
+        return true
+      end
+    end
+    return false
+  end
+  if vim.fn.filereadable(path) == 1 and is_test(path) then return {}, {} end
+  local want = { ["Test" .. old] = "Test" .. new }
+  for _, sfx in ipairs(TEST_SUFFIXES) do want[old .. sfx] = new .. sfx end
+  local out, skipped = {}, {}
+  for _, root in ipairs(vim.fn.glob(module_root(path) .. "/src/*/java", false, true)) do
+    root = vim.fs.normalize(root)
+    if root ~= sr then
+      for _, f in ipairs(vim.fs.find(function(n) return n:match("%.java$") ~= nil and want[n:sub(1, -6)] ~= nil end,
+          { path = root, type = "file", limit = math.huge })) do
+        local nn = want[vim.fs.basename(f):sub(1, -6)]
+        if is_test(f) then
+          if vim.uv.fs_stat(vim.fs.dirname(f) .. "/" .. nn .. ".java") then
+            skipped[#skipped + 1] = ("%s (%s.java exists)"):format(rel(f, require("nv4j.root").project(f)), nn)
+          else
+            out[#out + 1] = { path = f, name = nn }
+          end
+        end
+      end
+    end
+  end
+  table.sort(out, function(a, b) return a.path < b.path end)
+  return out, skipped
+end
+
+--- Class renames one after another: steps = { { path, name } } (the class of each file, renamed to `name`);
+--- cb(all_ok, done_steps) with the inverse steps of those that worked ({ path = new file, name = old name }).
+--- Each step is a rename_class (own summary, own undo step per buffer).
+function M.rename_chain(steps, cb)
+  local i, all_ok, did = 0, true, {}
+  local function nxt()
+    i = i + 1
+    local s = steps[i]
+    if not s then return cb(all_ok, did) end
+    local ok = pcall(vim.cmd, "silent keepalt edit " .. vim.fn.fnameescape(s.path))
+    local b = vim.api.nvim_get_current_buf()
+    if ok then
+      vim.wait(3000, function() return #vim.lsp.get_clients({ bufnr = b, name = "jdtls" }) > 0 end, 20)
+      vim.api.nvim_win_set_cursor(0, { 1, 0 })
+    end
+    local started = ok and rename_class_impl({ name = s.name, _chain = true, on_done = function(rok, step)
+      if rok and step then did[#did + 1] = step else all_ok = false end
+      vim.schedule(nxt)
+    end })
+    if not ok then
+      notify(("Rename class: could not open %s; nothing changed there"):format(s.path), vim.log.levels.WARN)
+      all_ok = false
+      vim.schedule(nxt)
+    end
+    return started
+  end
+  nxt()
+end
+
 --- opts._quiet: step 1 of a case-only rename (no summary, scan or follow-up); opts._shown_old: the name the
 --- user sees in step 2's label and string scan; opts._tmp_from = { tmp_path = original_path }.
 function rename_class_impl(opts)
@@ -434,11 +506,11 @@ function rename_class_impl(opts)
   local client = jdtls_for(path)
   local mine = false -- this call set `busy`: only it clears it
   local called = false -- on_done once, even when it throws (the error handler below calls done again)
-  local function done(ok)
+  local function done(ok, step)
     if mine then busy, mine = nil, false end
     if opts.on_done and not called then
       called = true
-      opts.on_done(ok)
+      opts.on_done(ok, step)
     end
     return ok
   end
@@ -553,7 +625,33 @@ function rename_class_impl(opts)
         return vim.api.nvim_buf_get_name(b)
       end, vim.lsp.get_buffers_by_client_id(client.id))))
       follow_up(label, before, vim.tbl_map(function(f) return f.path end, files))
-      done(true)
+      local new_path = path
+      for _, f in ipairs(files) do
+        if f.from == path or (opts._tmp_from and f.from and opts._tmp_from[f.from] == path) then new_path = f.path end
+      end
+      local step = { path = new_path, name = shown }
+      if opts._chain then -- a step of a chain (related tests, undo): the chain records the undo
+        return done(true, step)
+      end
+      -- IntelliJ's "Rename tests" (on by default): test classes named <Old>Test/<Old>Tests/<Old>IT/... follow
+      local tests, skipped = {}, {}
+      if opts.tests ~= false then tests, skipped = M.related_tests(new_path, shown, name) end
+      if #skipped > 0 then
+        notify("Related tests NOT renamed: " .. table.concat(skipped, "; "), vim.log.levels.WARN)
+      end
+      local undo = { step }
+      if #tests == 0 then
+        M.undo_op = { label = label, steps = undo }
+        return done(true)
+      end
+      if mine then busy, mine = nil, false end -- the related renames take the lock one by one
+      local keep = vim.api.nvim_get_current_buf()
+      M.rename_chain(tests, function(ok, steps)
+        for i = #steps, 1, -1 do undo[#undo + 1] = steps[i] end
+        M.undo_op = { label = label, steps = undo }
+        if vim.api.nvim_buf_is_valid(keep) then pcall(vim.api.nvim_set_current_buf, keep) end
+        done(ok)
+      end)
     end
     local settled = false
     -- Cold jdt.ls (first rename of a session): it refuses a dependent ("has syntax errors. Content of that file
@@ -877,8 +975,46 @@ function M.rename_paths(moves, label, client, opts)
   notify(summary(("%s (moved %s)"):format(label, moved), files, root) .. (#notes > 0 and (". NOTE: " .. table.concat(notes, "; ")) or "")
     .. stale_note(stale, opts.stale and opts.stale.old, cut, unread) .. ((opts.info and #opts.info > 0) and (". " .. table.concat(opts.info, "; ")) or ""),
     warn and vim.log.levels.WARN or nil)
+  -- every open Java file of this jdt.ls, as after a class rename: a dependent or the moved file keeps stale
+  -- diagnostics otherwise and the follow-up sees nothing (audit_move_class: 1 of 4 runs had no warning)
+  M.revalidate(client, vim.tbl_filter(function(p) return p:match("%.java$") end, vim.tbl_map(function(b)
+    return vim.api.nvim_buf_get_name(b)
+  end, vim.lsp.get_buffers_by_client_id(client.id))))
   follow_up(label, before, vim.tbl_map(function(f) return f.path end, files))
+  if not opts.undoing then
+    M.undo_op = { label = label, moves = vim.tbl_map(function(m) return { m[2], m[1] } end, moves) }
+  end
   return true
+end
+
+--- Undo the last rename, move or package rename of this session the way IntelliJ's one undo does: the
+--- inverse refactor, so file names, folders, `package` lines, imports and references all come back (`u` in
+--- a buffer gives back its text only; the files stay where they are). Edits made since stay. Only the last
+--- refactor is remembered; undoing it forgets it (no redo). opts.on_done(ok).
+function M.undo_last(opts)
+  opts = opts or {}
+  local function fin(ok)
+    if opts.on_done then opts.on_done(ok) end
+    return ok
+  end
+  local op = M.undo_op
+  if not op then
+    notify("Undo refactor: nothing to undo (only the last rename or move of this session is remembered)", vim.log.levels.WARN)
+    return fin(false)
+  end
+  if busy then
+    notify("Undo refactor: " .. busy_msg() .. "; nothing changed", vim.log.levels.WARN)
+    return fin(false)
+  end
+  M.undo_op = nil
+  if op.moves then
+    return fin(M.rename_paths(op.moves, "Undid: " .. op.label, nil, { undoing = true }))
+  end
+  M.rename_chain(op.steps, function(ok)
+    notify(("Undid: %s%s"):format(op.label, ok and "" or " (not completely: see the messages above)"),
+      ok and vim.log.levels.INFO or vim.log.levels.WARN)
+    fin(ok)
+  end)
 end
 
 --- Moves for renaming package `pkg` to `name`: its folder in `src_root` and the namesake folders in the

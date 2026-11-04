@@ -339,7 +339,8 @@ end, { desc = "Test for this class (open or create)" })
 -- signature is asked as text, e.g. `public int total(Invoice invoice, int discount = 0)` (a new
 -- parameter's default is what the call sites pass). <leader>jd: safe delete the method, field, constant or
 -- type at the cursor: with usages nothing is deleted and they are listed in the quickfix list; without,
--- the declaration is removed (the file, for the only type of its file).
+-- the declaration is removed (the file, for the only type of its file). <leader>ju: undo the last rename or
+-- move completely (file names, folders, references; `u` in a buffer undoes its text only).
 map("n", "<leader>jr", function()
   require("nv4j.refactor").rename()
 end, { desc = "Refactor: rename class (package on a package line)" })
@@ -358,6 +359,9 @@ end, { desc = "Refactor: change method signature" })
 map("n", "<leader>jd", function()
   require("nv4j.refactor").safe_delete()
 end, { desc = "Refactor: safe delete (usages listed, else deleted)" })
+map("n", "<leader>ju", function()
+  require("nv4j.refactor").undo_last()
+end, { desc = "Refactor: undo the last rename / move (files and folders too)" })
 -- A class file deleted by safe delete goes to a trash (stdpath("cache")/nv4j-trash): put the latest back.
 vim.api.nvim_create_user_command("Nv4jRestoreDeleted", function()
   require("nv4j.refactor").restore_deleted()
