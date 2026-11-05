@@ -78,6 +78,17 @@ end
 vim.wait(READY_BUDGET_MS + 20000, function() return spring_client() ~= nil end, 20)
 local client = spring_client()
 local ready_ms = E.now() - t_ready
+-- Times (vim.uv.now) of the workspace/didChangeConfiguration notifications sent to the Spring LS (spring_boot.nvim pushes them
+-- after a burst of classpath events, at most twice; each one makes the LS re-index every registered project): evidence for
+-- two_boot_index. Only records, the call goes through unchanged.
+local pushes = {}
+if client then
+  local orig_notify = client.notify
+  client.notify = function(self, method, params, ...)
+    if method == "workspace/didChangeConfiguration" then pushes[#pushes + 1] = vim.uv.now() end
+    return orig_notify(self, method, params, ...)
+  end
+end
 E.log("spring_ready", client and ready_ms or -1, 1)
 local names = table.concat(vim.tbl_map(function(c) return c.name end, vim.lsp.get_clients({ bufnr = pbuf })), ",")
 lsp.report(P .. "attached", client ~= nil and ready_ms <= READY_BUDGET_MS,
@@ -866,7 +877,7 @@ local ok6, err6 = pcall(function()
       local e = c and S._state.events[c.id]
       return e and ("%d (last %s, %d ms ago)"):format(e.n, tostring(e.last), vim.uv.now() - e.at) or "0"
     end
-    local ev = ("; classpath events delivered to the Spring LS: B's jdt.ls %s, A's jdt.ls %s"):format(evs(bj), evs(jdtls))
+    local ev = ("; classpath events delivered to the Spring LS: B's jdt.ls %s, A's jdt.ls %s; settings pushes %d"):format(evs(bj), evs(jdtls), #pushes)
     if not (m_ok and b_ok and p_ok and a_ok) then
       local rf = io.open(route_path, "r")
       local appended = {}
@@ -885,11 +896,12 @@ local ok6, err6 = pcall(function()
         lf:close()
       end
       ev = ("; EVIDENCE listener on B's jdt.ls %s (want %s), B jdt.ls %s, %d spring-route.log line(s) during the case%s; "
-        .. "classpath events delivered: B's jdt.ls %s, A's jdt.ls %s; symbols @/ %d, @+ %d; Spring LS 'scan java files' lines (last 4 of %d): %s"):format(
+        .. "classpath events delivered: B's jdt.ls %s, A's jdt.ls %s; settings pushes to the Spring LS %s; symbols @/ %d, @+ %d; Spring LS 'scan java files' lines (last 4 of %d): %s"):format(
         tostring(bj and S._state.registered[bj]), tostring(S._state.classpath_args and S._state.classpath_args[1]),
         bj and (bj:is_stopped() and "STOPPED" or "alive") or "nil", #appended,
-        #appended > 0 and (" (last: " .. appended[#appended]:sub(1, 160) .. ")") or "", evs(bj), evs(jdtls), #maps, #beans,
-        #idx, table.concat(vim.list_slice(idx, math.max(1, #idx - 3)), " | "))
+        #appended > 0 and (" (last: " .. appended[#appended]:sub(1, 160) .. ")") or "", evs(bj), evs(jdtls),
+        #pushes == 0 and "0" or ("%d (ms ago: %s)"):format(#pushes, table.concat(vim.tbl_map(function(t) return tostring(vim.uv.now() - t) end, pushes), ", ")),
+        #maps, #beans, #idx, table.concat(vim.list_slice(idx, math.max(1, #idx - 3)), " | "))
     end
     lsp.report(P .. "two_boot_index", mvn_rc == 0 and m_ok and b_ok and p_ok and a_ok and only_a,
       ("Spring LS (workspace folder only A: %s) answers for B after %.0f ms: request mapping /twob-only-path %s, bean TwoBOnlyController %s, "

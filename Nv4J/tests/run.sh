@@ -26,6 +26,8 @@ fi
 export NV4J_FIXTURE="$HERE/fixtures/demo"
 export NV4J_LOG="$LOG"
 export NV4J_RUNNER=1
+# Spring LS index scan lines in spring-boot-ls.log (log level only, no behaviour change): check 50 two_boot_index quotes them when it fails.
+export NV4J_SPRING_INDEX_LOG=1
 
 if [ ! -L "$HOME/.config/nv4j" ] || [ ! -d "$HOME/.config/nv4j" ]; then
   echo "FATAL: ~/.config/nv4j symlink missing or broken (expected -> $HERE/../nvim)" >&2

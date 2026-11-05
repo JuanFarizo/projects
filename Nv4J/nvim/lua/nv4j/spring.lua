@@ -388,9 +388,9 @@ local function start()
     -- Same as the VS Code client (vscode-spring-boot Main.ts): no web server in the LS process,
     -- and Boot's nested jars open on newer JDKs.
     jvm_args = vim.list_extend({ "-Dspring.main.web-application-type=NONE", "-Djdk.util.zip.disableZip64ExtraFieldValidation=true" },
-      -- debug only (NV4J_LSP_CAPTURE=1 / vim.g.nv4j_lsp_capture): the index's own log lines ("scan java files done, number of
+      -- debug only (NV4J_SPRING_INDEX_LOG=1 / vim.g.nv4j_spring_index_log, set by tests/run.sh; log level only): the index's own log lines ("scan java files done, number of
       -- index elements created: N" per project) into spring-boot-ls.log
-      require("nv4j.lspcapture").enabled() and { "-Dlogging.level.org.springframework.ide.vscode.boot.java.utils.SpringIndexerJava=INFO" } or {}),
+      (vim.g.nv4j_spring_index_log == true or vim.env.NV4J_SPRING_INDEX_LOG == "1") and { "-Dlogging.level.org.springframework.ide.vscode.boot.java.utils.SpringIndexerJava=INFO" } or {}),
     jdtls_name = "jdtls",
     -- One Spring LS process for every Boot project in the session; sts/* pick jdt.ls by projectUri.
     server = {
