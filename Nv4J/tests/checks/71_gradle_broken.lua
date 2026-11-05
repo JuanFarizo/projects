@@ -26,10 +26,22 @@
 --  fixed_live        (live): build.gradle fixed and saved from Neovim -> "build errors fixed" and java.project.getAll lists the
 --                    project within 120 s. jdt.ls does NOT reimport by itself (measured: nothing in 120 s, the failed project is
 --                    not a jdt.ls project, its build file is not watched): nv4j.buildfile sends java.project.import on the save.
+--  stream_unit       (unit, no jdt.ls): root.recover_stream (the client's on_error, plugins/java.lua) on INVALID_SERVER_JSON /
+--                    INVALID_SERVER_MESSAGE of a running jdt.ls: stops that client (stub), remembers the root as refused and WARNs
+--                    "corrupt message"; a second break in the same root only WARNs; other codes, other roots and a stopped client
+--                    do nothing.
+--  stream_live       (live, loose Main.java): after a simulated INVALID_SERVER_JSON on the real client (Client:_on_error) a NEW
+--                    jdtls client attaches to the buffer within 120 s and answers java.project.getAll.
+--  Flake 2026-11-04 16:54 (test-20261104-164008.log): jdt.ls sent a corrupt message (INVALID_SERVER_JSON at character 65536, then
+--  "Content-Length not found in header: ...window/workDoneProgress/create..."), Neovim's parser stopped, no note and no project
+--  for 120 s: broken_live and fixed_live FAIL lines now carry EVIDENCE (clients, refused roots, lsp.log on_error/exit lines,
+--  capture dumps) and wait_ready's reason. This check runs with vim.g.nv4j_lsp_capture on (raw stdout dump on the next hit).
 -- Controls (NV4J_71_CONTROL=<comma list>): oldwait (HEAD tests/lib/lsp.lua wait_ready for wait_bounded; the live wait_ready
 -- step is skipped under it, it would spin), oldbuildfile (HEAD nvim/lua/nv4j/buildfile.lua), nonotify (buildfile.on_changed a
--- no-op), folderall (folder errors without a build file path notified again). Logs cited in specs/006 T6 and the T6/T7 report.
+-- no-op), folderall (folder errors without a build file path notified again),
+-- norecover (root.recover_stream a no-op: stream_unit and stream_live FAIL). Logs cited in specs/006 T6 and the T6/T7 report.
 vim.o.confirm = false
+vim.g.nv4j_lsp_capture = true -- raw stdout of jdt.ls dumped on INVALID_SERVER_JSON / abnormal exit (docs/HANDOFF-p3.md, flake A)
 local lsp = require("lsp")
 local E = require("edit")
 local P = "71_gradle_broken."
@@ -70,6 +82,7 @@ if has("folderall") then -- the current buildfile.lua with its "names a build fi
   vim.fn.writefile(vim.split(patched, "\n"), f)
   package.loaded["nv4j.buildfile"] = dofile(f)
 end
+if has("norecover") then require("nv4j.root").recover_stream = function() return "ignored" end end
 local bf = require("nv4j.buildfile")
 if has("nonotify") then bf.on_changed = function() end end
 bf.setup()
@@ -85,6 +98,38 @@ local function build_notes(from)
     end
   end
   return out
+end
+local function evidence(size0, buf) -- why no client / no note: clients, refused roots, lsp.log lines, capture dumps, wait_ready's reason
+  local parts = {}
+  local cl = {}
+  for _, c in ipairs(vim.lsp.get_clients({ name = "jdtls" })) do
+    cl[#cl + 1] = ("%d %s %s"):format(c.id, short(c.config and c.config.root_dir or "?"), c:is_stopped() and "STOPPED" or "alive")
+  end
+  parts[#parts + 1] = "jdtls clients [" .. table.concat(cl, "; ") .. "]"
+  local ref = {}
+  for _, raw in pairs(require("nv4j.root").refused()) do ref[#ref + 1] = short(raw) end
+  parts[#parts + 1] = "roots refused by the loose cap [" .. table.concat(ref, ", ") .. "]"
+  local lines = {}
+  local f = io.open(require("nv4j.paths").logs .. "/lsp.log", "rb")
+  if f then
+    f:seek("set", size0 or 0)
+    for l in (f:read("*a") or ""):gmatch("[^\n]+") do
+      if l:find("on_error", 1, true) or l:find("INVALID_SERVER", 1, true) or l:find("Bad file descriptor", 1, true)
+        or l:find("exited", 1, true) or l:find("Content-Length not found", 1, true) then
+        lines[#lines + 1] = (l:gsub("^.-log%.lua:%d+%s*", ""):sub(1, 220))
+      end
+    end
+    f:close()
+  end
+  parts[#parts + 1] = ("lsp.log on_error/exit lines %d: %s"):format(#lines, table.concat(vim.list_slice(lines, 1, 3), " | "))
+  local dumps = {}
+  for _, st in pairs(require("nv4j.lspcapture").states()) do if st.last_dump then dumps[#dumps + 1] = st.last_dump end end
+  parts[#parts + 1] = "capture dumps [" .. table.concat(dumps, ", ") .. "]"
+  if buf and vim.api.nvim_buf_is_valid(buf) then
+    local r, why = lsp.wait_ready(buf, 3000)
+    parts[#parts + 1] = "wait_ready(3000): " .. (r and "ready" or tostring(why))
+  end
+  return table.concat(parts, "; ")
 end
 local function show(list)
   return table.concat(vim.tbl_map(function(n) return ("[%s] %s"):format(tostring(n.level), short(n.msg:gsub("\n", " / "))) end, list), " | "):sub(1, 500)
@@ -216,6 +261,41 @@ do
       :format(n_bad, table.concat(sent, ","), n_other, n_fixed, log))
 end
 
+-- ── unit: a corrupt jdt.ls stream restarts the client ──────────────────────────────────────────────
+do
+  local R = require("nv4j.root")
+  R.clear_refused()
+  local D = TMP .. "/stream"
+  vim.fn.mkdir(D, "p")
+  local stops, stopped = 0, false
+  local client = { config = { root_dir = D }, is_stopped = function() return stopped end,
+    stop = function(_, force) stops = stops + 1 stopped = force == true end }
+  local other = { config = { root_dir = TMP .. "/elsewhere" }, is_stopped = function() return false end, stop = function() stops = stops + 100 end }
+  local codes = vim.lsp.rpc.client_errors
+  local n0 = #notes
+  local list = { client, other }
+  local get = function() return list end
+  local r_other = R.recover_stream(D, codes.READ_ERROR, get)
+  local r_none = R.recover_stream(TMP .. "/nowhere", codes.INVALID_SERVER_JSON, get)
+  local r1 = R.recover_stream(D, codes.INVALID_SERVER_JSON, get)
+  vim.wait(500, function() return stops > 0 end, 10)
+  local refused = R.refused()[R.canon(D)] ~= nil
+  local was_stopped = stopped
+  local r2 = R.recover_stream(D, codes.INVALID_SERVER_MESSAGE, get) -- the stopped client no longer counts
+  stopped = false
+  local r3 = R.recover_stream(D, codes.INVALID_SERVER_MESSAGE, get) -- a client of the same root again: warn only
+  vim.wait(200, function() return false end, 10)
+  local warns = 0
+  for i = n0 + 1, #notes do if notes[i].msg:find("corrupt message", 1, true) then warns = warns + 1 end end
+  R.clear_refused()
+  lsp.report(P .. "stream_unit",
+    r_other == "ignored" and r_none == "no client" and r1 == "restart" and stops == 1 and was_stopped == true and refused
+      and r2 == "no client" and r3 == "again" and warns == 2,
+    ("other error code: %s (want ignored); other root: %s (want no client); first break: %s, stop(true) calls %d (want restart, 1), root remembered %s; "
+      .. "stopped client: %s (want no client); same root again: %s (want again); corrupt-message WARNs %d (want 2); log %s")
+      :format(r_other, r_none, r1, stops, tostring(refused), r2, r3, warns, log))
+end
+
 -- ── live: the real broken build ───────────────────────────────────────────────────────────────
 local paths = require("nv4j.paths")
 local LIVE = TMP .. "/live"
@@ -255,6 +335,7 @@ else
     local sched_ms = ran and (ran - ts) / 1e6 or -1
     -- the harness wait on the same broken import is bounded now
     local wr_ms, gets, wr = -1, -1, "skipped (oldwait control)"
+    local no_client_why
     if not has("oldwait") then
       local client = vim.lsp.get_clients({ name = "jdtls", bufnr = buf })[1]
       if client then
@@ -270,6 +351,8 @@ else
         client.request = orig_req
       else
         wr = "no jdtls client"
+        local _, why = lsp.wait_ready(buf, 3000)
+        no_client_why = why
       end
     end
     local grew = (vim.uv.fs_stat(lsplog) or { size = 0 }).size - size0
@@ -279,8 +362,9 @@ else
       note ~= nil and nmsg:find("build.gradle: build file has errors", 1, true) ~= nil and nmsg:find("line 3", 1, true) ~= nil
         and #all == 1 and cpu_s < 1.5 and sched_ms >= 0 and sched_ms < 200
         and (has("oldwait") or (wr == "nil" and wr_ms <= 8000 and gets <= 14)),
-      ("note after %.0f ms: %s; build notes %d (want 1); nvim CPU %.2f s in 8 s of waiting (want < 1.5), schedule latency %.1f ms; wait_ready(5000) -> %s in %.0f ms with %d getAll (want nil, <= 8000, <= 14); lsp.log +%d B; log %s")
-        :format(note_ms, show(note and { note } or {}), #all, cpu_s, sched_ms, wr, wr_ms, gets, grew, log))
+      ("note after %.0f ms: %s; build notes %d (want 1); nvim CPU %.2f s in 8 s of waiting (want < 1.5), schedule latency %.1f ms; wait_ready(5000) -> %s in %.0f ms with %d getAll (want nil, <= 8000, <= 14); lsp.log +%d B%s; log %s")
+        :format(note_ms, show(note and { note } or {}), #all, cpu_s, sched_ms, wr, wr_ms, gets, grew,
+          (note and wr == "nil") and "" or ("; EVIDENCE " .. evidence(size0, buf) .. (no_client_why and ("; wait_ready: " .. no_client_why) or "")), log))
 
     -- fixed_live: the user fixes the block and saves from Neovim
     local n1 = #notes
@@ -306,8 +390,9 @@ else
     local fixed_note
     for i = n1 + 1, #notes do if notes[i].msg:find("build errors fixed", 1, true) then fixed_note = notes[i] end end
     lsp.report(P .. "fixed_live", fixed_note ~= nil and listed,
-      ("after the fix + :w: 'build errors fixed' %s, getAll lists the project %s, after %.0f ms (want both within 120 s); notes since: %s; log %s")
-        :format(tostring(fixed_note ~= nil), tostring(listed), (vim.uv.hrtime() - tf) / 1e6, show(vim.list_slice(notes, n1 + 1)), log))
+      ("after the fix + :w: 'build errors fixed' %s, getAll lists the project %s, after %.0f ms (want both within 120 s); notes since: %s%s; log %s")
+        :format(tostring(fixed_note ~= nil), tostring(listed), (vim.uv.hrtime() - tf) / 1e6, show(vim.list_slice(notes, n1 + 1)),
+          (fixed_note ~= nil and listed) and "" or ("; EVIDENCE " .. evidence(size0, buf)), log))
   end)
   if not ok then lsp.report(P .. "broken_live", false, "error: " .. tostring(err)) end
   for _, c in ipairs(vim.lsp.get_clients({ name = "jdtls" })) do c:stop() end
@@ -321,6 +406,44 @@ else
   local rr = vim.uv.fs_realpath(LIVE) or LIVE
   vim.fn.delete(paths.jdtls_data .. "/" .. project_name(rr), "rf")
   vim.fn.delete(paths.jdtls_config .. "/" .. project_name(rr), "rf")
+end
+
+-- ── live: a corrupt stream on the real client ─────────────────────────────────────────────────────
+do
+  local ok, err = pcall(function()
+    local D = TMP .. "/streamlive"
+    write(D .. "/Main.java", "public class Main { public static void main(String[] a) { System.out.println(1); } }\n")
+    local n0 = #notes
+    local buf = lsp.open(D .. "/Main.java")
+    local first
+    vim.wait(180000, function() first = vim.lsp.get_clients({ name = "jdtls", bufnr = buf })[1]; return first ~= nil end, 200)
+    local ready = first ~= nil and lsp.wait_ready(buf, 120000) ~= nil
+    local old_id = first and first.id
+    if first then first:_on_error(vim.lsp.rpc.client_errors.INVALID_SERVER_JSON, "simulated corrupt message") end
+    local t0 = vim.uv.hrtime()
+    local second
+    vim.wait(120000, function()
+      for _, c in ipairs(vim.lsp.get_clients({ name = "jdtls", bufnr = buf })) do
+        if c.id ~= old_id and not c:is_stopped() then second = c end
+      end
+      return second ~= nil
+    end, 200)
+    local answered = false
+    if second then
+      local res = second:request_sync("workspace/executeCommand", { command = "java.project.getAll" }, 60000, buf)
+      answered = res ~= nil and res.err == nil
+    end
+    local warns = 0
+    for i = n0 + 1, #notes do if notes[i].msg:find("corrupt message", 1, true) then warns = warns + 1 end end
+    lsp.report(P .. "stream_live", ready and second ~= nil and answered and warns == 1 and (first and first:is_stopped()),
+      ("first client ready %s (id %s), after the simulated break old client stopped %s, new client %s (id %s) attached after %.0f ms and answered getAll %s, corrupt-message WARNs %d (want 1); log %s")
+        :format(tostring(ready), tostring(old_id), tostring(first and first:is_stopped()), tostring(second ~= nil), tostring(second and second.id),
+          (vim.uv.hrtime() - t0) / 1e6, tostring(answered), warns, log))
+  end)
+  if not ok then lsp.report(P .. "stream_live", false, "error: " .. tostring(err)) end
+  for _, c in ipairs(vim.lsp.get_clients({ name = "jdtls" })) do c:stop(true) end
+  vim.wait(15000, function() return #vim.lsp.get_clients({ name = "jdtls" }) == 0 end, 200)
+  require("nv4j.root").clear_refused()
 end
 
 vim.fn.delete(TMP, "rf")

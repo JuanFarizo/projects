@@ -184,7 +184,7 @@ end
 function M.refused() return vim.deepcopy(refused_roots) end
 
 --- Forget refused roots (tests).
-function M.clear_refused() refused_roots = {} warned_loose = {} end
+function M.clear_refused() refused_roots = {} warned_loose = {} stream_restarted = {} end
 
 --- Called when a jdt.ls client has exited: every root the cap refused that still has a loaded, named, not
 --- attached Java buffer gets its jdt.ls started if warn_loose now allows it (cap checked again, root by root,
@@ -228,6 +228,41 @@ function M.release_refused(get_clients, start)
     end
   end
   return started
+end
+
+local stream_restarted = {} -- canon root -> true: its jdt.ls was already restarted once after a corrupt stream
+--- A jdt.ls client whose stdout stream broke (`INVALID_SERVER_JSON` / `INVALID_SERVER_MESSAGE`, flake A in docs/HANDOFF-p3.md:
+--- jdt.ls wrote two messages into one, about 64 KB in) is deaf from then on: Neovim's parser stops, the client stays listed,
+--- answers nothing, and no Java feature works until the user restarts by hand. Called from the client's `on_error`: the first
+--- time per root and Neovim session it WARNs, stops that client for good (`stop(true)`) and remembers the root as refused, so
+--- the exit hook in plugins/java.lua (release_refused) starts a fresh jdt.ls for the still-loaded buffers. A second break in
+--- the same root only WARNs (no restart loop). Other error codes do nothing.
+---@param root? string the client's root_dir
+---@param code integer vim.lsp.rpc.client_errors value
+---@param get_clients? fun(): table[] default: live jdtls clients (tests pass stubs)
+---@return string action "restart" | "again" | "ignored" | "no client"
+function M.recover_stream(root, code, get_clients)
+  local codes = vim.lsp.rpc.client_errors
+  if not root or (code ~= codes.INVALID_SERVER_JSON and code ~= codes.INVALID_SERVER_MESSAGE) then return "ignored" end
+  get_clients = get_clients or function() return vim.lsp.get_clients({ name = "jdtls" }) end
+  local croot = M.canon(root)
+  local client
+  for _, c in ipairs(get_clients()) do
+    local r = c.config and c.config.root_dir
+    if running(c) and r and M.canon(r) == croot then client = c end
+  end
+  if not client then return "no client" end
+  if stream_restarted[croot] then
+    vim.notify(("jdt.ls for %s sent a corrupt message again; not restarting it a second time. Restart it with :LspRestart.")
+      :format(root), vim.log.levels.WARN, { title = "Nv4J" })
+    return "again"
+  end
+  stream_restarted[croot] = true
+  M.note_refused(root)
+  vim.notify(("jdt.ls for %s sent a corrupt message and no longer answers; restarting it (Java features return in a few seconds).")
+    :format(root), vim.log.levels.WARN, { title = "Nv4J" })
+  vim.schedule(function() pcall(client.stop, client, true) end)
+  return "restart"
 end
 
 --- Idempotent guard on `mod.start_or_attach` (nvim-jdtls): a config that opts.jdtls marked `nv4j_refused` (cap)

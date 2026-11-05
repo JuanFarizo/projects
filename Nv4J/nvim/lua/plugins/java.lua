@@ -135,6 +135,12 @@ return {
           for _, f in ipairs(vim._ensure_list(prev_exit or {})) do pcall(f, ...) end
           vim.schedule(function() pcall(require("nv4j.root").release_refused) end)
         end
+        -- A corrupt jdt.ls stream leaves a deaf client: stop it and start a fresh one (nv4j/root.lua recover_stream).
+        local prev_error, error_root = config.on_error, config.root_dir
+        config.on_error = function(code, ...)
+          if prev_error then pcall(prev_error, code, ...) end
+          pcall(require("nv4j.root").recover_stream, error_root, code)
+        end
         require("nv4j.lspcapture").install()
         -- D25: a second loose-file jdt.ls is about to start (no build file, no .nv4j): warn once; over
         -- vim.g.nv4j_loose_max (default 1) the start is refused by the start_or_attach guard below.
