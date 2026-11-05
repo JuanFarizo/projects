@@ -83,31 +83,6 @@ function M.gradle_settings_root(dir, git_root, nv4j_root)
   return nil
 end
 
---- A Maven module whose parent pom (in a directory above, listing it in `<module>`) is not the git root:
---- the aggregator is the jdt.ls root, so sibling modules resolve. Climbs while each parent lists the
---- directory below it; nil when `dir` has no pom or no parent lists it. Never reaches $HOME or above.
----@return string? root
-function M.maven_parent_root(dir)
-  if not dir or not vim.uv.fs_stat(dir .. "/pom.xml") then return nil end
-  local top
-  local cur = vim.fs.dirname(dir)
-  while cur and cur ~= dir and not M.home_or_above(cur) do
-    local f = io.open(cur .. "/pom.xml")
-    if not f then break end
-    local text = f:read("*a"):gsub("<!%-%-.-%-%->", "")
-    f:close()
-    local listed = false
-    for m in text:gmatch("<module>%s*(.-)%s*</module>") do
-      m = m:gsub("/pom%.xml$", ""):gsub("/$", "")
-      if vim.fs.normalize(cur .. "/" .. m) == dir then listed = true break end
-    end
-    if not listed then break end
-    top = cur
-    dir, cur = cur, vim.fs.dirname(cur)
-  end
-  return top
-end
-
 --- Project root of `path`, first rule that applies:
 ---  1. the nearest dir with a `.nv4j` file (D25), so every directory below it shares one jdt.ls,
 ---     except: a `.nv4j` with no build file of its own does not steal a Maven/Gradle module sitting
@@ -141,7 +116,7 @@ function M.project(path)
   if git_root then
     if has_build(git_root) then return git_root, true, "build" end
   end
-  return M.gradle_settings_root(marker_root, git_root, nv4j_root) or M.maven_parent_root(marker_root) or marker_root, true, "build"
+  return M.gradle_settings_root(marker_root, git_root, nv4j_root) or marker_root, true, "build"
 end
 
 local warned_loose = {} -- canon root -> true once its refusal/warning was shown

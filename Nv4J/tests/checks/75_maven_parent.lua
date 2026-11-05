@@ -1,11 +1,12 @@
--- Maven module whose parent pom is not the git root: the aggregator that lists the module is the root.
+-- Maven module under an aggregator: Nv4J follows IntelliJ (MavenProjectsTree.findAggregator links a module to its
+-- aggregator only through an imported pom; nothing climbs from a submodule). The user marks where the project starts
+-- with a `.nv4j` file (D25); the folder holding it is the root and the modules below it are its children.
 -- Pure unit cases on temp trees under /tmp/nv4j/maven-parent-<pid>; root.project reads files only, no jdt.ls.
---  parent_listed   backend/pom.xml lists app and core, git root above has no pom: a file of app -> backend, kind build.
---  two_levels      backend -> services -> orders: the climb continues while each parent lists the child.
---  not_listed      a parent pom that does NOT list the module (a commented <module> does not count): the module stays its own root.
---  module_pom_path <module>app/pom.xml</module> and a trailing slash are read.
---  no_parent       a standalone module under a dir without pom: unchanged. Git root with a pom still wins (older rule).
--- Control: remove the `M.maven_parent_root(marker_root) or` call in root.project and parent_listed/two_levels/module_pom_path FAIL.
+--  module_alone     backend/pom.xml lists app, no .nv4j: a file of app -> app (NOT backend), as IntelliJ opening that folder.
+--  nv4j_parent      backend/.nv4j beside backend/pom.xml: files of app and core -> backend, kind nv4j.
+--  nv4j_two_levels  .nv4j at the top aggregator: a module two levels down -> the top.
+--  nv4j_no_pom      .nv4j in a folder with no pom beside it does not swallow a module's pom (D25 rule kept): -> the module.
+--  git_root_pom     git root holding a pom wins over a nearer module pom (older rule kept).
 local lsp = require("lsp")
 local P = "75_maven_parent."
 local log = vim.env.NV4J_LOG or "(no NV4J_LOG)"
@@ -25,36 +26,37 @@ local function pom(modules)
   return "<project><modules>" .. table.concat(t) .. "</modules></project>"
 end
 local root = require("nv4j.root")
-local function case(name, file, want)
+local function case(name, file, want, want_kind)
   local r, m, k = root.project(TMP .. "/" .. file)
-  lsp.report(P .. name, r == TMP .. "/" .. want and m and k == "build",
-    ("%s -> %s, %s, %s (want TMP/%s, true, build); log %s"):format(file, r:gsub(vim.pesc(TMP), "TMP"), tostring(m), k, want, log))
+  lsp.report(P .. name, r == TMP .. "/" .. want and m and k == want_kind,
+    ("%s -> %s, %s, %s (want TMP/%s, true, %s); log %s"):format(file, r:gsub(vim.pesc(TMP), "TMP"), tostring(m), k, want, want_kind, log))
 end
 
-write(TMP .. "/r1/.git/HEAD", "")
-write(TMP .. "/r1/backend/pom.xml", pom({ "app", "core" }))
+write(TMP .. "/r1/backend/pom.xml", pom({ "app" }))
 write(TMP .. "/r1/backend/app/pom.xml", "<project/>")
-write(TMP .. "/r1/backend/core/pom.xml", "<project/>")
-case("parent_listed", "r1/backend/app/src/A.java", "r1/backend")
-case("parent_listed_core", "r1/backend/core/src/C.java", "r1/backend")
+case("module_alone", "r1/backend/app/src/A.java", "r1/backend/app", "build")
 
-write(TMP .. "/r2/backend/pom.xml", pom({ "services" }))
-write(TMP .. "/r2/backend/services/pom.xml", pom({ "orders" }))
-write(TMP .. "/r2/backend/services/orders/pom.xml", "<project/>")
-case("two_levels", "r2/backend/services/orders/src/O.java", "r2/backend")
+write(TMP .. "/r2/backend/.nv4j", "")
+write(TMP .. "/r2/backend/pom.xml", pom({ "app", "core" }))
+write(TMP .. "/r2/backend/app/pom.xml", "<project/>")
+write(TMP .. "/r2/backend/core/pom.xml", "<project/>")
+case("nv4j_parent", "r2/backend/app/src/A.java", "r2/backend", "nv4j")
+case("nv4j_parent_core", "r2/backend/core/src/C.java", "r2/backend", "nv4j")
 
-write(TMP .. "/r3/pom.xml", pom({ "other" }) .. "<!-- <module>app</module> -->")
-write(TMP .. "/r3/app/pom.xml", "<project/>")
-case("not_listed", "r3/app/src/A.java", "r3/app")
+write(TMP .. "/r3/.nv4j", "")
+write(TMP .. "/r3/pom.xml", pom({ "services" }))
+write(TMP .. "/r3/services/pom.xml", pom({ "orders" }))
+write(TMP .. "/r3/services/orders/pom.xml", "<project/>")
+case("nv4j_two_levels", "r3/services/orders/src/O.java", "r3", "nv4j")
 
-write(TMP .. "/r4/pom.xml", pom({ "app/pom.xml", "lib/" }))
+write(TMP .. "/r4/.nv4j", "")
 write(TMP .. "/r4/app/pom.xml", "<project/>")
-write(TMP .. "/r4/lib/pom.xml", "<project/>")
-case("module_pom_path", "r4/app/src/A.java", "r4")
-case("module_trailing_slash", "r4/lib/src/L.java", "r4")
+case("nv4j_no_pom", "r4/app/src/A.java", "r4/app", "build")
 
+write(TMP .. "/r5/.git/HEAD", "")
+write(TMP .. "/r5/pom.xml", pom({ "app" }))
 write(TMP .. "/r5/app/pom.xml", "<project/>")
-case("no_parent", "r5/app/src/A.java", "r5/app")
+case("git_root_pom", "r5/app/src/A.java", "r5", "build")
 
 vim.fn.delete(TMP, "rf")
 lsp.finish()
