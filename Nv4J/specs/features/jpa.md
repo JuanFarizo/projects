@@ -1,6 +1,6 @@
 # Feature: JPA checks (Spring Data JPA)
 
-Priority: P4 (D6 "JPA checks"). Status: research only (2026-11-05). Nothing is built and nothing was run live; every statement about Nv4J below is read from the config or from the Spring Tools source, and each is marked `source` (read) or `probe needed` (must be measured on a real run before it is trusted).
+Priority: P4 (D6 "JPA checks"). Status: 2026-11-05 research done, user rulings applied (below), derived-query diagnostic and Boot 4 fixture built; live checks against the real Spring LS and jdt.ls NOT yet run (machine in use); every statement about Nv4J below is read from the config or from the Spring Tools source, and each is marked `source` (read) or `probe needed` (must be measured on a real run before it is trusted).
 
 ## Sources read (pinned)
 
@@ -27,15 +27,17 @@ No problem type exists in the Spring LS for "this derived query method names a p
 - spring-boot.nvim serves `application*.yml/properties` only (`spring-language-server.md`): `jpa-named-queries.properties` (J4) is NOT served.
 - Fixture `tests/fixtures/demo`: Boot 3.5.13, `Customer` (`@Entity`), `CustomerRepository` (`JpaRepository<Customer, Long>`, two derived queries, no `@Query`). Spring Data JPA is 3.x there, so J5 cannot apply; J1, J2, J3, J6 can.
 
-## Gaps and decisions proposed (Claude, the user can overturn)
+## Rulings (user, 2026-11-05) and what was built
 
-| # | Proposal | Cost if wrong |
-|---|----------|---------------|
-| P1 | First measure, then build: one probe script that opens `CustomerRepository` with a planted bad `@Query("selec c from Customer c")`, and one with `findBy` completion, against the real Spring LS. What shows decides what is a check, what is a fix, what is a known limit. | none |
-| P2 | J1 and J2 become checks if the probe shows they work; if a setting does not reach the server, fix by pushing it (small Lua). | a missing setting push is a one-line fix |
-| P3 | J4: serve `META-INF/jpa-named-queries.properties` to the Spring LS only if the probe shows the server answers for it (needs the plugin gate widened; touches spring-boot.nvim config). | gate change affects every `.properties` file; keep it to this one name |
-| P4 | J5: not tested on the demo fixture (Boot 3.5). Testing it needs a Boot 4 fixture and an AOT build (slow, network). Left out until the user wants it. | the feature may exist for the user's real Boot 4 project and be unverified |
-| P5 | Unknown property in a derived query name: no check, listed as a known difference from IntelliJ Ultimate. Building our own would mean a second source of truth beside the Spring LS (jdt.ls can resolve the entity's properties, but a derived-query name parser is real work, not lazy). | the user does not get the IntelliJ warning |
+| # | Ruling | State |
+|---|--------|-------|
+| R1 | J5 (code lens over query methods, "Add `@Query`") must be supported and tested, whatever it costs (network, time): the tests get a Spring Boot 4 / Spring Data JPA 4 fixture. | Fixture `tests/fixtures/jpa4` built (Boot 4.0.8, Java 25, `spring-boot-maven-plugin`, `Customer` with an `@Embedded` `Address`, `CustomerRepository` with 3 derived methods and one `@Query`). `mvn compile` and `spring-boot:process-aot` run on it; `target/spring-aot/main/resources/jpa4/CustomerRepository.json` holds the generated query of each method (what the lens shows). The demo fixture stays on Boot 3.5 (28 other checks depend on it). Live check pending. |
+| R2 | Reproduce IntelliJ's warning for a derived query method naming a property the entity does not have ("try to replicate the behaviour, based on the code or how it should work"). | Built as our own code (the Spring LS has no such problem type): `nvim/lua/nv4j/dataquery.lua`. Rules are Spring Data's own (`PartTree`, `Part.Type` keywords, `PropertyPath.create`: camel-case head/tail, `_` split, `Or`/`And` only before an uppercase letter, `OrderBy`). Message is Spring's: `No property 'emial' found for type 'Customer'`, ERROR, on exactly the bad text. Entity read through jdt.ls definition + treesitter (fields, record components, getters, superclasses, nested types, collections' element type); a type that is not read (library class, generic parameter, jdt.ls gives no file) accepts anything, so no false warning. Checks 76 (46 unit cases, 2 controls) and 77 (11 buffer cases with a stub jdt.ls, 3 controls) pass. Pending: live with the real jdt.ls (`78_jpa`), and the oracle below. |
+| R3 | Mason fresh install: the user tests it. | Not mine. |
+
+Known limits of R2 (said plainly): an entity that extends a library class (`AbstractPersistable<Long>`) is not judged; derived methods of repositories declared with `@RepositoryDefinition` are not found (only `extends ...Repository<T, ID>`); Spring's custom-fragment methods and `@Query`-less methods named on purpose for a fragment would be flagged (`findByNonsense` implemented by a fragment); property names with `@Column(name=)` differences do not matter (Java names are used, like Spring).
+
+Oracle for R2 (to do with the live run): Spring Data itself rejects a bad derived name when `spring-boot:process-aot` runs on `jpa4`. The live check puts every name of check 76's list into a repository of the fixture, runs `process-aot` (must succeed) and then the bad names (must fail naming each property), so the parser is compared with the real implementation and not only with my reading of it.
 
 ## Pass/fail checks (to write after the probe, run when the machine is free)
 
@@ -48,5 +50,6 @@ Proposed check `76_jpa` (Spring LS and jdt.ls live), cases and controls, budget-
 
 ## Open items
 
-- Probe not yet written or run (P1).
+- Probe against the real Spring LS not yet run: whether J1/J2/J3/J4/J6 show in Nv4J, and the settings push (`boot-java.*` defaults).
+- J5 live: code lens over `findByEmail`, code action "Add `@Query`" on the Boot 4 fixture; not run.
 - Whether Neovim shows semantic tokens for the JPQL string (J3) is unmeasured.
