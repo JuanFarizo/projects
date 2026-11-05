@@ -86,6 +86,8 @@ return {
       require("nv4j.buildfile").setup()
       -- Unused-import warnings also while the file has compile errors (JDT drops them; nv4j/unused_imports.lua).
       require("nv4j.unused_imports").setup()
+      -- Derived query method names against the entity's properties (findByEmial; nv4j/dataquery.lua).
+      require("nv4j.dataquery").setup()
       -- No jdt.ls for unnamed buffers (nvim-dap's terminal setup makes one, nv4j/debug.lua).
       require("nv4j.debug").setup()
 
