@@ -60,4 +60,27 @@ end
 unknown("findByAnything")
 local r = D.check("findByExtFoo", "Customer", resolver)
 lsp.report(P .. "unknown_property_type", r == nil, r and r.message or "accepted (property type unknown)")
+
+-- Same names Spring Data accepted in tests/lib/oracle_dataquery.sh (jpa4 entity: id, email, fullName, active, address{city, zip}):
+-- the parser must accept them all, and the 4 names Spring rejected there (log /tmp/nv4j/logs/oracle-dq.log).
+local JPA4 = { Customer = { id = false, email = false, fullName = false, active = false, address = "Address" },
+  Address = { city = false, zip = false } }
+local function jr(t) return JPA4[t] end
+local oracle_ok = {
+  "findByEmail", "findByFullNameContainingIgnoreCaseOrderByEmailAsc", "findByEmailAndActive", "findByEmailOrFullName",
+  "findByActiveTrue", "findByAddressCity", "findByAddress_City", "findByAddressCityAndAddressZip",
+  "findByEmailOrderByFullNameAsc", "findTop3ByOrderByFullNameDesc", "findAllByEmailIgnoreCase", "findDistinctByEmail",
+  "countByActive", "existsByEmail", "findByEmailIsNotNull", "findByIdIn", "findByFullNameNot", "findByEmailAllIgnoreCase",
+  "findAll",
+}
+local wrong = {}
+for _, n in ipairs(oracle_ok) do if D.check(n, "Customer", jr) then wrong[#wrong + 1] = n end end
+lsp.report(P .. "oracle_good_names", #wrong == 0, #wrong == 0 and (#oracle_ok .. " names accepted, as Spring did") or ("rejected: " .. table.concat(wrong, ", ")))
+local msgs = {}
+for n, want in pairs({ findByEmial = "No property 'emial' found for type 'Customer'", findByFullNme = "No property 'fullNme' found for type 'Customer'",
+  findByAddressCty = "No property 'cty' found for type 'Address'", findByAddress_Cty = "No property 'cty' found for type 'Address'" }) do
+  local r = D.check(n, "Customer", jr)
+  if not (r and r.message == want) then msgs[#msgs + 1] = n .. " -> " .. (r and r.message or "nil") end
+end
+lsp.report(P .. "oracle_bad_names", #msgs == 0, #msgs == 0 and "4 names rejected with Spring's message" or table.concat(msgs, "; "))
 lsp.finish()
