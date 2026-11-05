@@ -66,6 +66,10 @@
 --  testng_refused   : nearest and class in a TestNG file: no launch, WARN naming <leader>tT, error in the result, lock released.
 --  testng_project_mixed: JUnit 4 + TestNG classes in one project: project scope runs JUnit 4 (1/1/1, one launch), WARN names TestNG.
 --  testng_project_only: a TestNG-only project (/tmp/nv4j/ngonly60-<pid>): project scope refused with the TestNG message, no launch.
+--  testng_pick_real : a real TestNG run: throwaway project /tmp/nv4j/ngreal60-<pid> (TestNG 7.5, one passing and one failing test); the real
+--                     <leader>tT mapping (vim.ui.select answers the picker) runs passes() then fails() through nvim-jdtls's pick_test, the
+--                     java-test launcher (com.microsoft.java.test.runner.Launcher, seen by nvim-dap) and testng.show: a pass mark on the
+--                     passing method's line, an error diagnostic (source testng, the assertion message) on the failing method's line.
 --  multi_module     : parent pom with .git (/tmp/nv4j/mm60-<pid>), modules core and app under one jdt.ls root: nearest in each
 --                     module, then project from the parent: 2 launches, 2 passed, both classes.
 --                     Controls n60y (JUnit 4 skipped like TestNG, project run reads one Java project), n60z (TestNG not skipped).
@@ -666,6 +670,92 @@ local ok_all, err = pcall(function()
     vim.lsp.stop_client(gc.id, true)
   end
   vim.fn.delete(gd, "rf")
+
+  -- a real TestNG run through <leader>tT (nvim-jdtls pick_test, java-test bundle, TestNG launcher): throwaway project /tmp/nv4j/ngreal60-<pid>
+  local function write(path, lines)
+    vim.fn.mkdir(vim.fs.dirname(path), "p")
+    vim.fn.writefile(lines, path)
+  end
+  local rd = "/tmp/nv4j/ngreal60-" .. vim.fn.getpid()
+  vim.fn.delete(rd, "rf")
+  write(rd .. "/pom.xml", { '<project xmlns="http://maven.apache.org/POM/4.0.0"><modelVersion>4.0.0</modelVersion>',
+    "<groupId>x</groupId><artifactId>ngreal</artifactId><version>1</version>",
+    "<properties><maven.compiler.release>21</maven.compiler.release></properties>",
+    "<dependencies><dependency><groupId>org.testng</groupId><artifactId>testng</artifactId><version>7.5</version><scope>test</scope></dependency></dependencies></project>" })
+  write(rd .. "/src/test/java/x/NgRealTest.java", { "package x;", "", "import org.testng.Assert;", "import org.testng.annotations.Test;", "",
+    "public class NgRealTest {", "    @Test", "    public void passes() {", "        Assert.assertEquals(4, 2 + 2);", "    }", "",
+    "    @Test", "    public void fails() {", "        Assert.assertEquals(7, 2 + 2);", "    }", "}" })
+  local rb = lsp.open(rd .. "/src/test/java/x/NgRealTest.java")
+  local rc = lsp.wait_ready(rb, 120000)
+  if not rc then
+    lsp.report(P .. "testng_pick_real", false, "jdt.ls did not import " .. rd)
+  else
+    local NGRUN = "com.microsoft.java.test.runner.Launcher"
+    local cfgs = {}
+    dap.listeners.on_config["n60ng"] = function(c)
+      if c.mainClass == NGRUN then cfgs[#cfgs + 1] = vim.deepcopy(c) end
+      return c
+    end
+    vim.api.nvim_set_current_buf(rb)
+    local lpass = E.line_of(rb, "public void passes") -- 0-based (E.line_of)
+    local lfail = E.line_of(rb, "public void fails")
+    local mapping = vim.fn.maparg("<leader>tT", "n", false, true)
+    local orig_select = vim.ui.select
+    -- press <leader>tT, choose `suffix` in the picker; returns the labels the picker showed
+    local function press(suffix)
+      local labels, chosen = nil, false
+      vim.ui.select = function(list, o, cb)
+        labels = vim.tbl_map(function(it) return o.format_item and o.format_item(it) or tostring(it) end, list)
+        for i, l in ipairs(labels) do
+          if l:sub(-#suffix) == suffix then chosen = true; return cb(list[i]) end
+        end
+        cb(nil)
+      end
+      mapping.callback()
+      vim.wait(15000, function() return labels ~= nil end, 20) -- plain Lua flag, no request in the condition
+      vim.ui.select = orig_select
+      return labels, chosen
+    end
+    local ngns = function() return vim.api.nvim_get_namespaces().testng end
+    local t0 = vim.uv.hrtime()
+    local ms = function() return (vim.uv.hrtime() - t0) / 1e6 end
+    -- 1: the passing test: a pass mark (extmark) on its line, no diagnostic
+    local lab1, ch1 = press("NgRealTest#passes()")
+    local seen_pass = ch1 and vim.wait(120000, function()
+      local ns = ngns()
+      return ns ~= nil and #vim.api.nvim_buf_get_extmarks(rb, ns, 0, -1, {}) > 0
+    end, 50)
+    local ms1 = ms()
+    local ns = ngns()
+    local marks = ns and vim.api.nvim_buf_get_extmarks(rb, ns, 0, -1, {}) or {}
+    local pass_ok = seen_pass and #marks == 1 and marks[1][2] == lpass and (ns and #vim.diagnostic.get(rb, { namespace = ns }) or 0) == 0
+    vim.wait(3000) -- let the launch end (dap `after`)
+    pcall(function() dap.terminate() end)
+    -- 2: the failing test: an error diagnostic from testng on its line with the assertion message
+    t0 = vim.uv.hrtime()
+    local lab2, ch2 = press("NgRealTest#fails()")
+    local seen_fail = ch2 and vim.wait(120000, function()
+      return #vim.diagnostic.get(rb, { namespace = ngns() }) > 0
+    end, 50)
+    local ms2 = ms()
+    local ds = vim.diagnostic.get(rb, { namespace = ngns() })
+    local fail_ok = seen_fail and #ds == 1 and ds[1].lnum == lfail and ds[1].source == "testng" and (ds[1].message or ""):find("expected", 1, true) ~= nil
+    vim.wait(3000)
+    pcall(function() dap.terminate() end)
+    dap.listeners.on_config["n60ng"] = nil
+    local c1 = cfgs[1] and cfgs[1].args or "no launch"
+    local c2 = cfgs[2] and cfgs[2].args or "no launch"
+    lsp.report(P .. "testng_pick_real", pass_ok and fail_ok and #cfgs == 2 and (cfgs[1].args or ""):find("NgRealTest#passes", 1, true) ~= nil
+      and (cfgs[2].args or ""):find("NgRealTest#fails", 1, true) ~= nil,
+      ("picker %d item(s): %s; passes: %s in %.0f ms, mark %s; fails: %s in %.0f ms, diagnostic %s; launches %d (%s | %s)"):format(
+        lab1 and #lab1 or 0, table.concat(lab1 or {}, ","):sub(1, 90), seen_pass and "result" or "NO RESULT", ms1,
+        pass_ok and "on the method line" or ("WRONG " .. vim.inspect(marks):gsub("%s+", " "):sub(1, 60)),
+        seen_fail and "result" or "NO RESULT", ms2,
+        fail_ok and ("on the method line: " .. ds[1].message:sub(1, 40)) or ("WRONG " .. vim.inspect(ds):gsub("%s+", " "):sub(1, 80)),
+        #cfgs, c1:sub(1, 50), c2:sub(1, 50)))
+    vim.lsp.stop_client(rc.id, true)
+  end
+  vim.fn.delete(rd, "rf")
 
   -- multi-module Maven: a git-root parent pom (jdt.ls root) with core and app; tests of both modules from the parent
   local md = "/tmp/nv4j/mm60-" .. vim.fn.getpid()
