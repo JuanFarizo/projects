@@ -183,7 +183,49 @@ M._state = state
 -- classpath events received per jdt.ls client id: { n = count, last = "<first argument, short>", at = ms }. Debug evidence for
 -- the two_boot_index flake (check 50 quotes it): was a classpath event for B's jdt.ls ever delivered to the Spring LS?
 state.events = {}
+state.event_filter = nil -- function(client_id, nth_event, param) -> param: tests only (check 50 two_boot_index sends B's first event half-imported)
 local wrapped_cb = setmetatable({}, { __mode = "k" })
+
+--- Short description of one classpath event's arguments (debug evidence): strings cut to 60 characters, booleans as they are,
+--- tables as their keys with sizes (a list is its length, a table with a list field shows that field's length, e.g.
+--- `entries=0` for a classpath that has no entries yet).
+local function shape(v, depth)
+  depth = depth or 0
+  if type(v) == "string" then return ("%q"):format(v:sub(1, 60)) end
+  if type(v) ~= "table" then return tostring(v) end
+  if vim.islist(v) then
+    if depth >= 2 then return "[" .. #v .. "]" end
+    local parts = {}
+    for i = 1, math.min(#v, 5) do parts[#parts + 1] = shape(v[i], depth + 1) end
+    return "[" .. #v .. (#parts > 0 and (": " .. table.concat(parts, ", ")) or "") .. "]"
+  end
+  local keys = vim.tbl_keys(v)
+  table.sort(keys, function(x, y) return tostring(x) < tostring(y) end)
+  local parts = {}
+  for _, k in ipairs(keys) do
+    local x = v[k]
+    parts[#parts + 1] = tostring(k) .. "=" .. ((type(x) == "table" and depth >= 1) and (vim.islist(x) and ("[" .. #x .. "]") or "{..}") or shape(x, depth + 1))
+  end
+  return "{" .. table.concat(parts, ", ") .. "}"
+end
+M._shape = shape
+
+local heal_check -- below, after send_async
+
+--- Whether a classpath event can be indexed as a Spring Boot project: a deleted project always can (nothing to wait for),
+--- an event whose classpath has entries but none of them a spring-boot jar cannot (jdt.ls sent it before the Maven/Gradle
+--- dependencies were resolved: seen 2026-11-05, B's only event had 7 entries where the complete one has 42, and the Spring
+--- LS never indexed that project). Anything the shape of which is not known counts as usable (nothing to judge).
+function M.classpath_usable(param)
+  local cp = type(param) == "table" and param[4] or nil
+  if param and param[3] == true then return true end
+  if type(cp) ~= "table" or type(cp.entries) ~= "table" then return true end
+  for _, en in ipairs(cp.entries) do
+    local path = type(en) == "table" and en.path or nil
+    if type(path) == "string" and path:match("spring%-boot[^/\\]*%.jar$") then return true end
+  end
+  return false
+end
 
 --- Count the events the listener callback `id` (a vim.lsp.commands entry set by spring_boot.nvim) receives, per client.
 local function count_events(id)
@@ -194,8 +236,15 @@ local function count_events(id)
     local e = state.events[cid] or { n = 0 }
     state.events[cid] = e
     e.n, e.at = e.n + 1, vim.uv.now()
+    if state.event_filter then param = state.event_filter(cid, e.n, param) or param end -- tests: deliver a doctored (partial) event
     e.last = (type(param) == "table" and type(param[1]) == "string") and param[1]:sub(1, 120) or type(param)
-    return cb(param, ctx)
+    e.shapes = e.shapes or {}
+    if #e.shapes < 6 then e.shapes[#e.shapes + 1] = shape(param) end -- the first events of this jdt.ls
+    -- sticky: a multi-module root also sends events for its aggregator project (no jars); one usable event is enough
+    e.complete = e.complete or M.classpath_usable(param)
+    local ret = cb(param, ctx)
+    if heal_check then heal_check(cid, e) end
+    return ret
   end
   wrapped_cb[counted] = true
   vim.lsp.commands[id] = counted
@@ -224,6 +273,37 @@ local function send_async(c, command, param, attempt)
       if live(c) and registered[c] == nil and want and want[1] == id then send_async(c, ADD, param, attempt + 1) end
     end, state.retry_ms * 2 ^ attempt)
   end)
+end
+
+-- Self-heal of a half-imported project (flake `two_boot_index`, 2026-11-05): jdt.ls answers addClasspathListener with the
+-- classpath it has at that moment; for a project registered while its dependencies are still being resolved that is a
+-- classpath without the spring-boot jars, the Spring LS does not take the project for a Boot project and never indexes it,
+-- and jdt.ls sends no second event. So when a jdt.ls's event is not usable (classpath_usable) and no usable one follows
+-- within HEAL_MS[1], its listener is removed and added again (jdt.ls then sends the classpath it has by now); once more
+-- after HEAL_MS[2] if still not usable. Bounded (two re-registrations per jdt.ls), per client, never for a usable event,
+-- stopped by a stopped client or by a listener that is no longer wanted. Each re-registration leaves a spring-route.log line.
+state.heal_ms = { 2000, 5000 } -- tests shorten it
+function heal_check(cid, e)
+  if e.complete or e.heal_timer then return end
+  local attempt = e.heals or 0
+  if attempt >= #state.heal_ms then return end
+  local c = vim.lsp.get_client_by_id(cid)
+  if not live(c) or not (c.config and c.config.root_dir and M.is_boot(c.config.root_dir)) then return end
+  e.heal_timer = true
+  vim.defer_fn(function()
+    e.heal_timer = nil
+    local want = state.classpath_args
+    if e.complete or not live(c) or not want or registered[c] ~= want[1] then return end
+    e.heals = attempt + 1
+    local id = want[1]
+    M.route_log(("classpath of jdt.ls %s (root %s) has no spring-boot jar: listener removed and added again (%d of %d)"):format(
+      tostring(c.id), tostring(c.config.root_dir), e.heals, #state.heal_ms))
+    require("spring_boot.util").execute_command(c, REMOVE, { id }, function()
+      local now = state.classpath_args
+      if live(c) and now and now[1] == id then send_async(c, ADD, now) end
+    end)
+    heal_check(cid, e) -- the next attempt, if the new event is not usable either (or does not come)
+  end, state.heal_ms[attempt + 1])
 end
 
 --- After spring_boot.setup: sts/* go to the jdt.ls of the projectUri (route_client), not clients[1].

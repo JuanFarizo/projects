@@ -447,7 +447,7 @@ local ok_all, err = pcall(function()
 
   -- a failing assertion: message, quickfix jump target, diagnostic on the line
   local fbuf = lsp.open(FAILING)
-  lsp.wait_ready(fbuf, 30000)
+  local fready, fwhy = lsp.wait_ready(fbuf, 30000) -- not a precondition (the run below finds out), but the message says whether it was
   local fl = E.line_of(fbuf, "assertEquals%(7, total") + 1
   vim.fn.setqflist({}, "r", { title = "", items = {} })
   local rf, msf, evf = run("class", fbuf, 1)
@@ -462,10 +462,10 @@ local ok_all, err = pcall(function()
     if d.lnum == fl - 1 and d.message:find("fails on purpose", 1, true) then diag = d end
   end
   lsp.report(P .. "failure_shown", counts(rf, 1, 1, 0) and real(rf, evf, title_of(1, 1, 0)) and hit ~= nil and diag ~= nil,
-    ("%.0f ms, %s (want 1/1); quickfix %s (%d item(s): %s); nv4j diagnostic on line %d %s"):format(msf, fmt(rf, evf),
+    ("%.0f ms, %s (want 1/1); quickfix %s (%d item(s): %s); nv4j diagnostic on line %d %s; failing file ready after open: %s"):format(msf, fmt(rf, evf),
       hit and ("entry at line " .. fl) or ("NO entry at line " .. fl .. " with the message"), #qf,
       table.concat(vim.tbl_map(function(q) return ("L%d %s"):format(q.lnum, (q.text or ""):gsub("%s+", " "):sub(1, 60)) end, qf), " | "),
-      fl, diag and "present" or "MISSING"))
+      fl, diag and "present" or "MISSING", fready and "yes" or ("NO (" .. tostring(fwhy) .. ")")))
 
   -- project, failed only, last
   local rp, msp, evp = run("project", buf, nil)

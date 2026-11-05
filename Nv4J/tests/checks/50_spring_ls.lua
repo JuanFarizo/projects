@@ -406,6 +406,24 @@ local function mk_stub(seen, label, id, root, opts)
       elseif not opts.silent and cb then
         cb(nil, opts.answer or vim.NIL)
       end
+      -- opts.events(n): the classpath event this jdt.ls sends after its n-th accepted addClasspathListener (nil = none), delivered
+      -- like jdt.ls does: to the listener callback command, with this client as ctx
+      if opts.events and params and params.command == "sts.java.addClasspathListener" and not opts.fail then
+        local nth = 0
+        for _, r in ipairs(seen) do
+          if r.who == label and r.cmd == "sts.java.addClasspathListener" then nth = nth + 1 end
+        end
+        local payload = opts.events(nth)
+        local cbid = params.arguments and params.arguments[1]
+        if payload then
+          vim.schedule(function()
+            local f = vim.lsp.commands[cbid]
+            for _, pl in ipairs(payload.__multi or { payload }) do -- __multi: several projects' events in a row
+              if f then f(pl, { client_id = id }) end
+            end
+          end)
+        end
+      end
       return true
     end,
   }
@@ -624,6 +642,77 @@ local ok5, err5 = pcall(function()
     #bad5 == 0 and "rejected addClasspathListener: retried until accepted (2 errors -> 3 sends), capped at 1+4, none after remove or stop, none after success"
       or table.concat(bad5, "; "))
 
+  -- classpath_heal: a classpath event without a spring-boot jar (jdt.ls answered before the dependencies were resolved; the
+  -- Spring LS then never indexes the project and jdt.ls sends no second event, flake two_boot_index) makes nv4j remove and add
+  -- the listener of that jdt.ls again, at most twice, per client, only for a client that is alive; a usable event changes nothing.
+  local bad7 = {}
+  local function ev(entries, deleted)
+    return { "file:" .. ROUTE .. "/B", "twob", deleted == true, { entries = entries, jre = {} }, { type = "maven" } }
+  end
+  local bare = { { kind = "source", path = ROUTE .. "/B/src/main/java" }, { kind = "binary", path = "/jdk/lib/jrt-fs.jar" } }
+  local full = { { kind = "source", path = ROUTE .. "/B/src/main/java" }, { kind = "binary", path = "/m2/org/springframework/boot/spring-boot/3.5.13/spring-boot-3.5.13.jar" } }
+  local U = S.classpath_usable
+  if U(ev(bare)) or not U(ev(full)) or not U(ev(bare, true)) or not U({}) or not U({ "x", "n", false, { jre = {} } }) then
+    bad7[#bad7 + 1] = "classpath_usable: bare " .. tostring(U(ev(bare))) .. " (want false), full " .. tostring(U(ev(full))) .. ", deleted bare "
+      .. tostring(U(ev(bare, true))) .. ", unknown shape " .. tostring(U({})) .. "/" .. tostring(U({ "x", "n", false, { jre = {} } })) .. " (want true)"
+  end
+  local seen7 = {}
+  local ADDC, REMC = "sts.java.addClasspathListener", "sts.java.removeClasspathListener"
+  local a7 = mk_stub(seen7, "A", 141, ROUTE .. "/A", { answer = { from = "A" } })
+  local b7 = mk_stub(seen7, "B", 142, ROUTE .. "/B", { events = function(n) return n == 1 and ev(bare) or ev(full) end }) -- bare first, then complete
+  local d7 = mk_stub(seen7, "D", 143, ROUTE .. "/D", { events = function() return ev(bare) end }) -- never complete
+  local f7 = mk_stub(seen7, "F", 144, ROUTE .. "/B", { events = function() return ev(full) end }) -- usable at once
+  -- multi-module root: the aggregator project's event has no jars, a module's has: usable, no re-registration
+  local m7 = mk_stub(seen7, "M", 147, ROUTE .. "/B", { events = function() return { __multi = { ev(bare), ev(full) } } end })
+  local m7b = mk_stub(seen7, "N", 148, ROUTE .. "/D", { events = function() return { __multi = { ev(full), ev(bare) } } end })
+  local o_heal = S._state.heal_ms
+  S._state.heal_ms = { 40, 80 }
+  vim.lsp.commands["cb7"] = function() end
+  local pre7 = route_log_size()
+  with_stubs({ a7, b7, d7, f7, m7, m7b }, ROUTE .. "/A/src/Cur.java", function()
+    jm.execute_command(ADDC, { "cb7" }, 300)
+    vim.wait(3000, function() return count(seen7, "D", ADDC) >= 3 and count(seen7, "B", ADDC) >= 2 end, 10)
+    vim.wait(500) -- nothing more afterwards
+    local eb, ed, ef = S._state.events[142] or {}, S._state.events[143] or {}, S._state.events[144] or {}
+    if count(seen7, "B", ADDC) ~= 2 or count(seen7, "B", REMC) ~= 1 then
+      bad7[#bad7 + 1] = ("B (bare, then complete): %d add / %d remove (want 2 / 1)"):format(count(seen7, "B", ADDC), count(seen7, "B", REMC))
+    end
+    if eb.complete ~= true or eb.heals ~= 1 or S._state.registered[b7] ~= "cb7" then
+      bad7[#bad7 + 1] = ("B ends usable %s, re-registered %s time(s) (want true, 1), listener %s (want cb7)"):format(tostring(eb.complete), tostring(eb.heals), tostring(S._state.registered[b7]))
+    end
+    if count(seen7, "D", ADDC) ~= 3 or count(seen7, "D", REMC) ~= 2 or ed.heals ~= 2 then
+      bad7[#bad7 + 1] = ("D (never complete): %d add / %d remove, heals %s (want 3 / 2 / 2: the first plus two re-registrations)"):format(count(seen7, "D", ADDC), count(seen7, "D", REMC), tostring(ed.heals))
+    end
+    if count(seen7, "F", ADDC) ~= 1 or count(seen7, "F", REMC) ~= 0 or (ef.heals or 0) ~= 0 then
+      bad7[#bad7 + 1] = ("F (usable at once): %d add / %d remove (want 1 / 0)"):format(count(seen7, "F", ADDC), count(seen7, "F", REMC))
+    end
+    if count(seen7, "A", REMC) ~= 0 then bad7[#bad7 + 1] = "A (answers, no events) got a remove" end
+    if count(seen7, "M", REMC) ~= 0 or count(seen7, "N", REMC) ~= 0 then
+      bad7[#bad7 + 1] = ("multi-module (aggregator + module events, either order): %d / %d removes (want 0 / 0)"):format(count(seen7, "M", REMC), count(seen7, "N", REMC))
+    end
+  end)
+  local heal_lines = vim.tbl_filter(function(l) return l:find("no spring-boot jar", 1, true) end, vim.split(route_log_tail(pre7), "\n", { plain = true, trimempty = true }))
+  if #heal_lines ~= 3 then bad7[#bad7 + 1] = ("%d 'no spring-boot jar' lines in spring-route.log (want 3: B once, D twice)"):format(#heal_lines) end
+  -- a stopped client is not touched again; a removed listener stops the heal
+  local seen7b = {}
+  local g7 = mk_stub(seen7b, "G", 145, ROUTE .. "/B", { events = function() return ev(bare) end })
+  local h7 = mk_stub(seen7b, "H", 146, ROUTE .. "/D", { events = function() return ev(bare) end })
+  vim.lsp.commands["cb7b"] = function() end
+  with_stubs({ a7, g7, h7 }, ROUTE .. "/A/src/Cur.java", function()
+    S._state.heal_ms = { 300, 300 } -- long enough to act between the event and the timer even on a loaded machine
+    jm.execute_command(ADDC, { "cb7b" }, 300)
+    vim.wait(2000, function() return S._state.events[145] ~= nil and S._state.events[146] ~= nil end, 5) -- both events delivered, timers armed
+    g7.is_stopped = function() return true end
+    jm.execute_command(REMC, { "cb7b" }, 300) -- listener no longer wanted
+    vim.wait(900)
+    if count(seen7b, "G", ADDC) ~= 1 then bad7[#bad7 + 1] = "G (stopped) added again: " .. count(seen7b, "G", ADDC) end
+    if count(seen7b, "H", ADDC) ~= 1 then bad7[#bad7 + 1] = "H (listener removed) added again: " .. count(seen7b, "H", ADDC) end
+  end)
+  S._state.heal_ms = o_heal
+  lsp.report(P .. "classpath_heal", #bad7 == 0,
+    #bad7 == 0 and "event without a spring-boot jar: listener removed+added again (B: 2 adds / 1 remove, ends registered and usable; never-complete D: capped at 1 + 2 re-registrations), usable event untouched, stopped client and removed listener left alone, 3 route-log lines"
+      or table.concat(bad7, "; "))
+
   -- route_log_*: the three spring-route.log lines (nv4j/spring.lua route_log), each written in its own situation and
   -- not otherwise. The file is <logs>/spring-route.log (nv4j.paths.logs); every probe reads only what the probe appended.
   local function logged(fn)
@@ -762,6 +851,23 @@ end
 local ok6, err6 = pcall(function()
   local S = require("nv4j.spring")
   local dir = "/tmp/nv4j/50_two/B"
+  -- The field failure (2026-11-05, entries=7 where the full classpath has 42): B's jdt.ls sends its only classpath event while the
+  -- dependencies are still being resolved, the Spring LS never indexes B. Reproduced on purpose and every time: B's FIRST event
+  -- loses its binary (jar) entries; the product must notice (no spring-boot jar) and have the listener sent again.
+  local truncated
+  S._state.event_filter = function(_, n, param)
+    if n ~= 1 or type(param) ~= "table" or type(param[1]) ~= "string" or not param[1]:find("50_two/B", 1, true) then return param end
+    local cp = param[4]
+    if type(cp) ~= "table" or type(cp.entries) ~= "table" then return param end
+    local keep = {}
+    for _, en in ipairs(cp.entries) do
+      if type(en) == "table" and en.kind ~= "binary" then keep[#keep + 1] = en end
+    end
+    truncated = ("%d of %d entries"):format(#keep, #cp.entries)
+    local q = vim.deepcopy(param)
+    q[4].entries = keep
+    return q
+  end
   local route_path = require("nv4j.paths").logs .. "/spring-route.log"
   local route_from = (vim.uv.fs_stat(route_path) or { size = 0 }).size -- two_boot_index quotes what this case appended
   vim.fn.delete("/tmp/nv4j/50_two", "rf")
@@ -875,9 +981,12 @@ local ok6, err6 = pcall(function()
     -- created" lines. Nothing here is asserted; it only goes into the FAIL line.
     local function evs(c)
       local e = c and S._state.events[c.id]
-      return e and ("%d (last %s, %d ms ago)"):format(e.n, tostring(e.last), vim.uv.now() - e.at) or "0"
+      return e and ("%d (last %s, %d ms ago; usable %s, listener re-registered %d time(s); payloads %s)"):format(e.n, tostring(e.last),
+        vim.uv.now() - e.at, tostring(e.complete), e.heals or 0, table.concat(e.shapes or {}, " ; "):sub(1, 700)) or "0"
     end
     local ev = ("; classpath events delivered to the Spring LS: B's jdt.ls %s, A's jdt.ls %s; settings pushes %d"):format(evs(bj), evs(jdtls), #pushes)
+    S._state.event_filter = nil
+    ev = ev .. ("; B's first classpath event was cut to %s on purpose"):format(tostring(truncated))
     if not (m_ok and b_ok and p_ok and a_ok) then
       local rf = io.open(route_path, "r")
       local appended = {}
@@ -902,6 +1011,33 @@ local ok6, err6 = pcall(function()
         #appended > 0 and (" (last: " .. appended[#appended]:sub(1, 160) .. ")") or "", evs(bj), evs(jdtls),
         #pushes == 0 and "0" or ("%d (ms ago: %s)"):format(#pushes, table.concat(vim.tbl_map(function(t) return tostring(vim.uv.now() - t) end, pushes), ", ")),
         #maps, #beans, #idx, table.concat(vim.list_slice(idx, math.max(1, #idx - 3)), " | "))
+      -- What jdt.ls itself says about B now, and whether a Maven "update project" (java.projectConfiguration.update, what a user
+      -- would do) makes the classpath complete and B indexed. Runs only after a failure; it only adds to the FAIL line.
+      local okp, post = pcall(function()
+        if not bj or bj:is_stopped() then return "B's jdt.ls is gone" end
+        local pom = vim.uri_from_fname(dir .. "/pom.xml")
+        local function boot_jars()
+          local r = bj:request_sync("workspace/executeCommand",
+            { command = "java.project.getClasspaths", arguments = { pom, vim.json.encode({ scope = "runtime" }) } }, 8000, bbuf)
+          local cps = r and r.result and r.result.classpaths
+          if type(cps) ~= "table" then return "getClasspaths: " .. (r and r.err and vim.inspect(r.err):gsub("%s+", " "):sub(1, 80) or "no answer") end
+          local n = 0
+          for _, f in ipairs(cps) do if tostring(f):match("spring%-boot[^/]*%.jar$") then n = n + 1 end end
+          return ("%d classpath entries, %d spring-boot jar(s)"):format(#cps, n)
+        end
+        local before = boot_jars()
+        local n0 = (S._state.events[bj.id] or {}).n or 0
+        bj:request_sync("workspace/executeCommand", { command = "java.projectConfiguration.update", arguments = { { uri = pom } } }, 8000, bbuf)
+        vim.wait(30000, function() return ((S._state.events[bj.id] or {}).n or 0) > n0 and (S._state.events[bj.id] or {}).complete end, 200)
+        local e2 = S._state.events[bj.id] or {}
+        -- a deadline loop, not a request inside the vim.wait condition (Neovim 0.12's vim.wait never times out when every round is
+        -- under 1 ms, see tests/lib/lsp.lua wait_ready)
+        local until_ms = vim.uv.now() + 8000
+        while vim.uv.now() < until_ms and not any(syms("@/"), "twob-only-path") do vim.wait(500) end
+        return ("jdt.ls getClasspaths before: %s; after java.projectConfiguration.update: %d new event(s), usable %s, getClasspaths %s, Spring LS lists B's mapping %s"):format(
+          before, (e2.n or 0) - n0, tostring(e2.complete), boot_jars(), tostring(any(syms("@/"), "twob-only-path")))
+      end)
+      ev = ev .. "; JDT.LS NOW " .. tostring(post)
     end
     lsp.report(P .. "two_boot_index", mvn_rc == 0 and m_ok and b_ok and p_ok and a_ok and only_a,
       ("Spring LS (workspace folder only A: %s) answers for B after %.0f ms: request mapping /twob-only-path %s, bean TwoBOnlyController %s, "
