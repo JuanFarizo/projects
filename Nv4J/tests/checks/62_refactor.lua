@@ -139,6 +139,7 @@
 --                       conflicts named after the move; move_revalidates: jdt.ls told to validate every open file after a move.
 --  rename_class_tests (+ _off, _conflict), undo_class_tests: test classes renamed along (InvoiceTest -> BillTest), the decoy
 --                       InvoiceServiceTest not; undo_last brings everything back. undo_move, undo_package, undo_nothing: <leader>ju.
+--  undo_stale_import, _unsaved, _moved_file, _appended, _deleted: <leader>ju after the user edited / deleted a spot the move rewrote (see the cases).
 -- IntelliJ gaps round (specs/features/refactors.md): older cases call rename_class/move through a wrapper that defaults variables = false,
 -- subclasses = false, force = true (they predate the new defaults); the new cases call the real functions.
 --  rename_class_variables (+ _undo), _off, _parse: Bill invoice / List<Bill> invoices / pendingInvoice / parameters renamed with the class, a taken
@@ -4592,6 +4593,107 @@ case("move_cross_root_undo_busy_jdtls", function()
   client.request_sync = real
   lsp.report(P .. "move_cross_root_undo_busy_jdtls", okA and okB and uA and uB and asked == 0 and errors == 2,
     ("A (recorded undo, jdt.ls always erroring): %s, jdt.ls asked %d time(s) (must be 0); B (jdt.ls path, 2 errors then ok): %s, errors served %d of 2"):format(tA, asked, tB, errors))
+end)
+
+-- undo_stale_import / undo_stale_unsaved / undo_stale_moved_file (<leader>ju when the text no longer matches): after a move into a new test package
+-- the user edits a spot the move rewrote (saved, unsaved, or the package line of the moved file; _appended: the user only adds to the spot, which still holds the new text, so it is undone in place and the addition stays). The recorded undo leaves THAT edit (named "changed
+-- since" in a warning, returns false), puts back everything else byte for byte, writes nothing half-way (the edited file holds exactly the user's
+-- text, an unsaved buffer stays unsaved and the disk is not touched), and a second <leader>ju says "nothing to undo" and changes nothing.
+for _, k in ipairs({ "undo_stale_import", "undo_stale_unsaved", "undo_stale_moved_file", "undo_stale_appended" }) do
+  case(k, function()
+    plant_files(RATE_FILES)
+    local base = F.snapshot()
+    local b = lsp.open(RATE)
+    vim.api.nvim_set_current_buf(b); vim.api.nvim_win_set_cursor(0, { 3, 14 })
+    local res = {}
+    refactor.move({ package = "demo.pricing", root = "test", on_done = function(ok) res.done = ok end })
+    local mok = done_wait(res)
+    local PEEK, MOVED = TEST .. "demo/shop/RatePeek.java", TEST .. "demo/pricing/Rate.java"
+    local moved_file = k == "undo_stale_moved_file" or k == "undo_stale_appended"
+    local target = moved_file and MOVED or PEEK
+    local tb = lsp.open(target)
+    local line = moved_file and 0 or 2 -- package line / import line
+    local l = vim.api.nvim_buf_get_lines(tb, line, line + 1, false)[1]
+    vim.api.nvim_buf_set_lines(tb, line, line + 1, false, { (l:gsub("pricing", k == "undo_stale_appended" and "pricingX" or "prXcing")) })
+    if k ~= "undo_stale_unsaved" then vim.api.nvim_buf_call(tb, function() vim.cmd("silent write") end) end
+    local user_text = table.concat(vim.api.nvim_buf_get_lines(tb, 0, -1, false), "\n") .. "\n"
+    local disk_before = disk(target)
+    local tree_before = F.snapshot()
+    local got, stop = capture()
+    local ures = {}
+    refactor.undo_last({ on_done = function(o) ures.done = o end })
+    local uok = done_wait(ures)
+    vim.wait(500, function() return false end, 20)
+    local msg = find_msg(got, "changed since", vim.log.levels.WARN) or ""
+    local home = moved_file and RATE or PEEK -- where the edited file lives after the undo
+    local d = F.diff(base)
+    local expect_changed = { [home] = true }
+    local only = #d.added == 0 and #d.missing == 0 and #d.changed == 1 and expect_changed[d.changed[1]] == true
+    local buf_text = table.concat(vim.api.nvim_buf_get_lines(vim.fn.bufnr(target), 0, -1, false), "\n") .. "\n"
+    local a
+    if k == "undo_stale_appended" then -- the spot still holds the new text (the user only added to it): undone in place, the addition stays
+      a = {
+        { "undone in place, the user's X kept (billingX)", disk(home) == (user_text:gsub("pricingX", "billingX")) },
+        { "everything else restored byte for byte", only },
+        { "returned true, no 'changed since'", uok == true and msg == "" },
+      }
+    elseif k == "undo_stale_unsaved" then
+      a = {
+        { "disk untouched by the undo (unsaved buffer stays unsaved)", disk(PEEK) == disk_before },
+        { "buffer keeps the user's text", buf_text == user_text and vim.bo[tb].modified },
+        { "everything else restored (only RatePeek differs)", only },
+      }
+    else
+      a = {
+        { "edited file holds exactly the user's text", disk(home) == user_text },
+        { "everything else restored byte for byte", only },
+      }
+    end
+    if k ~= "undo_stale_appended" then
+      a[#a + 1] = { "returned false, warning names the file and 'changed since'", uok == false and msg:find(vim.fs.basename(home), 1, true) ~= nil }
+    end
+    stop()
+    -- second undo: nothing remembered, nothing changes
+    local snap2 = F.snapshot()
+    local got2, stop2 = capture()
+    local r2 = refactor.undo_last()
+    stop2()
+    local d2 = F.diff(snap2)
+    a[#a + 1] = { "second undo: nothing to undo, tree unchanged", r2 == false and find_msg(got2, "nothing to undo", vim.log.levels.WARN) ~= nil and #d2.added + #d2.missing + #d2.changed == 0 }
+    local all, txt = results(a, mok)
+    lsp.report(P .. k, all, txt .. "; tree vs before: " .. F.fmt(d) .. (all and "" or ("; message: " .. msg:sub(1, 300) .. "; edited file now: " .. vim.inspect((disk(home) or ""):sub(1, 80)) .. "; user text: " .. vim.inspect(user_text:sub(1, 80)))))
+  end)
+end
+
+-- undo_stale_deleted: the user deleted the moved file after the move. The recorded undo says it is gone and creates nothing (no empty file at the
+-- old place); the other files are put back; a second <leader>ju says "nothing to undo".
+case("undo_stale_deleted", function()
+  plant_files(RATE_FILES)
+  local base = F.snapshot()
+  local b = lsp.open(RATE)
+  vim.api.nvim_set_current_buf(b); vim.api.nvim_win_set_cursor(0, { 3, 14 })
+  local res = {}
+  refactor.move({ package = "demo.pricing", root = "test", on_done = function(ok) res.done = ok end })
+  local mok = done_wait(res)
+  local MOVED = TEST .. "demo/pricing/Rate.java"
+  os.remove(MOVED) -- like `rm` in a shell; its buffer stays loaded (wiping it breaks the LSP client's BufWritePre for the next write)
+  local got, stop = capture()
+  local ures = {}
+  refactor.undo_last({ on_done = function(o) ures.done = o end })
+  local uok = done_wait(ures)
+  vim.wait(500, function() return false end, 20)
+  stop()
+  local msg = find_msg(got, "is gone", vim.log.levels.WARN) or ""
+  local d = F.diff(base)
+  local a = {
+    { "no file created at the old place", vim.uv.fs_stat(RATE) == nil },
+    { "RatePeek and RateTest put back (only Rate.java missing)", #d.added == 0 and #d.changed == 0 and #d.missing == 1 and d.missing[1] == RATE },
+    { "returned false, warning says Rate.java is gone", uok == false and msg:find("Rate.java", 1, true) ~= nil },
+  }
+  local r2 = refactor.undo_last()
+  a[#a + 1] = { "second undo: nothing to undo", r2 == false and refactor.undo_op == nil }
+  local all, txt = results(a, mok)
+  lsp.report(P .. "undo_stale_deleted", all, txt .. "; tree vs before: " .. F.fmt(d) .. (all and "" or ("; message: " .. msg:sub(1, 300) )))
 end)
 
 -- move_cross_root_file_events (deterministic cause of the intermittent undo failure): after a move into a new package folder jdt.ls is told the

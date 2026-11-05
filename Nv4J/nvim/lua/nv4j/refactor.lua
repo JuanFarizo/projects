@@ -677,7 +677,13 @@ local function undo_text_edits(step, cb)
   local dirty = dirty_buffers()
   for p, list in pairs(by) do
     local b = vim.fn.bufnr(p)
-    if b == -1 or not vim.api.nvim_buf_is_loaded(b) then b = vim.fn.bufadd(p); vim.fn.bufload(b) end
+    local loaded = b ~= -1 and vim.api.nvim_buf_is_loaded(b)
+    if not loaded and not vim.uv.fs_stat(p) then
+      -- deleted since: loading it would make an empty file at the old place when written
+      missed[#missed + 1] = vim.fs.basename(p) .. " (file gone)"
+      goto next_path
+    end
+    if not loaded then b = vim.fn.bufadd(p); vim.fn.bufload(b) end
     local text = table.concat(vim.api.nvim_buf_get_lines(b, 0, -1, false), "\n")
     table.sort(list, function(x, y) return x.off > y.off end) -- right to left keeps the offsets valid
     for _, e in ipairs(list) do
@@ -690,6 +696,7 @@ local function undo_text_edits(step, cb)
     end
     vim.api.nvim_buf_set_lines(b, 0, -1, false, vim.split(text, "\n", { plain = true }))
     if not dirty[p] then write(p) end
+    ::next_path::
   end
   cb(#missed == 0, ("%s: %s -> %s (%d edit(s))"):format(vim.fs.basename(step.path), step.from, step.to, done_n)
     .. (#missed > 0 and (", NOT undone (changed since): " .. table.concat(missed, ", ")) or ""))
