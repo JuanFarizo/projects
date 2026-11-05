@@ -1226,6 +1226,7 @@ function M.rename_paths(moves, label, client, opts)
   -- are dropped (that root's own rename follows and puts its files in the same package again).
   -- Callers put src/main/java first (tests depend on main, not the other way round).
   local files, changes, tries_by, notes = {}, { files = {} }, {}, {}
+  local step_log, recordable = {}, true -- per move: its folder/file and the inverse of its edit (see undo_recorded)
   local function done_moves() -- the moves completed so far, as { from, to }
     return vim.tbl_map(function(c) return { vim.uri_to_fname(c.oldUri), vim.uri_to_fname(c.newUri) } end, changes.files)
   end
@@ -1254,8 +1255,10 @@ function M.rename_paths(moves, label, client, opts)
     -- package lines only (said in the summary)
     local tries = 1
     local needs = needs_edit(from, to) and not opts.same_package -- same package name, other source root: nothing to rewrite
-    while edit == false and needs and tries < 10 do
-      vim.wait(100)
+    -- an undo must not give up on jdt.ls's first answer either: right after the refactor it is undoing, jdt.ls can still be
+    -- taking the move in and answer an error ("Internal error.") or null
+    while ((edit == false and needs) or (edit == nil and opts.undoing)) and tries < 10 do
+      vim.wait(edit == nil and 200 or 100)
       edit, err = will_rename(client, from, to)
       tries = tries + 1
     end
@@ -1295,7 +1298,10 @@ function M.rename_paths(moves, label, client, opts)
         end
       end
     end
+    local rec = {}
     if edit then
+      rec = inverse_text_edits(edit)
+      if rec == nil then recordable = false end
       local ok, fs, why = apply(client, edit, dirty, moving)
       for _, f in ipairs(fs) do
         local dup = vim.iter(files):find(function(g) return g.path == f.path end)
@@ -1313,9 +1319,15 @@ function M.rename_paths(moves, label, client, opts)
       end
     end
     lap("move")
+    step_log[#step_log + 1] = { from = from, to = to, rec = rec }
     local change = { oldUri = vim.uri_from_fname(from), newUri = vim.uri_from_fname(to) }
     changes.files[#changes.files + 1] = change
     client:notify("workspace/didRenameFiles", { files = { change } })
+    -- jdt.ls's resource tree learns of a move into a package folder that did not exist (or across source roots) only from
+    -- the file events: without them its next willRenameFiles for the moved file (the undo) answered "Internal error."
+    -- until something else refreshed it (Java model errors "File not found <old path>" in lsp.log)
+    client:notify("workspace/didChangeWatchedFiles", { changes = {
+      { uri = change.newUri, type = 1 }, { uri = change.oldUri, type = 3 } } })
     for _, f in ipairs(files) do
       if under(f.path, from) then
         f.from = f.from or f.path
@@ -1371,9 +1383,63 @@ function M.rename_paths(moves, label, client, opts)
   end, vim.lsp.get_buffers_by_client_id(client.id))))
   follow_up(label, before, vim.tbl_map(function(f) return f.path end, files))
   if not opts.undoing then
-    M.undo_op = { label = label, moves = vim.tbl_map(function(m) return { m[2], m[1] } end, moves), merge = opts.merge, mkdirs = opts.merge, same_package = opts.same_package }
+    M.undo_op = { label = label, moves = vim.tbl_map(function(m) return { m[2], m[1] } end, moves), merge = opts.merge, mkdirs = opts.merge, same_package = opts.same_package, recorded = (recordable and not opts.merge) and step_log or nil } -- a merge also removes imports outside the edits: its undo is the jdt.ls inverse
   end
   return true
+end
+
+--- Undo from what the refactor recorded, without asking jdt.ls (which can answer an error or null right after the
+--- refactor, seen for the undo of a move into a new test package): in reverse order, each move is put back and then
+--- the inverse of the edit that came before it is applied. Returns ok.
+local function undo_recorded(op)
+  local steps = op.recorded
+  local client = jdtls_for(steps[1].from) or jdtls_for(steps[1].to)
+  local root = client and root_of(client)
+  local files, problems = {}, {}
+  for i = #steps, 1, -1 do
+    local st = steps[i]
+    if not vim.uv.fs_stat(st.to) then
+      problems[#problems + 1] = rel(st.to, root) .. " is gone"
+    else
+      local d, made = vim.fs.dirname(st.from), {}
+      while not vim.uv.fs_stat(d) do
+        table.insert(made, 1, d)
+        d = vim.fs.dirname(d)
+      end
+      vim.fn.mkdir(vim.fs.dirname(st.from), "p")
+      local mok, merr = pcall(vim.lsp.util.rename, st.to, st.from, { overwrite = false })
+      if not mok or vim.uv.fs_stat(st.to) or not vim.uv.fs_stat(st.from) then
+        problems[#problems + 1] = ("could not move %s back (%s)"):format(rel(st.to, root), tostring(merr or "not moved"))
+      elseif client then
+        client:notify("workspace/didRenameFiles", { files = { { oldUri = vim.uri_from_fname(st.to), newUri = vim.uri_from_fname(st.from) } } })
+        local ch = { { uri = vim.uri_from_fname(st.from), type = 1 }, { uri = vim.uri_from_fname(st.to), type = 3 } }
+        for _, m in ipairs(made) do ch[#ch + 1] = { uri = vim.uri_from_fname(m), type = 1 } end
+        client:notify("workspace/didChangeWatchedFiles", { changes = ch })
+      end
+    end
+    if #st.rec > 0 then
+      undo_text_edits({ edits = st.rec, path = st.from, from = "recorded", to = "inverse" }, function(ok, text)
+        if not ok then problems[#problems + 1] = text end
+        files[#files + 1] = st.from
+      end)
+    else
+      files[#files + 1] = st.from
+    end
+  end
+  local gone = {}
+  for j = #(op.created or {}), 1, -1 do
+    if vim.uv.fs_rmdir(op.created[j]) then gone[#gone + 1] = { uri = vim.uri_from_fname(op.created[j]), type = 3 } end
+  end
+  if client and #gone > 0 then client:notify("workspace/didChangeWatchedFiles", { changes = gone }) end
+  if client then
+    M.revalidate(client, vim.tbl_filter(function(q) return q:match("%.java$") end, vim.tbl_map(function(b)
+      return vim.api.nvim_buf_get_name(b)
+    end, vim.lsp.get_buffers_by_client_id(client.id))))
+  end
+  notify(("Undid: %s: %d step(s) put back from the recorded edits%s"):format(op.label, #steps,
+    #problems > 0 and ("; PROBLEMS: " .. table.concat(problems, "; ")) or ""), #problems > 0 and vim.log.levels.WARN or nil)
+  M.last = { label = "Undid: " .. op.label, files = vim.tbl_map(function(f) return { path = f } end, files), ok = #problems == 0 }
+  return #problems == 0
 end
 
 --- Undo the last rename, move or package rename of this session the way IntelliJ's one undo does: the
@@ -1396,6 +1462,7 @@ function M.undo_last(opts)
     return fin(false)
   end
   M.undo_op = nil
+  if op.moves and op.recorded then return fin(undo_recorded(op)) end
   if op.moves then
     return fin(M.rename_paths(op.moves, "Undid: " .. op.label, nil, { undoing = true, merge = op.merge, mkdirs = op.mkdirs, same_package = op.same_package }))
   end
@@ -2045,6 +2112,7 @@ function M.move(opts)
         end
         if #gone > 0 then client:notify("workspace/didChangeWatchedFiles", { changes = gone }) end
       elseif M.last then
+        if M.undo_op then M.undo_op.created = created end
         M.last.created, M.last.symbols_ms, M.last.conflicts = created, symbols_ms, conflicts
       end
       return done(ok)

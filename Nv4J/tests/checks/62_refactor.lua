@@ -4555,6 +4555,68 @@ case("move_cross_root_new_package", function()
   lsp.report(P .. "move_cross_root_new_package_undo", uok, utxt)
 end)
 
+-- move_cross_root_undo_busy_jdtls (deterministic twin of an intermittent failure: right after a move into a new test package jdt.ls answered
+-- the undo's willRenameFiles with "Internal error." for over 2 s, undo gave up after "nothing changed"). A: undo_last asked in the same tick the move
+-- returned, every willRenameFiles answer an error: the undo works from the recorded moves and edits, asks jdt.ls nothing, tree byte for byte.
+-- B: the same with the record dropped (the jdt.ls path, used when an edit could not be recorded): the first two answers are errors, the retry gets through.
+case("move_cross_root_undo_busy_jdtls", function()
+  plant_files(RATE_FILES)
+  local base = F.snapshot()
+  local real, errors = client.request_sync, 0
+  local function stub(limit)
+    errors = 0
+    client.request_sync = function(self, m, params, t, bn)
+      if m == "workspace/willRenameFiles" and (limit == nil or errors < limit) then
+        errors = errors + 1
+        return { err = { code = -32603, message = "Internal error." } }
+      end
+      return real(self, m, params, t, bn)
+    end
+  end
+  local function moved()
+    local b = lsp.open(RATE)
+    vim.api.nvim_set_current_buf(b); vim.api.nvim_win_set_cursor(0, { 3, 14 })
+    local res = {}
+    refactor.move({ package = "demo.pricing", root = "test", on_done = function(ok) res.done = ok end })
+    return done_wait(res)
+  end
+  local okA = moved()
+  stub(nil)
+  local uA, tA = undo_matches(base)
+  client.request_sync = real
+  local asked = errors
+  local okB = moved()
+  refactor.undo_op.recorded = nil
+  stub(2)
+  local uB, tB = undo_matches(base)
+  client.request_sync = real
+  lsp.report(P .. "move_cross_root_undo_busy_jdtls", okA and okB and uA and uB and asked == 0 and errors == 2,
+    ("A (recorded undo, jdt.ls always erroring): %s, jdt.ls asked %d time(s) (must be 0); B (jdt.ls path, 2 errors then ok): %s, errors served %d of 2"):format(tA, asked, tB, errors))
+end)
+
+-- move_cross_root_file_events (deterministic cause of the intermittent undo failure): after a move into a new package folder jdt.ls is told the
+-- new file exists and the old one is gone (workspace/didChangeWatchedFiles). Without it jdt.ls answered the undo's willRenameFiles with
+-- "Internal error." for more than 2 s (Java model "File not found <old path>"), reproducible by running move_cross_root_new_package alone.
+case("move_cross_root_file_events", function()
+  plant_files(RATE_FILES)
+  local b = lsp.open(RATE)
+  vim.api.nvim_set_current_buf(b); vim.api.nvim_win_set_cursor(0, { 3, 14 })
+  local sent, real = {}, client.notify
+  client.notify = function(self, method, params)
+    if method == "workspace/didChangeWatchedFiles" then
+      for _, c in ipairs(params.changes) do sent[#sent + 1] = c.type .. " " .. c.uri end
+    end
+    return real(self, method, params)
+  end
+  local res = {}
+  refactor.move({ package = "demo.pricing", root = "test", on_done = function(ok) res.done = ok end })
+  local ok = done_wait(res)
+  client.notify = nil
+  local newu, oldu = vim.uri_from_fname(TEST .. "demo/pricing/Rate.java"), vim.uri_from_fname(RATE)
+  lsp.report(P .. "move_cross_root_file_events", ok and vim.tbl_contains(sent, "1 " .. newu) and vim.tbl_contains(sent, "3 " .. oldu),
+    "moved " .. tostring(ok) .. "; file events: " .. table.concat(sent, " | "))
+end)
+
 -- main -> test with a main class using it: the conflict is listed and asked; Cancel changes nothing; "Move anyway" moves.
 local RATE_USER = main .. "demo/shop/RateUser.java"
 case("move_cross_root_depends", function()

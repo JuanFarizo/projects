@@ -43,6 +43,8 @@ Settled, no longer asked: the 5 s ceiling for change signature on a method with 
 
 ## Done recently
 
+- 2026-11-05: undo of a move or package rename replays what the refactor recorded (no jdt.ls request) and jdt.ls is told about the moved files (`didChangeWatchedFiles`); fixes an intermittent "jdt.ls refused (Internal error.)" undo after a cross-root move into a new package (check 62, 165 cases, three full runs green: 21 checks incl. 50 (29), 60 (34), 71 (9)).
+
 - 2026-11-03: P4 T6/T7: the G6 "hang" on a broken `build.gradle` was the test harness (`wait_ready` sent `java.project.getAll` 4000 times a second when the import failed, and Neovim's `vim.wait` does not time out on sub-millisecond rounds), fixed and bounded; the product now shows one "Build file" error for a build that cannot be imported (jdt.ls puts it on the project folder) and re-imports on save (`71_gradle_broken`, 7 cases). Boot detection reads catalog aliases and `buildSrc`/`build-logic` convention plugins, `buildSrc` is never the Boot module, the scaffold JUnit flavour reads the module's build file and the catalog (`72_gradle_detect`, 10 cases).
 
 - 2026-11-03: P4 T1/T2: Gradle Spring Boot fixture and `67_gradle` (18 cases, three green runs; controls n67a to n67c and the stub/markers/wrapper controls in `specs/features/tests-runner.md`); a test JVM that dies is an error naming the cause, never `0 passed, 0 failed, 0 skipped`; the JUnit launcher is found in the Gradle cache. Decisions D28 to D32 recorded as proposed.

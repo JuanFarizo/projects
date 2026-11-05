@@ -510,6 +510,8 @@ Measured (load 11 to 58 on this machine; budgets unchanged, 2 s per refactor): `
 
 Three full runs of `62_refactor` after the last product change: `DONE 62_refactor 162 0` (`/tmp/nv4j/logs/test-20261104-143757.log`, load not recorded), `161 1` (`-144248.log`, load 58 at start, 22 to 33 at the end; the one FAIL is `change_signature_interface_ceiling` 5344 ms against the 5 s ceiling, the known load-sensitive case, no product change near it), `162 0` (`-144736.log`, load 19 to 23 at the end). A fourth run after the last documentation edits: `162 0` (`-145315.log`, load 13 at the end).
 
+Cross-root undo (2026-11-05): `move_cross_root_new_package_undo` failed intermittently (`undo_last` false after 86 ms to 3 s: jdt.ls answered the undo's `willRenameFiles` with "Internal error." and, in a later run, null; its Java model said "File not found <old path>" for the file just moved; logs `test-20261105-033030.log`, `-034600.log`, `-034815.log`, `-034918.log`). Fixes: after every move jdt.ls is also sent `workspace/didChangeWatchedFiles` (new path created, old path deleted); `<leader>ju` of a move or package rename now works from what the refactor recorded (each move and the inverse of the text edit that preceded it, replayed in reverse, no jdt.ls request), and the jdt.ls inverse stays only when an edit could not be recorded or for a merge, where it retries an error or null up to 10 times. Twins `move_cross_root_undo_busy_jdtls` (A: every `willRenameFiles` errors, recorded undo asks nothing; B: record dropped, two errors then ok) and `move_cross_root_file_events`.
+
 Negative controls (product patched for one run of the affected cases, restored, `cmp` against a backup: identical each time):
 
 | # | Patch | Fails | Log |
