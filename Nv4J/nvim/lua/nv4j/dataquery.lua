@@ -266,21 +266,26 @@ local function key_of(uri, node, src)
   return key
 end
 local function label(key) return names[key] or key end
+function M.label(key) return label(key) end
 
 local DECLS = { class_declaration = true, record_declaration = true, interface_declaration = true, enum_declaration = true }
 
 --- Parse the declaration of `row,col` (the definition target) in `text`. Returns { props=, super= } or nil.
-local function read_class(uri, text, row, col)
+local function read_class(uri, text, row, col, byname)
   local ok, parser = pcall(vim.treesitter.get_string_parser, text, "java")
   if not ok then return nil end
   local root = parser:parse()[1]:root()
-  local decl
+  local decl, npos
   local function find(n)
     if DECLS[n:type()] then
       local nm = n:field("name")[1]
       if nm then
         local sr, sc, er, ec = nm:range()
-        if (row > sr or (row == sr and col >= sc)) and (row < er or (row == er and col <= ec)) then decl = n end
+        if byname then
+          if not decl and vim.treesitter.get_node_text(nm, text) == byname then decl = n; npos = { sr, sc } end
+        elseif (row > sr or (row == sr and col >= sc)) and (row < er or (row == er and col <= ec)) then
+          decl = n
+        end
       end
     end
     for c in n:iter_children() do find(c) end
@@ -340,7 +345,7 @@ local function read_class(uri, text, row, col)
       end
     end
   end
-  return { props = props, super = super }
+  return { props = props, super = super, npos = npos }
 end
 
 --- The jdt.ls client for `buf` (tests replace it with a stub).
@@ -349,11 +354,59 @@ function M.client_of(buf)
 end
 local function client_of(buf) return M.client_of(buf) end
 
+local listeners = {}
+--- Run `fn` once, the next time any type finishes loading (completion waits on this).
+function M.on_arrival(fn) listeners[#listeners + 1] = fn end
+--- True while a type is being fetched from jdt.ls.
+function M.pending() return next(loading) ~= nil end
+
 local function arrived(key)
   loading[key] = nil
   local bufs = waiting[key] or {}
   waiting[key] = nil
   for b in pairs(bufs) do M.schedule(b) end
+  local ls = listeners
+  listeners = {}
+  for _, fn in ipairs(ls) do pcall(fn) end
+end
+
+local name_index = {} -- simple class name -> type key (read through workspace/symbol)
+
+--- Key of a class read by name (nil when not read yet).
+function M.named_key(name)
+  local k = name_index[name]
+  if k and valid(cache[k]) then return k end
+  name_index[name] = nil
+  return nil
+end
+
+--- Find class `name` with jdt.ls workspace/symbol, read it, remember it under its simple name. Async, unknown on failure.
+function M.load_named(buf, name)
+  local lk = "name:" .. name
+  if loading[lk] or M.named_key(name) then return end
+  local client = client_of(buf)
+  if not client then return end
+  loading[lk] = true
+  M._requests = M._requests + 1
+  client:request("workspace/symbol", { query = name }, function(err, res)
+    vim.schedule(function()
+      for _, sym in ipairs((not err and res) or {}) do
+        local loc = sym.location
+        if sym.name == name and (sym.kind == 5 or sym.kind == 23) and loc and loc.uri and loc.uri:sub(1, 5) == "file:" then
+          local text, _, tick = text_of(loc.uri)
+          local cls = text and read_class(loc.uri, text, nil, nil, name)
+          if cls and cls.npos then
+            local key = ("%s|%d|%d"):format(loc.uri, cls.npos[1], cls.npos[2])
+            cache[key] = { props = cls.props, super = cls.super, uri = loc.uri, tick = tick }
+            names[key] = name
+            name_index[name] = key
+            break
+          end
+        end
+      end
+      arrived(lk)
+    end)
+  end, buf)
 end
 
 --- Ask jdt.ls where the type referenced at `key` is declared, read it, cache it. Unknown on any failure.
@@ -405,6 +458,49 @@ function M.resolver_for(buf)
   return function(key) return resolve(key, 0) end
 end
 
+--- The entity key of `interface X extends ...Repository<Entity, Id>` (node n), nil when it is not one.
+local function iface_entity(n, src, uri)
+  local entity
+  for c in n:iter_children() do
+    if c:type() == "extends_interfaces" then
+      for tl in c:iter_children() do
+        for g in tl:iter_children() do
+          if g:type() == "generic_type" then
+            local base = vim.treesitter.get_node_text(g:child(0), src)
+            if base:match("Repository$") and not entity then
+              local args
+              for gc in g:iter_children() do if gc:type() == "type_arguments" then args = gc end end
+              local first = args and args:named_child(0)
+              local tn = first and member_type(first, src)
+              if tn then entity = key_of(uri, tn, src) end
+            end
+          end
+        end
+      end
+    end
+  end
+  return entity
+end
+
+--- Entity key (and its simple name) of the repository interface that contains line `row` (0-based) of `buf`.
+function M.repository_at(buf, row)
+  local ok, parser = pcall(vim.treesitter.get_parser, buf, "java")
+  if not ok or not parser then return nil end
+  local uri, found, fname = vim.uri_from_bufnr(buf), nil, nil
+  local function walk(n)
+    if n:type() == "interface_declaration" then
+      local sr, _, er = n:range()
+      if row >= sr and row <= er then
+        found = iface_entity(n, buf, uri)
+        fname = found and names[found]
+      end
+    end
+    for c in n:iter_children() do walk(c) end
+  end
+  walk(parser:parse()[1]:root())
+  return found, fname
+end
+
 --- Derived methods of the repository interfaces in `buf`: { { name=, lnum=, col=, entity = key } }.
 function M.methods(buf)
   local ok, parser = pcall(vim.treesitter.get_parser, buf, "java")
@@ -414,25 +510,7 @@ function M.methods(buf)
   local out = {}
   local function walk(n)
     if n:type() == "interface_declaration" then
-      local entity
-      for c in n:iter_children() do
-        if c:type() == "extends_interfaces" then
-          for tl in c:iter_children() do
-            for g in tl:iter_children() do
-              if g:type() == "generic_type" then
-                local base = vim.treesitter.get_node_text(g:child(0), src)
-                if base:match("Repository$") and not entity then
-                  local args
-                  for gc in g:iter_children() do if gc:type() == "type_arguments" then args = gc end end
-                  local first = args and args:named_child(0)
-                  local tn = first and member_type(first, src)
-                  if tn then entity = key_of(uri, tn, src) end
-                end
-              end
-            end
-          end
-        end
-      end
+      local entity = iface_entity(n, src, uri)
       local body = n:field("body")[1]
       if entity and body then
         for m in body:iter_children() do
@@ -514,6 +592,6 @@ function M.setup()
 end
 
 --- Forget everything read (tests).
-function M.reset() cache, loading, waiting, names = {}, {}, {}, {} end
+function M.reset() cache, loading, waiting, names, name_index, listeners = {}, {}, {}, {}, {}, {} end
 
 return M

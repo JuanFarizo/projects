@@ -1,6 +1,6 @@
 -- Derived query names in a real buffer (nv4j/dataquery.lua buffer layer): treesitter reads the repository interface and the
 -- entity classes, a STUB jdt.ls client answers textDocument/definition (finds `class|record <Name>` in the temp project), so no
--- jdt.ls runs here. The live twin with the real jdt.ls is check 78 (to run when the machine is free).
+-- jdt.ls runs here. The live twin with the real jdt.ls is check 80 (to run when the machine is free).
 --  bad_flagged       repository `findByEmial` -> one ERROR "No property 'emial' found for type 'Customer'" on exactly `Emial`;
 --                    the good methods (findByEmail, findByFullNameContaining..., OrderBy) get none.
 --  nested            findByAddressCty -> ERROR for type 'Address' on `Cty` (second request, nested type read from its file).

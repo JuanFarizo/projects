@@ -4,6 +4,8 @@ import jakarta.persistence.Embedded;
 import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.Id;
+import jakarta.persistence.OneToMany;
+import java.util.List;
 
 @Entity
 public class Customer {
@@ -15,6 +17,8 @@ public class Customer {
     private boolean active;
     @Embedded
     private Address address;
+    @OneToMany(mappedBy = "customer")
+    private List<Booking> bookings;
 
     public Long getId() { return id; }
     public String getEmail() { return email; }
@@ -25,4 +29,6 @@ public class Customer {
     public void setActive(boolean active) { this.active = active; }
     public Address getAddress() { return address; }
     public void setAddress(Address address) { this.address = address; }
+    public List<Booking> getBookings() { return bookings; }
+    public void setBookings(List<Booking> bookings) { this.bookings = bookings; }
 }

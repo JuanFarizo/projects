@@ -76,4 +76,15 @@ return {
       },
     },
   },
+  -- JPQL completion inside @Query strings (nv4j/jpqlsource.lua, specs/features/jpa.md J8): Java only, ahead of the other sources.
+  {
+    "saghen/blink.cmp",
+    opts = function(_, opts)
+      opts.sources = opts.sources or {}
+      opts.sources.providers = opts.sources.providers or {}
+      opts.sources.providers.jpql = { name = "JPQL", module = "nv4j.jpqlsource", score_offset = 100 }
+      opts.sources.per_filetype = opts.sources.per_filetype or {}
+      opts.sources.per_filetype.java = vim.list_extend({ "jpql" }, vim.deepcopy(type(opts.sources.default) == "table" and opts.sources.default or { "lsp", "path", "snippets", "buffer" }))
+    end,
+  },
 }
