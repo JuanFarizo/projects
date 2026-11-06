@@ -11,6 +11,8 @@ local Kind = { Field = 5, Class = 7, Variable = 6, Keyword = 14 }
 M.TIMEOUT_MS = 1500
 
 local function txt(n, buf) return vim.treesitter.get_node_text(n, buf) end
+--- Simple name of an annotation (`@org.springframework.data.jpa.repository.Query` -> Query).
+local function ann_name(a, buf) return (txt(a:field("name")[1], buf):match("([%w_$]+)$")) end
 
 --- Java string escapes to their characters (enough for queries).
 local function unescape(s)
@@ -26,7 +28,7 @@ local function query_annotation(lit, buf)
   end
   if not n or n:type() ~= "annotation_argument_list" then return nil end
   local ann = n:parent()
-  if not ann or ann:type() ~= "annotation" or txt(ann:field("name")[1], buf) ~= "Query" then return nil end
+  if not ann or ann:type() ~= "annotation" or ann_name(ann, buf) ~= "Query" then return nil end
   for c in n:iter_children() do
     if c:type() == "element_value_pair" and txt(c:field("key")[1], buf) == "nativeQuery"
       and txt(c:field("value")[1], buf) == "true" then
@@ -69,7 +71,7 @@ local function params(method, buf)
       for c in p:iter_children() do
         if c:type() == "modifiers" then
           for a in c:iter_children() do
-            if a:type() == "annotation" and txt(a:field("name")[1], buf) == "Param" then
+            if a:type() == "annotation" and ann_name(a, buf) == "Param" then
               local v = txt(a, buf):match('"([^"]+)"')
               if v then name = v end
             end

@@ -551,7 +551,7 @@ function M.methods(buf)
             for c in m:iter_children() do
               if c:type() == "modifiers" then
                 for a in c:iter_children() do
-                  if a:type() == "default" or (a:type():find("annotation$") and SKIP_ANNOT[vim.treesitter.get_node_text(a:field("name")[1], src)]) then skip = true end
+                  if a:type() == "default" or (a:type():find("annotation$") and SKIP_ANNOT[vim.treesitter.get_node_text(a:field("name")[1], src):match("([%w_$]+)$")]) then skip = true end
                 end
               end
             end

@@ -24,9 +24,11 @@ local FILE = TMP .. "/src/main/java/jpa4/BookingRepository.java"
 
 -- blink wiring (the lazy.nvim spec merge)
 do
-  local ok, cfg = pcall(function() return require("lazy.core.config").plugins["blink.cmp"] end)
-  local opts = ok and cfg and cfg.opts
-  if type(opts) == "function" then opts = nil end
+  local ok, opts = pcall(function()
+    local plugin = require("lazy.core.config").plugins["blink.cmp"]
+    return require("lazy.core.plugin").values(plugin, "opts", false)
+  end)
+  if not ok then opts = nil end
   local pf = opts and opts.sources and opts.sources.per_filetype and opts.sources.per_filetype.java
   local prov = opts and opts.sources and opts.sources.providers and opts.sources.providers.jpql
   lsp.report(P .. "wired", prov ~= nil and pf ~= nil and pf[1] == "jpql" or false,
@@ -48,7 +50,7 @@ local function at(query)
   while lines[#lines] == "" or lines[#lines]:match("^%s*$") do table.remove(lines) end
   assert(lines[#lines] == "}")
   lines[#lines] = nil
-  local row = #lines + 1
+  local row = #lines -- 0-based row of the annotation line appended below
   local before, after = query:match("^(.-)§(.*)$")
   lines[#lines + 1] = ('    @org.springframework.data.jpa.repository.Query("%s%s")'):format(before, after)
   lines[#lines + 1] = "    java.util.List<Booking> probe();"
@@ -88,7 +90,7 @@ do
   lines[#lines + 1] = "    java.util.List<Booking> probe();"
   lines[#lines + 1] = "}"
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
-  local row = #lines - 2
+  local row = #lines - 3 -- 0-based row of the annotation line
   local col = #lines[row + 1] - 2
   local got
   src:get_completions({ bufnr = buf, cursor = { row + 1, col } }, function(res) got = res end)
@@ -110,7 +112,7 @@ do
     for _, d in ipairs(vim.diagnostic.get(buf, { namespace = D.ns })) do found = d.message end
     return found ~= nil
   end, 1000)
-  lsp.report(P .. "derived_diag", found == "No property 'referenc' found for type 'Booking'", tostring(found))
+  lsp.report(P .. "derived_diag", found == "No property 'referenc' found for type 'Booking'; Did you mean 'reference'", tostring(found))
 end
 
 vim.api.nvim_buf_set_lines(buf, 0, -1, false, base)

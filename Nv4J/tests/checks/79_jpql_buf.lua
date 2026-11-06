@@ -88,6 +88,8 @@ public interface BranchRepository extends JpaRepository<Branch, Long> {
     Branch fourteen();
     @Query("SELECT b FROM Branch b WHERE b.slug = 'abc.§15'")
     Branch fifteen();
+    @org.springframework.data.jpa.repository.Query("SELECT b FROM Branch b WHERE b.§16")
+    Branch sixteen();
 }
 ]=])
 
@@ -180,6 +182,9 @@ r = at(14)
 lsp.report(P .. "unknown_entity", type(r) == "table" and #r == 0, show(r))
 r = at(15)
 lsp.report(P .. "in_string_literal", type(r) == "table" and #r == 0, show(r))
+
+r = at(16)
+lsp.report(P .. "qualified_annotation", has(r, "id", "slug", "business"), show(r)) -- found by the live check 80 (fully qualified @Query)
 
 vim.fn.delete(TMP, "rf")
 lsp.finish()
