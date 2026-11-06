@@ -13,6 +13,23 @@ local M = {
   jdtls_config = cache .. "/jdtls-config",
 }
 
+--- Name of the Neovim LSP client log: one file per Neovim process and project, `lsp-<project>-<pid>.log`, so `:LspLog` shows
+--- only this session (one shared file mixed every project and every open Neovim). The project is the nearest dir with a build
+--- file, `.git` or `.nv4j` above `path` (the first file argument, else the cwd), else that dir's own name.
+--- The test runner (NV4J_RUNNER) keeps the fixed `lsp.log` the checks read.
+---@param path? string
+---@param runner? boolean
+function M.lsp_log(path, runner)
+  if runner == nil then runner = vim.env.NV4J_RUNNER ~= nil end
+  if runner then return M.logs .. "/lsp.log" end
+  path = path or vim.uv.cwd() or "."
+  local root = vim.fs.root(path, { ".nv4j", ".git", "pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts" })
+  local dir = root or (vim.fn.isdirectory(path) == 1 and path or vim.fs.dirname(path))
+  local name = vim.fs.basename(dir):gsub("[^%w%._-]", "_")
+  if name == "" then name = "root" end
+  return ("%s/lsp-%s-%d.log"):format(M.logs, name, vim.uv.os_getpid())
+end
+
 for _, dir in ipairs({ M.root, M.logs, M.jdtls_data, M.jdtls_config }) do
   vim.fn.mkdir(dir, "p")
 end

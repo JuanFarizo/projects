@@ -559,7 +559,7 @@ Logs and test output are under `/tmp/nv4j/` (macOS clears `/tmp` on reboot and a
 | Path | Content |
 |------|---------|
 | `/tmp/nv4j/logs/test-<timestamp>.log` | full output of `tests/run.sh` |
-| `/tmp/nv4j/logs/lsp.log` | Neovim LSP client log (rotated at start over `vim.g.nv4j_log_max_mb`: the old one is `lsp.log.1`) |
+| `/tmp/nv4j/logs/lsp-<project>-<pid>.log` | Neovim LSP client log, one file per Neovim session and project (named after the nearest build file, `.git` or `.nv4j` dir of the first file or the cwd; files older than `vim.g.nv4j_log_keep_days` are deleted at start). The test runner keeps the fixed `lsp.log`. |
 | `/tmp/nv4j/logs/latency.jsonl` | timing samples of the last `tests/run.sh` (the run before: `latency.prev.jsonl`) |
 | `~/.cache/nv4j/jdtls-data/<project>-<hash>/` | jdt.ls workspace (project index), kept across reboots; its own log is `.metadata/.log` inside |
 | `~/.cache/nv4j/jdtls-config/<project>-<hash>/` | jdt.ls writable config copy, kept across reboots |
@@ -572,7 +572,7 @@ The test run keeps its blink.cmp state in `/tmp/nv4j/state` so your own accepted
 
 | Symptom | What to do |
 |---------|-----------|
-| jdt.ls does not start | `<leader>cl` (LSP info), then read `/tmp/nv4j/logs/lsp.log` and `~/.cache/nv4j/jdtls-data/<project>-<hash>/.metadata/.log`. Check `:Mason` that `jdtls` is installed. |
+| jdt.ls does not start | `<leader>cl` (LSP info), then read `/tmp/nv4j/logs/lsp-<project>-<pid>.log` (`:LspLog`) and `~/.cache/nv4j/jdtls-data/<project>-<hash>/.metadata/.log`. Check `:Mason` that `jdtls` is installed. |
 | Error "no JDK >= 21 found for jdtls. Searched: ..." | Install one: `sdk install java 25-amzn` (or any 21+), or set `JAVA_HOME` to a JDK 21+ before starting. The message lists the folders searched. |
 | Several `java` processes of jdt.ls, GBs of memory, or a warning "Not starting a second jdt.ls" / "Starting a second jdt.ls" | A project without a build file: each folder wants its own jdt.ls. By default (`vim.g.nv4j_loose_max = 1`) only the first loose folder gets one; the next opens as a plain buffer without LSP and the warning says so. Put an empty `.nv4j` in the project's top folder (How to use: Projects without a build file) and restart Neovim. |
 | A warning "jdt.ls for ... uses N MB" | A jdt.ls reached 2 GB RSS (`vim.g.nv4j_jdtls_warn_mb`). There is no memory limit; it only warns, once per jdt.ls. Check for several jdt.ls (`ps`), put an empty `.nv4j` in the project's top folder, or restart it with `:LspRestart` / quit and reopen. |

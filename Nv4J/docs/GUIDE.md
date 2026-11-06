@@ -102,6 +102,6 @@ jdt.ls runs on the JDK of `$JAVA_HOME` when it starts. The JDK your project comp
 
 - Completion feels slow: `:CompletionProfile on`, work for a while, `:CompletionProfile off`.
 - A refactor looks stuck: wait for the 3 s and 8 s notices; an error is reported when jdt.ls answers late.
-- Logs are in `/tmp/nv4j/logs` (jdt.ls: `lsp.log`).
+- Logs are in `/tmp/nv4j/logs` (Neovim LSP log: `lsp-<project>-<pid>.log`, one per Neovim session, so `:LspLog` shows only this project).
 - Memory: one jdt.ls is about 1.3 GB. More than one means a project with its own build file or `.nv4j` plus a loose folder; a second loose folder opens without LSP until it gets a `.nv4j` (recipe 2).
 - More: README "Troubleshooting" and "Known limitations".

@@ -7,8 +7,13 @@ pcall(function() require("nv4j.logrotate").run(paths.logs) end)
 -- Underline diagnostics past the end of a shortened file must not abort BufReadPost (Neovim 0.12.4 sharp edge, nv4j/diagfix.lua).
 pcall(function() require("nv4j.diagfix").setup() end)
 
--- Neovim LSP client log goes to /tmp/nv4j/logs/lsp.log (no public setter in 0.12).
-pcall(vim.lsp.log._set_filename, paths.logs .. "/lsp.log")
+-- Neovim LSP client log: /tmp/nv4j/logs/lsp-<project>-<pid>.log, one per session (paths.lsp_log; the test runner keeps lsp.log).
+-- No public setter in 0.12.
+pcall(function()
+  local arg = vim.fn.argv(0)
+  local file = (type(arg) == "string" and arg ~= "") and vim.fn.fnamemodify(arg, ":p") or nil
+  vim.lsp.log._set_filename(paths.lsp_log(file and vim.uv.fs_stat(file) and file or nil))
+end)
 
 -- bootstrap lazy.nvim, LazyVim and your plugins
 require("config.lazy")

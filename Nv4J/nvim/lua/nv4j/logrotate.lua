@@ -2,13 +2,13 @@
 -- 1. lsp.log, spring-route.log, spring-boot-ls.log above vim.g.nv4j_log_max_mb (default 20; 0 = never rotate) are renamed
 --    to <name>.1 (the one old copy, replaced each time) and start fresh. A rename is safe while another Neovim has the file
 --    open: it keeps writing to the renamed file (Neovim appends through a handle it opened with "a+").
--- 2. test-*.log and lsp-capture-*.bin older than vim.g.nv4j_log_keep_days (default 14; 0 = keep for ever) are deleted.
+-- 2. test-*.log, lsp-capture-*.bin and the per-session lsp-<project>-<pid>.log older than vim.g.nv4j_log_keep_days (default 14; 0 = keep for ever) are deleted.
 -- Only regular files in the one directory given are touched. Everything is in pcall: a failure is silent, startup never fails.
 local M = {}
 
 local uv = vim.uv
 local ROTATED = { "lsp.log", "spring-route.log", "spring-boot-ls.log" }
-local DELETED = { "^test%-.*%.log$", "^lsp%-capture%-.*%.bin$" }
+local DELETED = { "^test%-.*%.log$", "^lsp%-capture%-.*%.bin$", "^lsp%-.+%-%d+%.log$" } -- last: per-session LSP logs (paths.lsp_log)
 
 --- Rotates and cleans `dir`. `opts` (tests): max_mb, keep_days, now (epoch seconds). Returns { rotated = {names}, deleted = {names} }.
 ---@param dir string
