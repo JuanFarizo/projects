@@ -88,6 +88,7 @@ return {
       require("nv4j.unused_imports").setup()
       -- Derived query method names against the entity's properties (findByEmial; nv4j/dataquery.lua).
       require("nv4j.dataquery").setup()
+      require("nv4j.aot").setup()
       -- No jdt.ls for unnamed buffers (nvim-dap's terminal setup makes one, nv4j/debug.lua).
       require("nv4j.debug").setup()
 
