@@ -375,6 +375,7 @@ map("n", "<F2>", vim.lsp.buf.rename, { desc = "Rename symbol" })
 map("n", "<leader>rn", vim.lsp.buf.rename, { desc = "Rename symbol" })
 -- Mirrors gd exactly (Telescope-backed once the picker attaches, same as LazyVim's own gd)
 local goto_definition = function()
+  if require("nv4j.jpqlcomplete").goto_param() then return end
   require("telescope.builtin").lsp_definitions({ reuse_win = true })
 end
 -- Mirrors gr exactly (Telescope-backed, same as LazyVim's own gr)

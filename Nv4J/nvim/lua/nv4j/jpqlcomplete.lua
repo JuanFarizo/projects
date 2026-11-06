@@ -61,7 +61,7 @@ function M.query_at(buf, row, col)
 end
 
 --- Parameter names of the annotated method: @Param("x") value or the Java name.
-local function params(method, buf)
+local function params(method, buf, pos)
   local out = {}
   local ps = method and method:type() == "method_declaration" and method:field("parameters")[1]
   if not ps then return out end
@@ -79,6 +79,7 @@ local function params(method, buf)
         end
       end
       out[#out + 1] = name
+      if pos then pos[name] = { p:field("name")[1]:range() } end
     end
   end
   return out
@@ -169,6 +170,45 @@ function M.complete(buf, row, col, cb)
   end
   vim.defer_fn(function() finish({}) end, M.TIMEOUT_MS)
   try(8)
+end
+
+--- Where `:name` under the cursor is declared: { row, col } (0-based) of the method parameter, or nil.
+function M.param_target(buf, row, col)
+  local q = M.query_at(buf, row, col)
+  if not q then return nil end
+  local qs, off = q.query, q.offset
+  local s0 = qs:sub(1, off):match("[%w_$]*$")
+  local e0 = qs:sub(off + 1):match("^[%w_$]*")
+  local word = s0 .. e0
+  if word == "" or qs:sub(off - #s0, off - #s0) ~= ":" then return nil end
+  local pos = {}
+  params(q.method, buf, pos)
+  local p = pos[word]
+  return p and { p[1], p[2] } or nil
+end
+
+--- gd inside a @Query: jump to the parameter. True when handled.
+function M.goto_param()
+  local buf = vim.api.nvim_get_current_buf()
+  if vim.bo[buf].filetype ~= "java" then return false end
+  local c = vim.api.nvim_win_get_cursor(0)
+  local t = M.param_target(buf, c[1] - 1, c[2])
+  if not t then return false end
+  vim.cmd("normal! m'")
+  vim.api.nvim_win_set_cursor(0, { t[1] + 1, t[2] })
+  return true
+end
+
+local wrapped = false
+--- vim.lsp.buf.definition (LazyVim's gd) tries the parameter first.
+function M.setup()
+  if wrapped then return end
+  wrapped = true
+  local orig = vim.lsp.buf.definition
+  vim.lsp.buf.definition = function(...)
+    if M.goto_param() then return end
+    return orig(...)
+  end
 end
 
 return M

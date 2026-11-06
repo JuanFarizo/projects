@@ -1,0 +1,22 @@
+// Gradle twin of tests/fixtures/jpa4 (check 87): Boot 4 / Spring Data JPA 4 on Java 21 (the Spring LS indexer cannot read a JDK 25 system image of a Gradle project: "Failed to init packages for jrt-fs.jar"). The GraalVM native plugin is what registers
+// `processAot`, the task the Spring LS needs for the repository code lens and "Add @Query".
+plugins {
+    id 'java'
+    id 'org.springframework.boot' version '4.0.8'
+    id 'io.spring.dependency-management' version '1.1.7'
+    id 'org.graalvm.buildtools.native' version '0.11.0'
+}
+
+group = 'jpa4'
+version = '0.0.1'
+
+java {
+    toolchain { languageVersion = JavaLanguageVersion.of(21) }
+}
+
+repositories { mavenCentral() }
+
+dependencies {
+    implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
+    runtimeOnly 'com.h2database:h2'
+}
