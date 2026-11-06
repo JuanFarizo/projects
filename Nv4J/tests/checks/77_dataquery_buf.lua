@@ -160,10 +160,10 @@ local ds = settle(rb)
 lsp.report(P .. "dedupe_wait", #first == 0 and #ds > 0, ("before answers %d diagnostic(s), after %d"):format(#first, #ds))
 
 local emial, cty, idd = find(ds, "Emial"), find(ds, "Cty"), find(ds, "Idd")
-lsp.report(P .. "bad_flagged", emial and emial.msg == "No property 'emial' found for type 'Customer'" and #ds == 3,
+lsp.report(P .. "bad_flagged", emial and emial.msg == "No property 'emial' found for type 'Customer'; Did you mean 'email'" and #ds == 3,
   ("%d diagnostic(s): %s"):format(#ds, vim.inspect(vim.tbl_map(function(d) return d.text .. ": " .. d.msg end, ds))))
-lsp.report(P .. "nested", cty and cty.msg == "No property 'cty' found for type 'Address'", cty and cty.msg or "none")
-lsp.report(P .. "inherited", idd and idd.msg == "No property 'idd' found for type 'Customer'" and not find(ds, "Id") and not find(ds, "Nick"),
+lsp.report(P .. "nested", cty and cty.msg == "No property 'cty' found for type 'Address'; Did you mean 'city'; Traversed path: Customer.address", cty and cty.msg or "none")
+lsp.report(P .. "inherited", idd and idd.msg == "No property 'idd' found for type 'Customer'; Did you mean 'id'" and not find(ds, "Id") and not find(ds, "Nick"),
   ("findByIdd %s; findById/findByNick not flagged %s"):format(idd and idd.msg or "none", tostring(not find(ds, "Id") and not find(ds, "Nick"))))
 lsp.report(P .. "getter", find(ds, "Nick") == nil, "findByNick accepted (getNick)")
 local skipped = true
@@ -177,7 +177,7 @@ lsp.report(P .. "cache_no_request", sent == before, ("%d request(s) on a second 
 
 local pb = open("PersonRepository.java")
 local pds = settle(pb)
-lsp.report(P .. "record", #pds == 1 and pds[1].text == "Nmae" and pds[1].msg == "No property 'nmae' found for type 'Person'", vim.inspect(pds))
+lsp.report(P .. "record", #pds == 1 and pds[1].text == "Nmae" and vim.startswith(pds[1].msg, "No property 'nmae' found for type 'Person'"), vim.inspect(pds))
 
 local lb = open("LibRepository.java")
 lsp.report(P .. "super_unknown", #settle(lb) == 0, "library superclass: no judgement")

@@ -49,11 +49,12 @@ if run "$GOOD" && ! grep -q "Failed to contribute Repository method" "$W/out.log
 bad() { # $1 name  $2 expected message
   run " List<Customer> $1(String x);"
   if ! grep -qF "Failed to contribute Repository method [jpa4.CustomerRepository.$1(" "$W/out.log"; then echo "ORACLE FAIL bad_$1: Spring did not reject it"; rc=1; return; fi
+  echo "ORACLE FULL $1: $(grep -m1 -o "No property .*" "$W/out.log" | cut -c1-300)"
   if grep -qF "$2" "$W/out.log"; then echo "ORACLE PASS bad_$1 ($2)"; else echo "ORACLE FAIL bad_$1: want '$2', got: $(grep -m1 -E 'No property|Caused by' "$W/out.log" | cut -c1-220)"; rc=1; fi
 }
-bad findByEmial "No property 'emial' found for type 'Customer'"
-bad findByFullNme "No property 'fullNme' found for type 'Customer'"
-bad findByAddressCty "No property 'cty' found for type 'Address'"
-bad findByAddress_Cty "No property 'cty' found for type 'Address'"
+bad findByEmial "No property 'emial' found for type 'Customer'; Did you mean 'email'"
+bad findByFullNme "No property 'fullNme' found for type 'Customer'; Did you mean 'fullName'"
+bad findByAddressCty "No property 'cty' found for type 'Address'; Did you mean 'city'; Traversed path: Customer.address"
+bad findByAddress_Cty "No property 'cty' found for type 'Address'; Did you mean 'city'; Traversed path: Customer.address"
 rm -rf "$W"
 exit $rc

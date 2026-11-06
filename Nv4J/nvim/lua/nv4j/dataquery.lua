@@ -67,9 +67,10 @@ end
 --- One path segment (no "_") against `type_key`: Spring's PropertyPath.create. The whole text is tried first, then the
 --- last camel-case word moves to the tail; the FIRST head that is a property decides, and a failing tail is the answer.
 --- Returns err|nil, end_type (false = unknown, stop judging).
-local function walk(seg, type_key, resolver, off)
+local function walk(seg, type_key, resolver, off, trail)
+  trail = trail or {}
   local props = resolver(type_key)
-  if props == nil then return nil, false end
+  if props == nil then return nil, false, trail end
   local words = {}
   local lead = seg:match("^[^%u]+")
   if lead then words[1] = lead end
@@ -81,27 +82,58 @@ local function walk(seg, type_key, resolver, off)
     if key then
       local tail = table.concat(words, "", cut + 1)
       local ptype = props[key]
-      if tail == "" then return nil, ptype end
-      if ptype == false then return nil, false end
-      return walk(tail, ptype, resolver, off + #head)
+      local trail2 = { unpack(trail) }
+      trail2[#trail2 + 1] = key
+      if tail == "" then return nil, ptype, trail2 end
+      if ptype == false then return nil, false, trail2 end
+      return walk(tail, ptype, resolver, off + #head, trail2)
     end
   end
-  return { property = decap(seg), type = type_key, text = seg, off = off }
+  return { property = decap(seg), type = type_key, text = seg, off = off, trail = trail, props = props }
 end
 
 --- A property path ("Address_City" or "AddressCity") from `type_key`. nil when it resolves or cannot be judged.
 local function resolve_path(path, type_key, resolver)
-  local t, pos = type_key, 0
+  local t, pos, trail = type_key, 0, {}
   for seg in (path .. "_"):gmatch("(.-)_") do
     if seg ~= "" then
-      local err, nt = walk(seg, t, resolver, pos)
+      local err, nt, tr = walk(seg, t, resolver, pos, trail)
       if err then return err end
       if not nt then return nil end
-      t = nt
+      t, trail = nt, tr
     end
     pos = pos + #seg + 1
   end
   return nil
+end
+
+--- Levenshtein distance (spring-beans PropertyMatches.calculateStringDistance, case-sensitive).
+local function distance(a, b)
+  local d = {}
+  for i = 0, #a do d[i] = { [0] = i } end
+  for j = 0, #b do d[0][j] = j end
+  for i = 1, #a do
+    for j = 1, #b do
+      local cost = a:sub(i, i) == b:sub(j, j) and 0 or 1
+      d[i][j] = math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + cost)
+    end
+  end
+  return d[#a][#b]
+end
+
+--- Spring's PropertyReferenceException message: "No property 'x' found for type 'T'[; Did you mean 'a','b'][; Traversed path: Root.a.b]".
+--- Suggestions: the type's properties within edit distance 2 (PropertyMatches, DEFAULT_MAX_DISTANCE), sorted (Spring prints a
+--- HashSet, so with two or more suggestions its order is not defined; one suggestion is the usual case).
+local function message(err, entity, label)
+  local msg = ("No property '%s' found for type '%s'"):format(err.property, label(err.type))
+  local near = {}
+  for name in pairs(err.props or {}) do
+    if distance(err.property, name) <= 2 then near[#near + 1] = "'" .. name .. "'" end
+  end
+  table.sort(near)
+  if #near > 0 then msg = msg .. "; Did you mean " .. table.concat(near, ",") end
+  if err.trail and #err.trail > 0 then msg = msg .. "; Traversed path: " .. label(entity) .. "." .. table.concat(err.trail, ".") end
+  return msg
 end
 
 --- Check one method name against the entity type `entity`.
@@ -178,7 +210,7 @@ function M.check(name, entity, resolver, label)
         local err = resolve_path(prop, entity, resolver)
         if err then
           return {
-            message = ("No property '%s' found for type '%s'"):format(err.property, label(err.type)),
+            message = message(err, entity, label),
             from = part.off + err.off,
             to = part.off + err.off + #err.text,
           }

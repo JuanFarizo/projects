@@ -27,7 +27,7 @@ local function bad(name, prop, typ, text)
   local r = D.check(name, "Customer", resolver)
   local want = ("No property '%s' found for type '%s'"):format(prop, typ)
   local range = r and name:sub(r.from + 1, r.to) or "?"
-  lsp.report(P .. "bad_" .. name, r ~= nil and r.message == want and range == text,
+  lsp.report(P .. "bad_" .. name, r ~= nil and vim.startswith(r.message, want) and range == text,
     ("got %s, range '%s' (want '%s', '%s')"):format(r and r.message or "nil", range, want, text))
 end
 
@@ -76,11 +76,21 @@ local oracle_ok = {
 local wrong = {}
 for _, n in ipairs(oracle_ok) do if D.check(n, "Customer", jr) then wrong[#wrong + 1] = n end end
 lsp.report(P .. "oracle_good_names", #wrong == 0, #wrong == 0 and (#oracle_ok .. " names accepted, as Spring did") or ("rejected: " .. table.concat(wrong, ", ")))
+-- Full messages as Spring Data 4.0.7 printed them (ORACLE FULL lines of tests/lib/oracle_dataquery.sh, /tmp/nv4j/logs/oracle-dq.log):
+-- suggestions within edit distance 2 and the traversed path of a nested name.
 local msgs = {}
-for n, want in pairs({ findByEmial = "No property 'emial' found for type 'Customer'", findByFullNme = "No property 'fullNme' found for type 'Customer'",
-  findByAddressCty = "No property 'cty' found for type 'Address'", findByAddress_Cty = "No property 'cty' found for type 'Address'" }) do
+for n, want in pairs({
+  findByEmial = "No property 'emial' found for type 'Customer'; Did you mean 'email'",
+  findByFullNme = "No property 'fullNme' found for type 'Customer'; Did you mean 'fullName'",
+  findByAddressCty = "No property 'cty' found for type 'Address'; Did you mean 'city'; Traversed path: Customer.address",
+  findByAddress_Cty = "No property 'cty' found for type 'Address'; Did you mean 'city'; Traversed path: Customer.address" }) do
   local r = D.check(n, "Customer", jr)
   if not (r and r.message == want) then msgs[#msgs + 1] = n .. " -> " .. (r and r.message or "nil") end
 end
-lsp.report(P .. "oracle_bad_names", #msgs == 0, #msgs == 0 and "4 names rejected with Spring's message" or table.concat(msgs, "; "))
+lsp.report(P .. "oracle_bad_names", #msgs == 0, #msgs == 0 and "4 names rejected with Spring's full message" or table.concat(msgs, "; "))
+-- hints: nothing near = no hint; two near = both, sorted; the trail goes through every resolved property
+local function full(name) local r = D.check(name, "Customer", resolver) return r and r.message or "nil" end
+lsp.report(P .. "hint_none", full("findByXyz") == "No property 'xyz' found for type 'Customer'", full("findByXyz"))
+lsp.report(P .. "hint_one", full("findByAddressZp") == "No property 'zp' found for type 'Address'; Did you mean 'zip'; Traversed path: Customer.address", full("findByAddressZp"))
+lsp.report(P .. "hint_deep", full("findByAddressCountryCde") == "No property 'cde' found for type 'Country'; Did you mean 'code'; Traversed path: Customer.address.country", full("findByAddressCountryCde"))
 lsp.finish()
