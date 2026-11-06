@@ -3,6 +3,26 @@ return {
   opts = {
     window = {
       width = 35,
+      mappings = { e = "nv4j_toggle_auto_expand" },
+    },
+    commands = {
+      -- `e`: neo-tree's toggle_auto_expand_width, but it comes back to the width the window had BEFORE it was switched on.
+      -- Neo-tree's own "width before" is overwritten by every render while auto-expand is on (ui/renderer.lua, last_user_width
+      -- = current width), so opening folders step by step 35 -> 40 -> 47 -> 54 -> 69 and pressing `e` again gave 54, not 35.
+      -- The cursor node is also queued for focus so the redraw cannot jump to an older saved position.
+      nv4j_toggle_auto_expand = function(state)
+        if state.window.position == "float" or not state.winid or not vim.api.nvim_win_is_valid(state.winid) then return end
+        if not state.window.auto_expand_width then state.nv4j_base_width = vim.api.nvim_win_get_width(state.winid) end
+        local node = state.tree and state.tree:get_node()
+        if node then require("neo-tree.ui.renderer").position.set(state, node:get_id()) end
+        require("neo-tree.sources.common.commands").toggle_auto_expand_width(state)
+        if not state.window.auto_expand_width then
+          local w = state.nv4j_base_width or require("neo-tree.utils").resolve_width(state.window.width)
+          vim.api.nvim_win_set_width(state.winid, w)
+          state.win_width = w
+          state.window.last_user_width = w
+        end
+      end,
     },
     filesystem = {
       filtered_items = {
