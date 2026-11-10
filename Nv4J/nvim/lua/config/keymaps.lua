@@ -514,5 +514,10 @@ vim.api.nvim_create_user_command("Nv4JInstallCfr", function()
   require("nv4j.decompile").install(function(ok, msg) vim.notify(msg, ok and vim.log.levels.INFO or vim.log.levels.WARN, { title = "Nv4J" }) end)
 end, { desc = "Download the pinned CFR decompiler jar (backup decompiler) once, SHA-256 checked" })
 
+-- ── :Nv4JHealth = :checkhealth nv4j (read-only report; nv4j/health.lua loads only when run) ──
+vim.api.nvim_create_user_command("Nv4JHealth", function() vim.cmd("checkhealth nv4j") end, {
+  desc = "Read-only Nv4J health report: tools, bundles, JDK, CFR jar, logs dir, Maven settings, project root",
+})
+
 -- ── IntelliJ debugger keys: F7/F8/S-F8/F9/A-F9/A-F8/S-F7 only during a debug session, <D-F8> (<C-F8> on Linux) breakpoint (nv4j/debugkeys.lua) ──
 require("nv4j.debugkeys").setup()
