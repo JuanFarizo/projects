@@ -125,3 +125,12 @@ Probe scripts were scratch files (not committed): they start the fixture like `r
 | f13 | JUnit fix by prepending the engine-matching launcher (10 runs) | 1 failure: `NoSuchMethodError` on `org.junit.platform.engine.Output...` (classes only in the bundled 1.14.4 launcher still load from it) | rejected |
 | f14 | replace the bundled launcher folder (24 runs, plus the 2 control runs f10/f11) | 24 of 24 `DONE 40_debug 13 0`; replacement used in 3 of the 15 runs that report it | kept (fix 5) |
 | f15 | s1 re-check probe (8 runs, above) | without refresh never compiled; with refresh the second build compiles | build twice after the refresh, always |
+
+## Gradle: breakpoint hit in a Boot app (2026-11-10, `tests/checks/89_gradle_debug.lua`)
+
+Check 40 is Maven only; this is its Gradle twin on a copy of `tests/fixtures/gradle-boot` (the fixture stays clean). An `ApplicationRunner` is planted in the copy before jdt.ls starts and `build.gradle` is set to Java 25 while run.sh puts JDK 21 first on PATH, so only the project JDK can make the debuggee report 25.
+- Cases: `attached` (Gradle import done, root is the copy), `configs` (`fetch_main_configs` lists `gradleboot.GradleBootApplication`, 35 classpath entries, 7 spring-boot), `breakpoint_hit` (nvim-dap launch with jdt.ls's config stops at the breakpoint in the planted runner, right line, <= 20 s), `variable` (`text` = "late"), `debuggee_jdk` (25.0.4 with JDK 21 on PATH), `one_jdtls` (no jdt.ls with another root), `no_orphan` (JVM alive before terminate, gone after).
+- Result: no product bug. The stop comes 1.6 to 1.9 s after `dap.run` (the Gradle import cost is paid at `attached`, not at the launch), so the budget is 20 s as in check 40, not the 60 s a slower guess would have allowed.
+- Controls (`NV4J_89_CONTROL`): `nobp` (no breakpoint set) fails `breakpoint_hit`, `variable`, `debuggee_jdk`; `jdk21` (project keeps Java 21) fails `debuggee_jdk` (21.0.12).
+- Runs: 3 green at load 9.7, 8.8, 7.7 (`/tmp/nv4j/logs/test-20261110-091145.log`, `-091208.log`, `-091231.log`); controls `-091011.log`, `-091114.log`.
+- Not covered: Boot 2.x on Gradle, composite builds, offline import, a breakpoint hit through `<leader>rd` (that key is only checked to start the app, in 67 `debug_started`).
