@@ -198,7 +198,7 @@ If the Claude panel was open when you left a folder, it opens again next time yo
 ## Not a key, but good to know
 
 - Formatting is on demand only (`<leader>cf`; `vim.g.autoformat` is false): Java and XML through the language servers, Markdown/JSON/YAML/HTML/CSS through Prettier (Mason installs it).
-- `:Nv4JLogs [30m|2h|1d|7d]` lists every log (Neovim LSP, jdt.ls, Spring, DAP, captures). In the list: `<CR>` open, `<C-f>` follow, `<C-g>` grep (with an ERROR/WARN filter), `<C-s>` save the selected files to `~/.local/state/nv4j/nv4j/saved-logs/`; `:Nv4JLogs save 2h` saves a whole period. No `<leader>` key. See `specs/features/observability.md`.
+- `:Nv4JLogs [30m|2h|1d|7d]` lists every log (Neovim LSP, jdt.ls, Spring, DAP, captures) in Telescope, preview = end of the file. In the list: `<CR>` open, `<C-f>` follow, `<C-g>` grep (with an ERROR/WARN filter), `Tab` select, `<C-s>` save the selected files to `~/.local/state/nv4j/nv4j/saved-logs/`; `:Nv4JLogs save 2h` saves a whole period. No `<leader>` key. See `specs/features/observability.md`.
 - `<leader>?` shows the keys of the current buffer; `<leader>sk` searches all keys.
 - Options such as `vim.g.nv4j_run_tool` and `vim.g.nv4j_spring`: README "Options".
 - To list every key of your own session: `:Telescope keymaps`.

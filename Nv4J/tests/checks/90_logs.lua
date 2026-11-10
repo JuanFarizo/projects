@@ -15,6 +15,12 @@
 --  command       : :Nv4JLogs exists after setup().
 --  route_format  : spring-route.log lines are "YYYY-mm-dd HH:MM:SS [pid] message".
 --  jdt_show      : show_jdt_logs opens the real LSP log (vim.lsp.log.get_filename), never stdpath("log")/lsp.log.
+-- Telescope UI pieces (nv4j/logsui.lua), pure:
+--  ui_display    : entry_maker: the display text holds label, age, size and basename; ordinal = label + path.
+--  ui_tail       : tail() of a 30 MB file returns its last 200 lines, in < 200 ms, reading <= TAIL_BYTES (never the whole file);
+--                  a .bin capture gives the placeholder.
+--  ui_grep_cmd   : grep_cmd(level, query, files) = rg args .. "--" .. "LEVEL.*query" .. files; no level = bare query; empty query = nil.
+--  ui_selected   : selected(): the Tab multi-selection wins; none = the current entry; nothing = {}.
 local lsp = require("lsp")
 local L = require("nv4j.logs")
 local P = "90_logs."
@@ -192,6 +198,57 @@ case("jdt_show", function()
   end
   lsp.report(P .. "jdt_show", has_real and not has_stale and real ~= stale, "real " .. real .. ", windows " .. table.concat(names, " | "))
   vim.cmd("only")
+end)
+
+case("ui_display", function()
+  local ui = require("nv4j.logsui")
+  local e = ents({ id = "dap" })[1]
+  local ent = ui.entry_maker(e)
+  local text = ent.display(ent)
+  local ok = type(text) == "string" and text:find("nvim-dap dap.log", 1, true) and text:find("4h", 1, true) and text:find("2B", 1, true)
+    and text:match("dap%.log$") ~= nil and ent.ordinal == e.label .. " " .. e.path and ent.value == e and ent.path == e.path
+  lsp.report(P .. "ui_display", ok ~= nil and ok ~= false, ("display %q ordinal %q"):format(tostring(text), tostring(ent.ordinal)))
+end)
+
+case("ui_tail", function()
+  local ui = require("nv4j.logsui")
+  local big = TMP .. "/big.log"
+  vim.fn.mkdir(TMP, "p")
+  local f = assert(io.open(big, "wb"))
+  local chunk = ("filler line of the big log ........................................\n"):rep(1024) -- 64 KB
+  for _ = 1, 480 do f:write(chunk) end -- 30 MB
+  for i = 1, 300 do f:write(("tail line %d\n"):format(i)) end
+  f:close()
+  local size = uv.fs_stat(big).size
+  local t0 = uv.hrtime()
+  local lines, got_size, read = ui.tail(big)
+  local ms = (uv.hrtime() - t0) / 1e6
+  local blines = ui.tail(TMP .. "/logs/lsp-capture-jdtls-1-20261110-000000.bin")
+  local ok = #lines == ui.TAIL_LINES and lines[#lines] == "tail line 300" and lines[1] == "tail line 101" and got_size == size
+    and read <= ui.TAIL_BYTES and ms < 200 and size > 30 * 1024 * 1024
+    and #blines == 1 and blines[1]:match("^%(binary capture, 3 bytes") ~= nil
+  lsp.report(P .. "ui_tail", ok, ("%d lines (first %q, last %q), size %d, read %d bytes, %.1f ms, bin %q"):format(#lines, tostring(lines[1]),
+    tostring(lines[#lines]), size, read, ms, tostring(blines[1])))
+  vim.fn.delete(big)
+end)
+
+case("ui_grep_cmd", function()
+  local ui = require("nv4j.logsui")
+  local files = { TMP .. "/a.log", TMP .. "/b.log" }
+  local lvl, bare, none = ui.grep_cmd("ERROR", "timeout", files), ui.grep_cmd("", "timeout", files), ui.grep_cmd("ERROR", "", files)
+  local function tailof(a) return table.concat(vim.list_slice(a, #a - 3, #a), " ") end
+  local ok = lvl and lvl[1] == "rg" and tailof(lvl) == "-- ERROR.*timeout " .. files[1] .. " " .. files[2]
+    and bare and tailof(bare) == "-- timeout " .. files[1] .. " " .. files[2] and none == nil
+  lsp.report(P .. "ui_grep_cmd", ok ~= nil and ok ~= false, ("level %s | bare %s | empty %s"):format(table.concat(lvl or {}, " "), table.concat(bare or {}, " "), tostring(none)))
+end)
+
+case("ui_selected", function()
+  local ui = require("nv4j.logsui")
+  local a, b, c = { value = { path = "a" } }, { value = { path = "b" } }, { value = { path = "c" } }
+  local function fake(list) return { get_multi_selection = function() return list end } end
+  local multi, cur, nothing = ui.selected(fake({ a, b }), c), ui.selected(fake({}), c), ui.selected(fake({}), nil)
+  local ok = #multi == 2 and multi[1].path == "a" and multi[2].path == "b" and #cur == 1 and cur[1].path == "c" and #nothing == 0
+  lsp.report(P .. "ui_selected", ok, ("multi %d, current %d, nothing %d"):format(#multi, #cur, #nothing))
 end)
 
 pcall(vim.fn.delete, TMP, "rf")

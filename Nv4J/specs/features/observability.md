@@ -1,6 +1,6 @@
 # Observability: `:Nv4JLogs`
 
-One command lists every log Nv4J and the tools under it write, shows the tail of each, follows or greps them, and saves a copy for analysis. The logs stay where their writers put them (mostly `/tmp/nv4j/logs`, which macOS empties on reboot); saving is how you keep one. Code: `nvim/lua/nv4j/logs.lua` (registry, pure) and `nvim/lua/nv4j/logsui.lua` (picker). Research behind it: `docs/RESEARCH-observability.md`. Check: `tests/checks/90_logs.lua`.
+One command lists every log Nv4J and the tools under it write, shows the tail of each, follows or greps them, and saves a copy for analysis. The logs stay where their writers put them (mostly `/tmp/nv4j/logs`, which macOS empties on reboot); saving is how you keep one. Code: `nvim/lua/nv4j/logs.lua` (registry, pure) and `nvim/lua/nv4j/logsui.lua` (Telescope picker: the config's picker, `vim.g.lazyvim_picker = "telescope"`, same vertical layout as the other pickers). Research behind it: `docs/RESEARCH-observability.md`. Check: `tests/checks/90_logs.lua` (18 cases; controls `tests/lib/control_90.sh`).
 
 ## Sources
 
@@ -19,17 +19,17 @@ One command lists every log Nv4J and the tools under it write, shows the tail of
 
 ## Use
 
-- `:Nv4JLogs [period] [tests]` opens the picker, newest first: label, age, size, file. Period is `30m`, `2h`, `1d` or `7d` (nothing = all). The preview is the end of the file.
+- `:Nv4JLogs [period] [tests]` opens the Telescope picker, newest first: label, age, size, file; typing filters on label and path. Period is `30m`, `2h`, `1d` or `7d` (nothing = all). The preview is the end of the file: the last 200 lines, read by seeking the last 64 KB (`logsui.tail`, a 20 MB log is never loaded); a `.bin` capture shows a one-line placeholder.
 - `:Nv4JLogs save [period] [tests]` copies every file of the period at once.
 - No `<leader>` key: the repo's `<leader>l`, `<leader>L` and `<leader>s` keys belong to LazyVim. Command only.
 
-Keys in the picker (`Tab` selects several):
+Keys in the picker (`Tab` selects several; insert and normal mode):
 
 | Key | Does |
 |-----|------|
 | `<CR>` | Open in a buffer at the end, read-only, `autoread` on |
 | `<C-f>` | Follow: `:terminal tail -n 200 -f` in a bottom split |
-| `<C-g>` | Live grep across the selected files (all listed when none is selected). Asks for a level text first (`ERROR`, `WARN`, empty = none); a line must contain it before the typed pattern |
+| `<C-g>` | Live grep (`rg`, the listed paths as search paths) across the selected files (all listed when none is selected). Asks for a level text first (`ERROR`, `WARN`, empty = none); a line must contain it before the typed pattern (`LEVEL.*query`, `logsui.grep_cmd`) |
 | `<C-s>` | Save the selected files (the one under the cursor when none is selected) and notify the folder |
 
 Saved copies go to `stdpath("state")/nv4j/saved-logs/<YYYYmmdd-HHMMSS>/` (`~/.local/state/nv4j/nv4j/saved-logs/...` with `NVIM_APPNAME=nv4j`), byte for byte. Originals are never changed or deleted. A jdt.ls log is saved as `jdt.ls_<project>.log`. Saved folders are not rotated: delete them yourself.
