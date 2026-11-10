@@ -61,6 +61,23 @@ Keys marked **Java buffer** exist only in a Java file after jdt.ls has attached.
 | `<leader>du` / `<leader>dr` | Debug UI / REPL |
 | `<leader>de` | Evaluate (normal and visual) |
 
+### IntelliJ debugger keys (only while a debug session is active)
+
+Set when the session starts, removed when it ends; `F8` and `S-F8` are next / previous diagnostic again afterwards (`nv4j/debugkeys.lua`, check `92_debug_keys`). The `<leader>d` keys above stay.
+
+| Key | Does |
+|-----|------|
+| `<F7>` / `<S-F7>` | Step into / smart step into (asks for the target when the adapter supports it, else plain step into with a notice; the Java adapter has no step-in targets) |
+| `<F8>` / `<S-F8>` | Step over / step out |
+| `<F9>` | Resume |
+| `<A-F9>` | Run to cursor |
+| `<A-F8>` | Evaluate expression: the selection in visual mode, else the word under the cursor (nvim-dap-ui float) |
+| `<D-F8>` (Linux: `<C-F8>`) | Toggle breakpoint, any time (IntelliJ: Cmd+F8 on a Mac, Ctrl+F8 elsewhere). The platform is chosen like the other app keys (`vim.g.nv4j_mod`); Linux gets Ctrl, not Alt, because `<A-F8>` is evaluate |
+
+On a Mac the top row sends media keys unless you hold `fn` or turn on "Use F1, F2, etc. keys as standard function keys" (System Settings, Keyboard); set that, or F7 to F9 never reach the terminal. kitty (the terminal the Cmd keys here are written for) passes them through. `<A-F8>` / `<A-F9>` need `macos_option_as_alt yes` in `kitty.conf`; Cmd+F8 reaches Neovim only through the kitty keyboard protocol, and macOS may take it first if a system shortcut uses it.
+
+What Neovim really receives (measured in a private tmux server and in a bare pty with `TERM=xterm-kitty`, no kitty protocol): plain F7 / F8 / F9 arrive as `<F7>` / `<F8>` / `<F9>`, but Shift+F7, Shift+F8, Alt+F8, Alt+F9, Ctrl+F8 arrive under the terminfo names `<F19>`, `<F20>`, `<F56>`, `<F57>`, `<F32>`, not `<S-F7>` etc. So both names are mapped to the same action (the session keys and the diagnostic `<F20>` alias). Real kitty with the keyboard protocol was not run here.
+
 ## Code actions, imports and generation (`<leader>c`)
 
 | Key | Does | Scope | Where |
@@ -96,7 +113,7 @@ Keys marked **Java buffer** exist only in a Java file after jdt.ls has attached.
 
 | Key | Does |
 |-----|------|
-| `]d` / `[d`, `<F8>` / `<S-F8>` | Next / previous diagnostic |
+| `]d` / `[d`, `<F8>` / `<S-F8>` | Next / previous diagnostic (F8 and S-F8 are the debugger's step over / out while a debug session runs) |
 | `]e` / `[e` | Next / previous error |
 | `<leader>cd` | Line diagnostics popup |
 | `<leader>xx` / `<leader>xX` | All diagnostics / this buffer (Trouble) |

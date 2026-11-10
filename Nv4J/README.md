@@ -317,7 +317,7 @@ Generate getters, constructors, `toString`, `equals`/`hashCode`: put the cursor 
 
 | Key | Does |
 |-----|------|
-| `]d` / `[d` or `<F8>` / `<S-F8>` | next / previous diagnostic |
+| `]d` / `[d` or `<F8>` / `<S-F8>` | next / previous diagnostic (step over / out during a debug session, see IntelliJ debugger keys) |
 | `]e` | next error |
 | `<leader>cd` | line diagnostics popup |
 | `<leader>xx` / `<leader>xX` | all diagnostics / this buffer (Trouble) |

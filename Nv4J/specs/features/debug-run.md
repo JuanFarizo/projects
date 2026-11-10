@@ -134,3 +134,23 @@ Check 40 is Maven only; this is its Gradle twin on a copy of `tests/fixtures/gra
 - Controls (`NV4J_89_CONTROL`): `nobp` (no breakpoint set) fails `breakpoint_hit`, `variable`, `debuggee_jdk`; `jdk21` (project keeps Java 21) fails `debuggee_jdk` (21.0.12).
 - Runs: 3 green at load 9.7, 8.8, 7.7 (`/tmp/nv4j/logs/test-20261110-091145.log`, `-091208.log`, `-091231.log`); controls `-091011.log`, `-091114.log`.
 - Not covered: Boot 2.x on Gradle, composite builds, offline import, a breakpoint hit through `<leader>rd` (that key is only checked to start the app, in 67 `debug_started`).
+
+## IntelliJ keys (2026-11-10, `nvim/lua/nv4j/debugkeys.lua`, check `92_debug_keys`)
+
+Owner decision: the debugger keys are IntelliJ IDEA's. They exist only while a debug session is active: set on `dap.listeners.after.event_initialized`, removed on `event_terminated`, `event_exited`, `disconnect` and when the session closes (`on_session` with nil). What a key replaced is saved with `maparg` and put back with `mapset`, so `F8` / `S-F8` are next / previous diagnostic again after the session. LazyVim's `<leader>d` keys are untouched.
+
+| Key | Action |
+|-----|--------|
+| `F7` | step into |
+| `F8` / `S-F8` | step over / step out |
+| `F9` | resume |
+| `A-F9` | run to cursor |
+| `A-F8` | evaluate: visual selection, else the expression or word under the cursor; shown in nvim-dap-ui's eval float (a plain float without it); the last result is in `require("nv4j.debugkeys").last_eval` |
+| `S-F7` | smart step into: `dap.step_into({ askForTargets = true })` when the adapter has `supportsStepInTargetsRequest`, else plain step into with a notice. The Java adapter (java-debug) has no step-in targets, so here it is plain step into (check: stops in `PrintStream.println` on a `println` line) |
+| `<D-F8>` (Linux `<C-F8>`), always | toggle breakpoint. Platform chosen like the other app keys (`vim.g.nv4j_mod`: `D` = Cmd on a Mac, anything else = Ctrl). Deviation from the Alt rule of the other keys: on Linux Alt+F8 is evaluate, so Ctrl (IntelliJ's own Linux key) is used |
+
+Nothing else from IntelliJ's list was added (owner: skip what is not listed). Which-key descriptions are registered for each key; the maps carry `desc` "Debug: ...".
+
+Terminal: Neovim does not get `<S-F7>`, `<S-F8>`, `<A-F8>`, `<A-F9>`, `<C-F8>` from a terminal without the kitty keyboard protocol (and not through tmux): measured in a private tmux server (`tmux -L nv4jkeys`, `C-v` then the key in insert mode) and in a pty with `TERM=xterm-kitty`: they arrive as terminfo `<F19>`, `<F20>`, `<F56>`, `<F57>`, `<F32>`. Plain F7, F8, F9 arrive as is. Both spellings are mapped (the aliases are in the session keys, and `<F20>` is also the previous-diagnostic alias, `<F32>` the Linux breakpoint alias). macOS: hold `fn` or enable "Use F1, F2, etc. keys as standard function keys". Key list: `docs/KEYS.md`, "IntelliJ debugger keys". Not verified: a real kitty window with the keyboard protocol negotiated (the Cmd+F8 path), and the Linux breakpoint key in a real Linux terminal.
+
+Check `92_debug_keys` (Maven fixture copied to `/tmp/nv4j/keys92-<pid>`, `KeysRunner<N>` planted before jdt.ls starts; keys sent with `nvim_feedkeys` as `<F8>` etc., assertions on the DAP stopped frame and the evaluate result): `before_session`, `breakpoint_hit` (set by the platform breakpoint key), `session_maps`, `step_over` (x2, the second on a line that calls `helper`), `step_into` (frame `helper`), `step_out`, `resume` (next breakpoint), `run_to_cursor`, `evaluate` (word `d` = 40, selection `e + d` = 81), `smart_step_into`, `restore`, `second_session` (maps again, F8 steps, the `<F20>` alias steps out), `restore_again`, `no_orphan`, `one_jdtls`. Controls (`tests/lib/control_92.sh`): `nomaps` fails session_maps and every step case, `noremove` fails restore and restore_again, `f8into` (F8 bound to step_into) fails step_over_call_line and step_out.
