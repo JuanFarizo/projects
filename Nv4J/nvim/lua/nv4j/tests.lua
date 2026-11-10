@@ -144,7 +144,7 @@ M._split_name = split_name
 
 --- Parser state for one launch: feed(chunk), then nodes / order.
 local function new_parser()
-  local p = { nodes = {}, order = {}, buf = "", tracing = nil, done = false, raw = {} }
+  local p = { nodes = {}, order = {}, buf = "", tracing = nil, done = false, raw = {}, orphan = {}, open = nil, now = vim.uv.hrtime() }
   local function node(id)
     local n = p.nodes[id]
     if not n then
@@ -179,13 +179,19 @@ local function new_parser()
         p.order[#p.order + 1] = id
       end
       n.started = true
+      n.t0 = p.now
+      p.open = n
       if name:find("^@Ignore: ") or name:find("^@AssumptionFailure: ") then n.state = "skipped" end
+      if name:find("^@AssumptionFailure: ") then n.aborted = true end
     elseif tag == "%TESTE  " then
       local id = rest:match("^([^,]*),")
       if id then
         local n = node(id)
         n.ended = true
         n.state = n.state or "passed"
+        -- the stream has no per-test time: measured from the arrival of the start and end lines (see testresults.lua)
+        if n.t0 then n.ms = (p.now - n.t0) / 1e6 end
+        if p.open == n then p.open = nil end
       end
     elseif tag == "%FAILED " or tag == "%ERROR  " then
       local id, name = rest:match("^([^,]*),(.*)$")
@@ -194,6 +200,7 @@ local function new_parser()
       n.name = n.name or name
       n.state = "failed"
       n.failed = true
+      n.is_error = tag == "%ERROR  "
       p.last_failed = n
     elseif tag == "%TRACES " then
       p.tracing = p.last_failed or { trace = {} }
@@ -202,9 +209,16 @@ local function new_parser()
       p.tracing = nil
     elseif tag == "%RUNTIME" then
       p.done = true
+      p.runtime_ms = tonumber(rest:match("^%s*(%d+)"))
     end
   end
+  --- A line of the JVM's stdout/stderr (dap output event): attached to the test running now, else run output.
+  function p.output(text)
+    local list = p.open and (function() p.open.output = p.open.output or {}; return p.open.output end)() or p.orphan
+    if #list < 400 then list[#list + 1] = text end
+  end
   function p.feed(chunk)
+    p.now = vim.uv.hrtime()
     p.buf = p.buf .. chunk
     while true do
       local nl = p.buf:find("\n", 1, true)
@@ -288,10 +302,22 @@ local function short(name)
   return method and (simple .. "." .. method) or simple
 end
 
+--- Per-test entry for the results view (nv4j/testresults.lua): the counts' fields plus time, message, trace, output.
+local function detail_of(n, state, cls, method, ctx)
+  local tr = require("nv4j.testresults")
+  local parsed = tr.parse_trace(n.trace, function(c) return class_file(c, ctx) end)
+  local ms = n.ms
+  return { name = n.name, key = n.name or n.id, display = n.display, class = cls, method = method, state = state,
+    aborted = n.aborted or nil, error = n.is_error or nil, ms = ms, message = parsed.message or (n.failed and "failed (no message)" or nil),
+    lines = parsed.lines, output = n.output or {}, file = cls and class_file(cls, ctx) or nil }
+end
+
 --- Aggregate parsed launches into a result.
 local function collect(parsers, ctx)
-  local r = { passed = 0, failed = 0, skipped = 0, failures = {}, tests = {} }
+  local r = { passed = 0, failed = 0, skipped = 0, failures = {}, tests = {}, output = {} }
   for _, p in ipairs(parsers) do
+    vim.list_extend(r.output, p.orphan or {})
+    if p.runtime_ms then r.runtime_ms = (r.runtime_ms or 0) + p.runtime_ms end
     local listed = {}
     for _, id in ipairs(p.order) do listed[id] = true end
     for _, id in ipairs(p.order) do
@@ -302,7 +328,7 @@ local function collect(parsers, ctx)
       if (leaf and n.started and (n.ended or state)) or n.failed then
         state = state or "passed"
         local cls, method = split_name(n.name or "")
-        r.tests[#r.tests + 1] = { name = n.name, display = n.display, class = cls, method = method, state = state }
+        r.tests[#r.tests + 1] = detail_of(n, state, cls, method, ctx)
         r[state] = r[state] + 1
         if state == "failed" then r.failures[#r.failures + 1] = failure_of(n, ctx) end
       end
@@ -313,7 +339,8 @@ local function collect(parsers, ctx)
         r.failed = r.failed + 1
         local f = failure_of(n, ctx)
         r.failures[#r.failures + 1] = f
-        r.tests[#r.tests + 1] = { name = n.name, class = f.class, state = "failed" }
+        local d = detail_of(n, "failed", f.class, f.method, ctx)
+        r.tests[#r.tests + 1] = d
       end
     end
   end
@@ -402,7 +429,7 @@ local function show(r, ctx, label)
   local level = (r.failed > 0 or r.error) and vim.log.levels.ERROR or vim.log.levels.INFO
   local msg = ("%s: %s in %.1f s"):format(label, summary(r), (r.ms or 0) / 1000)
   if r.error then msg = msg .. "\n" .. r.error end
-  if r.failed > 0 then msg = msg .. "\n<leader>to: failures in the quickfix list" end
+  if r.failed > 0 then msg = msg .. "\n<leader>tv: results (messages, traces, output); <leader>to: quickfix list" end
   notify(msg, level)
 end
 
@@ -482,8 +509,12 @@ local function launch_one(run, launch, done, idx)
     local out_listeners = require("dap").listeners.after.event_output
     out_listeners[listener_key] = function(session, body)
       if not (session and session.config and session.config.name == name) or type(body) ~= "table" or type(body.output) ~= "string" then return end
-      for _, l in ipairs(vim.split(body.output, "\n", { plain = true })) do
-        console[#console + 1] = (l:gsub("\r$", ""))
+      local pieces = vim.split(body.output, "\n", { plain = true })
+      for i, l in ipairs(pieces) do
+        l = l:gsub("\r$", "")
+        console[#console + 1] = l
+        -- stdout/stderr of the JVM: kept for the results view, on the test running when it arrived
+        if (body.category == "stdout" or body.category == "stderr") and not (i == #pieces and l == "") then parser.output(l) end
       end
       if #console > 120 then console = vim.list_slice(console, #console - 59) end
     end
@@ -600,9 +631,18 @@ local function finish_run(run, r)
   M._last_raw = raw
   if not r.error or r.passed + r.failed + r.skipped > 0 then
     M.last_result = r
+    -- the results view's model of this project (in memory): a partial run is merged into the earlier one
+    pcall(function()
+      local sc = run.scope
+      -- the counts keep an assumption failure as skipped; the view tells it apart
+      local view = vim.tbl_map(function(t) return t.aborted and vim.tbl_extend("force", t, { state = "aborted" }) or t end, r.tests)
+      require("nv4j.testresults").store(run.root, { label = run.label, scope = sc, at = os.date("%H:%M:%S"), ms = r.runtime_ms,
+        tests = view, output = r.output, error = r.error }, { replace_all = sc == "project", replace_classes = sc == "class" or sc == "file" })
+    end)
   end
   show(r, run.ctx, run.label)
   place_signs(r, run.lenses_by_file)
+  pcall(function() require("nv4j.testresultsui").refresh() end)
   -- a project run discovered classes only: method lines of the loaded test buffers come afterwards
   for file, lenses in pairs(run.lenses_by_file) do
     local b = vim.fn.bufnr(file)
@@ -642,7 +682,7 @@ end
 local function start(req, opts)
   next_id = next_id + 1
   local run = { id = next_id, client = req.client, debug = req.debug, label = req.label, t0 = vim.uv.hrtime(),
-    on_done = opts.on_done, lenses_by_file = req.lenses_by_file or {},
+    on_done = opts.on_done, scope = req.scope, root = req.client.config.root_dir, lenses_by_file = req.lenses_by_file or {},
     ctx = { files = req.files or {}, roots = req.roots or {}, methods = req.methods or {}, classes = req.classes or {} } }
   running = run -- replaces the discovery lock of run()
   M.last_request = req
@@ -857,17 +897,19 @@ end
 --- run did not fetch (a project run discovers classes only) are fetched first.
 local function from_failed(opts)
   local r, req0 = M.last_result, M.last_request
-  if not r or not req0 or #r.failures == 0 then
+  -- opts.only: the tests to rerun (entries with class and method: the results view's `r` and `R`), else the failures of the last run
+  local list = opts.only or (r and r.failures)
+  if not req0 or not list or #list == 0 then
     return refuse(opts, "No failed tests in the last run", vim.log.levels.INFO)
   end
   local client = req0.client
   if client:is_stopped() then return refuse(opts, "jdt.ls of the last run stopped: run the tests again") end
-  local req = new_req(client, "failed", opts.debug == nil and req0.debug or opts.debug, "failed tests")
+  local req = new_req(client, "failed", opts.debug == nil and req0.debug or opts.debug, opts.only and #opts.only == 1 and short(opts.only[1].name or "") or "failed tests")
   req.files, req.methods, req.classes, req.lenses_by_file, req.roots = req0.files, req0.methods, req0.classes,
     req0.lenses_by_file, req0.roots
   local function build()
     local methods, classes, seen = {}, {}, {}
-    for _, f in ipairs(r.failures) do
+    for _, f in ipairs(list) do
       local m = f.class and f.method and req.methods[f.class .. "#" .. f.method]
       local c = not m and f.class and (req.classes[f.class] or req.classes[top_class(f.class)])
       local key = m and m.jdtHandler or (c and c.fullName)
@@ -882,7 +924,7 @@ local function from_failed(opts)
     start(req, opts)
   end
   local missing = {}
-  for _, f in ipairs(r.failures) do
+  for _, f in ipairs(list) do
     if f.method and f.class and not req.methods[f.class .. "#" .. f.method] then
       local file = class_file(f.class, { files = req.files, roots = req.roots })
       if file then missing[file] = true end
@@ -981,6 +1023,7 @@ M.keys = {
   { "<leader>tf", function() M.run({ scope = "failed" }) end, "Test failed again" },
   { "<leader>tl", function() M.run({ scope = "last" }) end, "Test last again" },
   { "<leader>to", function() M.results() end, "Test results (quickfix)" },
+  { "<leader>tv", function() require("nv4j.testresultsui").open() end, "Test results view (tree, traces, output)" },
   { "<leader>td", function() M.run({ scope = "nearest", debug = true }) end, "Debug nearest test" },
   { "<leader>tT", pick, "Test pick (nvim-jdtls, also TestNG)" },
 }

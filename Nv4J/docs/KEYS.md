@@ -30,6 +30,7 @@ Keys marked **Java buffer** exist only in a Java file after jdt.ls has attached.
 | `<leader>tf` | Run the tests that failed last time again | Java buffer and global | same |
 | `<leader>tl` | Run the last test run again | Java buffer and global | same |
 | `<leader>to` | Open the results (quickfix list) | Java buffer and global | same |
+| `<leader>tv` (or `:Nv4JTestResults`) | Test results view of the last run in this project: failed tests first, then the rest, with time per test. `<CR>` on a test opens its message, stack trace (your own frames bright, library frames dim) and the output it printed; `<CR>` on one of your frames jumps to that file and line; `r` reruns the test under the cursor, `R` reruns the failed ones, `q` closes | Java buffer and global | `nv4j/testresultsui.lua`, bound with the others |
 | `<leader>td` | Debug the nearest test (breakpoints stop) | Java buffer and global | same |
 | `<leader>tT` | Pick a test of the file (nvim-jdtls picker; also runs TestNG). Outside a Java file with jdt.ls it only says so | Java buffer and global | `config/keymaps.lua`, `plugins/java.lua` (`nv4j.tests.bind()`) |
 | `<leader>tn` | New terminal in a tab (use it for `mvn test` by hand) | global | `config/keymaps.lua` |
