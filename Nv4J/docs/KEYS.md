@@ -199,6 +199,7 @@ If the Claude panel was open when you left a folder, it opens again next time yo
 
 - Formatting is on demand only (`<leader>cf`; `vim.g.autoformat` is false): Java and XML through the language servers, Markdown/JSON/YAML/HTML/CSS through Prettier (Mason installs it).
 - `:Nv4JLogs [30m|2h|1d|7d]` lists every log (Neovim LSP, jdt.ls, Spring, DAP, captures) in Telescope, preview = end of the file. In the list: `<CR>` open, `<C-f>` follow, `<C-g>` grep (with an ERROR/WARN filter), `Tab` select, `<C-s>` save the selected files to `~/.local/state/nv4j/nv4j/saved-logs/`; `:Nv4JLogs save 2h` saves a whole period. No `<leader>` key. See `specs/features/observability.md`.
+- `gd` into a library class opens its sources jar when `~/.m2` has one, else jdt.ls's bundled Fernflower decompiler; when Fernflower fails (`// $FF: Couldn't be decompiled`, or nothing came back) Nv4J re-decompiles the class with CFR by itself (`// Decompiled with CFR 0.152 (Fernflower failed)` on line 1). `:Nv4JDecompile cfr` forces CFR on the current `jdt://` buffer (to compare when a class looks wrong), `:Nv4JDecompile fernflower` puts jdt.ls's content back; `:Nv4JInstallCfr` downloads the pinned CFR jar once (also done by itself on first need). No `<leader>` key. See `specs/features/library-navigation.md`.
 - `<leader>?` shows the keys of the current buffer; `<leader>sk` searches all keys.
 - Options such as `vim.g.nv4j_run_tool` and `vim.g.nv4j_spring`: README "Options".
 - To list every key of your own session: `:Telescope keymaps`.

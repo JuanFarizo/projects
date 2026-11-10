@@ -69,6 +69,14 @@ return {
           -- Apply pom.xml / build.gradle changes without asking (default "interactive" leaves a
           -- "may need reload" diagnostic on the build file and a stale classpath).
           configuration = { updateBuildConfiguration = "automatic" },
+          -- Library sources (specs/features/library-navigation.md). Read from jdt.ls 1.63.0's bytecode: a Maven project
+          -- already fetches a missing -sources.jar LAZILY on navigation (SourceContentProvider -> MavenSourceDownloader,
+          -- one request per jar, 3 s wait, Fernflower meanwhile), with no setting. `eclipse.downloadSources` adds that
+          -- lazy path for Eclipse (.project) projects: no startup cost. `maven.downloadSources` is NOT lazy: at import
+          -- m2e gets setDownloadSources(true) and schedules a download for EVERY dependency without sources (one job
+          -- per jar, 1 s after each classpath configuration), so it stays off unless vim.g.nv4j_maven_download_sources.
+          eclipse = { downloadSources = true },
+          maven = { downloadSources = vim.g.nv4j_maven_download_sources == true },
           -- Generated code close to IntelliJ's defaults: braces, java.util.Objects in
           -- equals/hashCode, ClassName{field=value, ...} toString, no comments.
           codeGeneration = {
@@ -207,6 +215,18 @@ return {
       -- that's the layer that actually renders them.
 
       require("jdtls").settings.jdt_uri_timeout_ms = 20000
+      -- After nvim-jdtls filled a jdt:// buffer (Fernflower content or real sources): CFR backup only when jdt.ls gave
+      -- nothing or Fernflower marked a method as not decompiled (nv4j/decompile.lua, required here on the first jdt://
+      -- buffer, never at startup). Wrapped once: a reloaded jdtls module is a new table without the mark.
+      local jdtls = require("jdtls")
+      if not jdtls.nv4j_open_wrapped then
+        jdtls.nv4j_open_wrapped = true
+        local open = jdtls.open_classfile
+        jdtls.open_classfile = function(buf, fname)
+          open(buf, fname)
+          if type(fname) == "string" and fname:find("^jdt://") then pcall(function() require("nv4j.decompile").after_open(buf, fname) end) end
+        end
+      end
       -- :JdtShowLogs opens stdpath("log")/lsp.log, which init.lua no longer writes (stale file): show the real LSP log instead.
       require("jdtls.setup").show_logs = require("nv4j.logs").show_jdt_logs
       -- LazyVim's java extra calls require("jdtls").start_or_attach(config) right after opts.jdtls, which cannot

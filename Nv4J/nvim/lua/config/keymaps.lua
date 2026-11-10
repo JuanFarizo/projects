@@ -505,5 +505,14 @@ require("nv4j.logs").setup()
 -- ── :Nv4JTestResults / <leader>tv: tree of the last run's tests (message, trace, output; nv4j/testresultsui.lua) ──
 require("nv4j.testresultsui").setup()
 
+-- ── :Nv4JDecompile [cfr|fernflower] on a jdt:// buffer, :Nv4JInstallCfr (nv4j/decompile.lua loads on first use) ──
+vim.api.nvim_create_user_command("Nv4JDecompile", function(o) require("nv4j.decompile").command_decompile(o.fargs) end, {
+  nargs = "?", complete = function() return { "cfr", "fernflower" } end,
+  desc = "Re-decompile the current library class (jdt:// buffer) with CFR (default) or Fernflower",
+})
+vim.api.nvim_create_user_command("Nv4JInstallCfr", function()
+  require("nv4j.decompile").install(function(ok, msg) vim.notify(msg, ok and vim.log.levels.INFO or vim.log.levels.WARN, { title = "Nv4J" }) end)
+end, { desc = "Download the pinned CFR decompiler jar (backup decompiler) once, SHA-256 checked" })
+
 -- ── IntelliJ debugger keys: F7/F8/S-F8/F9/A-F9/A-F8/S-F7 only during a debug session, <D-F8> (<C-F8> on Linux) breakpoint (nv4j/debugkeys.lua) ──
 require("nv4j.debugkeys").setup()
