@@ -8,6 +8,8 @@
 --  fields           provider "jpql" returns Booking's fields for `SELECT b FROM Booking b WHERE b.`, each with score_offset >= 100
 --  join             `JOIN b.customer c WHERE c.` returns Customer's fields
 --  outside          a cursor in a comment (not a @Query string) returns no item
+--  noise_dropped    blink's lsp provider drops Spring LS Method items (countBy, findByX) inside a @Query string, keeps the rest
+--  noise_outside_kept  the same items outside a @Query string are all kept
 local lsp = require("lsp")
 local P = "85_jpql_blink."
 local SRC = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":p:h:h") .. "/fixtures/jpa4"
@@ -73,6 +75,35 @@ local b = labels(ask(Q:format("SELECT b FROM Booking b JOIN b.customer c WHERE c
 lsp.report(P .. "join", b.email and b.fullName, vim.inspect(vim.tbl_keys(b)):gsub("%s+", " "))
 local c = ask("    // SELECT b FROM Booking b WHERE b.", 0)
 lsp.report(P .. "outside", #c == 0, #c .. " item(s)")
+
+
+-- Spring LS method-name items (countBy, findByX) are dropped inside a @Query string, everything else stays.
+do
+  local function filt(line, back)
+    local lines = vim.deepcopy(base)
+    while lines[#lines]:match("^%s*$") do table.remove(lines) end
+    lines[#lines] = nil
+    lines[#lines + 1] = line
+    lines[#lines + 1] = "    java.util.List<Booking> probe();"
+    lines[#lines + 1] = "}"
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+    local row, col = #lines - 2, #line - back
+    vim.api.nvim_win_set_cursor(0, { row, col })
+    local items = {
+      { label = "countBy", kind = 2, client_name = "spring-boot" },
+      { label = "someField", kind = 5, client_name = "spring-boot" },
+      { label = "equals", kind = 2, client_name = "jdtls" },
+    }
+    local out = sources.get_provider_by_id("lsp"):transform_items({ bufnr = buf, cursor = { row, col }, line = line, bounds = { line_number = row, start_col = col + 1, length = 0 } }, items)
+    local t = {}
+    for _, i in ipairs(out) do t[#t + 1] = i.label end
+    return table.concat(t, ",")
+  end
+  local inq = filt(Q:format("SELECT b FROM Booking b WHERE b."), 2)
+  lsp.report(P .. "noise_dropped", inq == "someField,equals", inq)
+  local outq = filt("    // SELECT b FROM Booking b WHERE b.", 0)
+  lsp.report(P .. "noise_outside_kept", outq == "countBy,someField,equals", outq)
+end
 
 vim.api.nvim_buf_set_lines(buf, 0, -1, false, base)
 vim.bo[buf].modified = false

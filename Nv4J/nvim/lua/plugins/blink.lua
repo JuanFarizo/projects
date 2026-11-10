@@ -83,6 +83,19 @@ return {
       opts.sources = opts.sources or {}
       opts.sources.providers = opts.sources.providers or {}
       opts.sources.providers.jpql = { name = "JPQL", module = "nv4j.jpqlsource", score_offset = 100 }
+      -- the Spring LS offers derived-method names (countBy, findByX...) inside @Query strings: noise next to JPQL fields
+      local lsp_p = opts.sources.providers.lsp or {}
+      local prev = lsp_p.transform_items
+      lsp_p.transform_items = function(ctx, items)
+        if prev then items = prev(ctx, items) end
+        if vim.bo[ctx.bufnr].filetype ~= "java" then return items end
+        local function drop(i) return i.kind == 2 and (i.client_name or ""):find("spring", 1, true) ~= nil end
+        if not vim.iter(items):any(drop) then return items end
+        local ok, q = pcall(require("nv4j.jpqlcomplete").query_at, ctx.bufnr, ctx.cursor[1] - 1, ctx.cursor[2])
+        if not ok or not q then return items end
+        return vim.tbl_filter(function(i) return not drop(i) end, items)
+      end
+      opts.sources.providers.lsp = lsp_p
       opts.sources.per_filetype = opts.sources.per_filetype or {}
       opts.sources.per_filetype.java = vim.list_extend({ "jpql" }, vim.deepcopy(type(opts.sources.default) == "table" and opts.sources.default or { "lsp", "path", "snippets", "buffer" }))
     end,
