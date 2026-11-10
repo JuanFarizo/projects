@@ -207,6 +207,8 @@ return {
       -- that's the layer that actually renders them.
 
       require("jdtls").settings.jdt_uri_timeout_ms = 20000
+      -- :JdtShowLogs opens stdpath("log")/lsp.log, which init.lua no longer writes (stale file): show the real LSP log instead.
+      require("jdtls.setup").show_logs = require("nv4j.logs").show_jdt_logs
       -- LazyVim's java extra calls require("jdtls").start_or_attach(config) right after opts.jdtls, which cannot
       -- stop it: guard it (idempotent) to skip a config that opts.jdtls marked refused (loose-root cap, nv4j/root.lua).
       -- Applied again at the top of opts.jdtls, which runs before every start: a reloaded jdtls module is a new table.

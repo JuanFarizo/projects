@@ -730,7 +730,7 @@ local ok5, err5 = pcall(function()
     if nopath:find("no jdt.ls root contains", 1, true) then bad6[#bad6 + 1] = "no projectUri wrote a no-root line: " .. nopath end
     local miss = logged(function() S.route_client({ projectUri = "file:///nowhere/Z1/x.java" }, all) end)
     local l = lines_of(miss)
-    if #l ~= 1 or not l[1]:find("^%d%d:%d%d:%d%d no jdt%.ls root contains /nowhere/Z1/x%.java: current buffer's jdt%.ls$") then
+    if #l ~= 1 or not l[1]:find("^%d%d%d%d%-%d%d%-%d%d %d%d:%d%d:%d%d %[%d+%] no jdt%.ls root contains /nowhere/Z1/x%.java: current buffer's jdt%.ls$") then
       bad6[#bad6 + 1] = "unmatched projectUri line: " .. vim.inspect(miss)
     end
   end)

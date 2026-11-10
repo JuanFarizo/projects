@@ -498,3 +498,9 @@ map("n", "<leader>uC", function()
     ignore_builtins = true,
   })
 end, { desc = "Colorscheme with Preview" })
+
+-- ── :Nv4JLogs (registry of every log, picker, save for analysis; nv4j/logs.lua). Command only, no key. ──
+require("nv4j.logs").setup()
+
+-- ── IntelliJ debugger keys: F7/F8/S-F8/F9/A-F9/A-F8/S-F7 only during a debug session, <D-F8> (<A-F8> on Linux) breakpoint (nv4j/debugkeys.lua) ──
+require("nv4j.debugkeys").setup()

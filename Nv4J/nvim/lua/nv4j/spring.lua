@@ -124,7 +124,7 @@ end
 function M.route_log(msg)
   local f = io.open(require("nv4j.paths").logs .. "/spring-route.log", "a")
   if f then
-    f:write(os.date("%H:%M:%S "), msg, "\n")
+    f:write(os.date("%Y-%m-%d %H:%M:%S "), "[", vim.uv.os_getpid(), "] ", msg, "\n")
     f:close()
   end
 end
