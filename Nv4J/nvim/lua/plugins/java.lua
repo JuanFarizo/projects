@@ -201,6 +201,8 @@ return {
         if prev_on_attach then prev_on_attach(args) end
         local client = vim.lsp.get_client_by_id(args.data.client_id)
         if client then require("nv4j.usage").watch(client.config.root_dir) end
+        -- Java buffer indent follows the formatter profile (jdt.ls formats with the client-sent tabSize; nv4j/formatter.lua).
+        if client then pcall(require("nv4j.formatter").on_attach, args.buf, client) end
         -- toString and equals/hashCode field pickers start with all fields selected (nv4j/codegen.lua).
         require("nv4j.codegen").setup()
         -- Debug fixes (nv4j/debug.lua): first JDT launching calls one at a time, refresh + build before every

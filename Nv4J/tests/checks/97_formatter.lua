@@ -12,8 +12,8 @@
 --  google_install    : stubbed curl: bad SHA refused (no file kept), good SHA kept at the pinned path.
 --  command_switch    : :Nv4JFormatter eclipse saves the choice; with .nv4j set the effective source stays .nv4j.
 -- (intellij keeps 2 blank lines, jdt.ls built-in 1; both wrap at 120, google at 100)
--- Live (one jdt.ls on a messy fixture, formatted over LSP with tabSize 4 / insertSpaces):
---  live_intellij / live_eclipse / live_switch_no_restart / live_back / live_google : results differ per profile, same client id.
+-- Live (one jdt.ls on a messy fixture, formatted over LSP with the options Neovim builds from the buffer, as <leader>cf does):
+--  live_intellij / live_eclipse / live_switch_no_restart / live_back / live_google / live_path_project / live_project_eclipse : results differ per profile, same client id.
 local lsp = require("lsp")
 local P = "97_formatter."
 local function rep(name, ok, detail) lsp.report(P .. name, ok and true or false, detail) end
@@ -22,6 +22,7 @@ local TMP = "/tmp/nv4j/d97-" .. vim.fn.getpid()
 vim.fn.delete(TMP, "rf")
 vim.fn.mkdir(TMP .. "/data", "p")
 vim.fn.mkdir(TMP .. "/state", "p")
+TMP = vim.uv.fs_realpath(TMP)
 
 rep("zero_cost_startup", package.loaded["nv4j.formatter"] == nil, "loaded at startup: " .. tostring(package.loaded["nv4j.formatter"] ~= nil))
 pcall(require, "lazyvim.config.keymaps")
@@ -38,6 +39,10 @@ local function nv4j_file(dir, tbl)
   local f = io.open(dir .. "/.nv4j", "w"); f:write(tbl and vim.json.encode(tbl) or ""); f:close()
 end
 local function clear_saved() vim.fn.delete(F.state_file()) end
+local THREE = [[<?xml version="1.0"?><profiles version="21"><profile kind="CodeFormatterProfile" name="Three" version="21">]]
+  .. [[<setting id="org.eclipse.jdt.core.formatter.tabulation.char" value="space"/>]]
+  .. [[<setting id="org.eclipse.jdt.core.formatter.tabulation.size" value="3"/></profile></profiles>]]
+local THREE0 = THREE
 
 -- xml
 do
@@ -85,7 +90,7 @@ end
 do
   local root = TMP .. "/proj"
   vim.fn.mkdir(root .. "/cfg", "p")
-  local f = io.open(root .. "/cfg/my.xml", "w"); f:write("<profiles/>"); f:close()
+  local f = io.open(root .. "/cfg/my.xml", "w"); f:write(THREE0); f:close()
   local rel = F.settings_of("cfg/my.xml", root)
   local abs = F.settings_of(root .. "/cfg/my.xml", "/elsewhere")
   local miss, why = F.settings_of("nope.xml", root)
@@ -165,6 +170,206 @@ do
     and saved2 == "eclipse" and (notes[#notes] or ""):find("not found", 1, true), msg)
 end
 
+-- helpers for the scope / select / path cases
+local sel_queue, sel_prompts = {}, {}
+local real_select = vim.ui.select
+vim.ui.select = function(items, opts, cb)
+  sel_prompts[#sel_prompts + 1] = { items = items, prompt = opts.prompt }
+  local want = table.remove(sel_queue, 1) -- a prefix of the item to pick, or false = cancel
+  local pick
+  if want then for _, it in ipairs(items) do if it:sub(1, #want) == want then pick = it break end end end
+  cb(pick)
+end
+local function set_buf(path)
+  vim.fn.mkdir(vim.fs.dirname(path), "p")
+  local b = vim.api.nvim_create_buf(true, false)
+  vim.api.nvim_buf_set_name(b, path)
+  vim.api.nvim_set_current_buf(b)
+  return b
+end
+local function last() return notes[#notes] or "" end
+local function slurp(p) local f = io.open(p, "rb"); if not f then return nil end local s = f:read("*a"); f:close(); return s end
+
+-- path_forms: ~, quotes, '#' in a name, a directory, a file that is not an Eclipse XML, unknown name: each one a one-line message
+do
+  local root = TMP .. "/pf"
+  vim.fn.mkdir(root .. "/dir.xml", "p")
+  for _, n in ipairs({ "three.xml", "a#b.xml" }) do local f = io.open(root .. "/" .. n, "w"); f:write(THREE); f:close() end
+  local f = io.open(root .. "/plain.txt", "w"); f:write("hello"); f:close()
+  local home = vim.env.HOME
+  vim.env.HOME = root
+  local tilde = F.settings_of("~/three.xml", "/elsewhere")
+  vim.env.HOME = home
+  local quoted = F.settings_of('"' .. root .. '/three.xml"', "/elsewhere")
+  local hash = F.settings_of("a#b.xml", root)
+  local dir, dwhy = F.settings_of("dir.xml", root)
+  local txt, twhy = F.settings_of("plain.txt", root)
+  local b = set_buf(root .. "/A.java")
+  clear_saved(); notes = {}
+  vim.cmd("Nv4JFormatter goggle")
+  local unk = last()
+  vim.cmd("Nv4JFormatter dir.xml")
+  local dmsg = last()
+  vim.api.nvim_buf_delete(b, { force = true })
+  rep("path_forms", tilde and tilde.url == vim.uri_from_fname(root .. "/three.xml") and tilde.profile == "Three"
+    and tilde.indent and tilde.indent.size == 3 and tilde.indent.expandtab == true
+    and quoted and quoted.url == tilde.url and hash and hash.url:find("a%%23b.xml") and dir == nil and dwhy:find("not a file", 1, true)
+    and txt == nil and twhy:find("not an Eclipse formatter XML", 1, true) and unk:find("unknown profile 'goggle'", 1, true)
+    and dmsg:find("not a file", 1, true) and F.saved() == nil,
+    vim.inspect({ tilde and tilde.url, dwhy, twhy, unk, dmsg }):gsub("%s+", " "))
+end
+
+-- indent_sync: jdt.ls takes tabSize/insertSpaces from the client, so Java buffers follow the profile (google 2, intellij 4) and
+-- eclipse puts the buffer's own values back (the live case proves the 2 spaces come out of jdt.ls)
+do
+  local b = vim.api.nvim_create_buf(true, false)
+  vim.bo[b].shiftwidth, vim.bo[b].tabstop, vim.bo[b].expandtab = 8, 8, false
+  local f = io.open(F.google_path(), "w"); f:write(slurp(REAL_GOOGLE) or '<profiles><profile name="GoogleStyle"><setting id="org.eclipse.jdt.core.formatter.tabulation.char" value="space"/><setting id="org.eclipse.jdt.core.formatter.tabulation.size" value="2"/></profile></profiles>'); f:close()
+  local g = F.settings_of("google")
+  F.sync_buffer(b, g)
+  local sw_g, et_g = vim.bo[b].shiftwidth, vim.bo[b].expandtab
+  F.sync_buffer(b, F.settings_of("intellij"))
+  local sw_i = vim.bo[b].shiftwidth
+  F.sync_buffer(b, F.settings_of("eclipse"))
+  local back = { vim.bo[b].shiftwidth, vim.bo[b].tabstop, vim.bo[b].expandtab }
+  vim.fn.delete(F.google_path())
+  vim.api.nvim_buf_delete(b, { force = true })
+  rep("indent_sync", g and g.indent and g.indent.size == 2 and sw_g == 2 and et_g == true and sw_i == 4 and back[1] == 8 and back[2] == 8 and back[3] == false,
+    vim.inspect({ g and g.indent, sw_g, sw_i, back }):gsub("%s+", " "))
+end
+
+-- settings_set: .nv4j keeps the other fields; a non-JSON file is never overwritten; a missing file only with create
+do
+  local S = require("nv4j.settings")
+  local root = TMP .. "/ss"
+  vim.fn.mkdir(root, "p")
+  local p = root .. "/.nv4j"
+  local f = io.open(p, "w"); f:write('{"run":{"profile":"dev","env":{"A":"1"}},"spring_boot":"app"}'); f:close()
+  local ok1 = S.set(root, "format_profile", "google")
+  local d = vim.json.decode(slurp(p))
+  f = io.open(p, "w"); f:write("{broken"); f:close()
+  local p2, e2 = S.set(root, "format_profile", "google")
+  local kept = slurp(p) == "{broken"
+  f = io.open(p, "w"); f:write(""); f:close()
+  S.set(root, "format_profile", "eclipse")
+  local d3 = vim.json.decode(slurp(p))
+  local p4, e4 = S.set(root .. "/none", "format_profile", "google")
+  vim.fn.mkdir(root .. "/none", "p")
+  local p5 = S.set(root .. "/none", "format_profile", "google", true)
+  rep("settings_set", ok1 == p and d.format_profile == "google" and (d.run or {}).profile == "dev" and ((d.run or {}).env or {}).A == "1" and d.spring_boot == "app"
+    and p2 == nil and e2:find("not a JSON object", 1, true) and kept and d3.format_profile == "eclipse"
+    and p4 == nil and e4:find("does not exist", 1, true) and p5 and vim.uv.fs_stat(root .. "/none/.nv4j"), vim.inspect({ d, e2, d3, e4 }):gsub("%s+", " "))
+end
+
+-- project_scope: --project writes format_profile into .nv4j (other fields kept), asks before creating a missing file, says WHERE it
+-- saved and what is effective; --global says the state file and warns when a .nv4j wins
+do
+  local root = TMP .. "/ps"
+  local f
+  vim.fn.mkdir(root, "p")
+  f = io.open(root .. "/pom.xml", "w"); f:write("<project/>"); f:close()
+  f = io.open(root .. "/three.xml", "w"); f:write(THREE); f:close()
+  local b = set_buf(root .. "/src/A.java")
+  f = io.open(root .. "/src/A.java", "w"); f:write("class A {}"); f:close()
+  f = io.open(F.google_path(), "w"); f:write("<profiles><profile name=\"GoogleStyle\"/></profiles>"); f:close()
+  clear_saved(); notes = {}; sel_queue, sel_prompts = {}, {}
+  -- no .nv4j: declined -> nothing written
+  sel_queue = { "No" }
+  vim.cmd("Nv4JFormatter eclipse --project")
+  local declined = vim.uv.fs_stat(root .. "/.nv4j") == nil and last():find("no .nv4j created", 1, true) ~= nil
+    and sel_prompts[1] and sel_prompts[1].prompt:find("does not exist", 1, true) ~= nil
+  -- accepted -> created, relative path kept as typed
+  sel_queue = { "Yes" }
+  vim.cmd("Nv4JFormatter three.xml --project")
+  local created = vim.json.decode(slurp(root .. "/.nv4j") or "{}")
+  local m1 = last()
+  -- existing file with other fields: no prompt, fields kept
+  f = io.open(root .. "/.nv4j", "w"); f:write('{"run":{"profile":"dev"}}'); f:close()
+  sel_prompts = {}
+  vim.cmd("Nv4JFormatter google --project")
+  local d = vim.json.decode(slurp(root .. "/.nv4j"))
+  local m2 = last()
+  local noprompt = #sel_prompts == 0
+  -- global while .nv4j wins
+  vim.cmd("Nv4JFormatter eclipse")
+  local m3 = last()
+  vim.cmd("Nv4JFormatter")
+  local status = notes[#notes - 0] or ""
+  -- the real file was never created under the user's dirs, only the temp tree
+  rep("project_scope", declined and created.format_profile == "three.xml" and m1:find(root .. "/.nv4j", 1, true) and m1:find("this project only", 1, true)
+    and m1:find("Effective here: three.xml (from .nv4j", 1, true) and d.format_profile == "google" and d.run.profile == "dev" and noprompt
+    and m2:find("saved to " .. root .. "/.nv4j", 1, true) and m3:find("saved globally in " .. F.state_file(), 1, true) and m3:find("NOTE: this project's .nv4j", 1, true)
+    and m3:find("Effective here: google (from .nv4j", 1, true) and F.saved() == "eclipse" and status:find("from .nv4j: " .. root .. "/.nv4j", 1, true)
+    and status:find("global choice eclipse in " .. F.state_file(), 1, true), vim.inspect({ m1, m2, m3, status }):gsub("%s+", " "))
+  vim.fn.delete(F.google_path())
+  vim.api.nvim_buf_delete(b, { force = true })
+  clear_saved()
+end
+
+-- select_flow: no args = status line, then two steps (where, then which); `path` hands the typing to the native cmdline
+-- (`:Nv4JFormatter --project `), not to vim.ui.input whose completion popup swallowed the first <CR>
+do
+  local root = TMP .. "/sf"
+  vim.fn.mkdir(root, "p")
+  local f = io.open(root .. "/pom.xml", "w"); f:write("<project/>"); f:close()
+  f = io.open(root .. "/.nv4j", "w"); f:write("{}"); f:close()
+  f = io.open(root .. "/my.xml", "w"); f:write(THREE); f:close()
+  f = io.open(root .. "/A.java", "w"); f:write("class A {}"); f:close()
+  local b = set_buf(root .. "/A.java")
+  clear_saved(); notes = {}; sel_queue, sel_prompts = {}, {}
+  local fed
+  local real_feed = F.feed
+  F.feed = function(t) fed = t end
+  sel_queue = { "This project", "eclipse" }
+  vim.cmd("Nv4JFormatter")
+  local one = vim.json.decode(slurp(root .. "/.nv4j")).format_profile == "eclipse" and sel_prompts[1].items[1]:find(".nv4j", 1, true) and sel_prompts[1].items[2]:find("Global", 1, true)
+    and sel_prompts[2].prompt:find("save: .nv4j", 1, true)
+  sel_queue = { "Global", "path" }
+  vim.cmd("Nv4JFormatter")
+  vim.wait(500, function() return fed ~= nil end)
+  local two = fed == "Nv4JFormatter --global "
+  sel_queue = { "This project", "intellij" }
+  vim.cmd("Nv4JFormatter")
+  local three = vim.json.decode(slurp(root .. "/.nv4j")).format_profile == "intellij"
+  sel_queue = { false } -- cancelled at step 1: nothing written
+  local before = slurp(root .. "/.nv4j")
+  vim.cmd("Nv4JFormatter")
+  local four = slurp(root .. "/.nv4j") == before
+  -- the command typed after `path`, with a relative file, global: saved absolute
+  vim.cmd("Nv4JFormatter my.xml --global")
+  local abs = F.saved() == root .. "/my.xml"
+  F.feed = real_feed
+  rep("select_flow", one and two and three and four and abs and notes[1]:find("^Java formatter: ") ~= nil,
+    vim.inspect({ one, two, three, four, abs, fed, F.saved() }):gsub("%s+", " "))
+  vim.api.nvim_buf_delete(b, { force = true })
+  clear_saved()
+end
+
+-- failure_paths: every failure is one notification, never silent and never an error
+do
+  local root = TMP .. "/fp"
+  vim.fn.mkdir(root, "p")
+  local f = io.open(root .. "/pom.xml", "w"); f:write("<project/>"); f:close()
+  f = io.open(root .. "/.nv4j", "w"); f:write("{bad"); f:close()
+  f = io.open(root .. "/A.java", "w"); f:write("class A {}"); f:close()
+  local b = set_buf(root .. "/A.java")
+  clear_saved(); notes = {}
+  local out = {}
+  for _, cmd in ipairs({ "Nv4JFormatter eclipse --project", "Nv4JFormatter --bogus", "Nv4JFormatter nope.xml", "Nv4JFormatter intellij --project" }) do
+    local n0 = #notes
+    local ok, err = pcall(vim.cmd, cmd)
+    out[#out + 1] = { ok, #notes - n0, last() }
+  end
+  local bad_kept = slurp(root .. "/.nv4j") == "{bad"
+  vim.api.nvim_buf_delete(b, { force = true })
+  clear_saved()
+  local all = true
+  for _, o in ipairs(out) do if not o[1] or o[2] < 1 then all = false end end
+  rep("failure_paths", all and bad_kept and out[1][3]:find("not a JSON object", 1, true) and out[2][3]:find("unknown option", 1, true)
+    and out[3][3]:find("not found", 1, true), vim.inspect(out):gsub("%s+", " "))
+end
+vim.ui.select = real_select
+
 if not unit_only then
   local root = TMP .. "/live"
   vim.fn.mkdir(root .. "/src/main/java/demo", "p")
@@ -205,6 +410,7 @@ public class Messy {
   clear_saved(); vim.g.nv4j_format_profile = nil
   local buf = lsp.open(fpath)
   local client, why = lsp.wait_ready(buf, 240000)
+  vim.api.nvim_set_current_buf(buf)
   if not client then
     rep("live_ready", false, tostring(why))
   else
@@ -212,7 +418,7 @@ public class Messy {
     local function fmt()
       local res, done
       client:request("textDocument/formatting", { textDocument = { uri = vim.uri_from_bufnr(buf) },
-        options = { tabSize = 4, insertSpaces = true } }, function(err, r) res = err and { err = err } or (r or {}); done = true end, buf)
+        options = vim.lsp.util.make_formatting_params().options }, function(err, r) res = err and { err = err } or (r or {}); done = true end, buf)
       vim.wait(30000, function() return done end, 50)
       if not res or res.err then return nil, vim.inspect(res) end
       -- apply to a scratch copy of the text
@@ -245,13 +451,51 @@ public class Messy {
     rep("live_back", A2 == A, "intellij again equals the first intellij result: " .. tostring(A2 == A))
 
     if vim.uv.fs_stat(REAL_GOOGLE) then
-      F.save("google")
-      F.apply(); settle()
+      vim.api.nvim_set_current_buf(buf)
+      notes = {}
+      vim.cmd("Nv4JFormatter google") -- the real command, no manual F.save/apply
+      settle()
+      local gmsg = notes[#notes] or ""
       local G = fmt()
-      rep("live_google", G ~= nil and G ~= A and G ~= B, ("google differs from both; longest %s"):format(G and longest(G) or "?"))
+      local sw = vim.bo[buf].shiftwidth
+      -- Google's profile is 2 spaces / 100 columns. Before the indent sync jdt.ls got tabSize 4 from the buffer and printed 4 spaces.
+      rep("live_google", G ~= nil and G ~= A and G ~= B and G:find("\n  private final", 1, true) ~= nil and not G:find("\n    private final", 1, true)
+        and longest(G) <= 100 and sw == 2 and gmsg:find("1 jdt.ls updated", 1, true) ~= nil,
+        ("google differs from both; indent 2 sw=%s; longest %s; %s"):format(sw, G and longest(G) or "?", gmsg))
+      vim.fn.writefile(vim.split(G or "", "\n"), TMP .. "/live_google.txt")
     else
       rep("live_google", true, "SKIP: google XML not downloaded on this machine (:Nv4JFormatter google)")
     end
+
+    -- a path (relative to the project root, written to .nv4j after the "create it?" prompt), 3 spaces / 60 columns
+    local cfg = io.open(root .. "/cfg.xml", "w")
+    cfg:write('<?xml version="1.0"?><profiles version="21"><profile kind="CodeFormatterProfile" name="Three" version="21">'
+      .. '<setting id="org.eclipse.jdt.core.formatter.tabulation.char" value="space"/>'
+      .. '<setting id="org.eclipse.jdt.core.formatter.tabulation.size" value="3"/>'
+      .. '<setting id="org.eclipse.jdt.core.formatter.indentation.size" value="3"/>'
+      .. '<setting id="org.eclipse.jdt.core.formatter.lineSplit" value="60"/></profile></profiles>')
+    cfg:close()
+    local real_select = vim.ui.select
+    vim.ui.select = function(items, _, cb) cb(items[1]) end -- "Yes, create .../.nv4j"
+    notes = {}
+    vim.cmd("Nv4JFormatter cfg.xml --project")
+    vim.ui.select = real_select
+    settle()
+    local pmsg = notes[#notes] or ""
+    local Pm = fmt()
+    local nv4j = io.open(root .. "/.nv4j", "r")
+    local nv4j_txt = nv4j and nv4j:read("*a") or ""
+    if nv4j then nv4j:close() end
+    rep("live_path_project", Pm ~= nil and Pm:find("\n   private final", 1, true) ~= nil and not Pm:find("\n    private final", 1, true)
+      and longest(Pm) <= 70 and nv4j_txt:find('"format_profile": "cfg.xml"', 1, true) ~= nil and pmsg:find(root .. "/.nv4j", 1, true) ~= nil
+      and vim.bo[buf].shiftwidth == 3, ("longest %s; .nv4j %s; %s"):format(Pm and longest(Pm) or "?", nv4j_txt:gsub("%s+", " "), pmsg))
+    vim.fn.writefile(vim.split(Pm or "", "\n"), TMP .. "/live_path.txt")
+
+    -- back to eclipse for this project only (.nv4j), then the buffer keeps its own indent again
+    vim.cmd("Nv4JFormatter eclipse --project")
+    settle()
+    local E2 = fmt()
+    rep("live_project_eclipse", E2 == B and vim.bo[buf].shiftwidth == 4, "eclipse via .nv4j equals the earlier eclipse result: " .. tostring(E2 == B))
   end
   vim.lsp.start = orig_start
   vim.g.nv4j_format_profile = nil

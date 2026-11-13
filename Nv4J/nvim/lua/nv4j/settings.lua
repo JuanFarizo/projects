@@ -3,7 +3,7 @@
 -- Also `"spring_boot": true` (or a module directory, e.g. "app"): marks the project as Spring Boot when detection cannot
 -- see it (a plugin from a jar or repository), read by nv4j.root boot_override.
 -- <leader>rs / <leader>rd read these; <leader>rp still asks and does not write the file.
--- Caller's opts win. Bad JSON: one warning, file stays a marker. Spec: specs/features/run-defaults.md.
+-- M.set (used by `:Nv4JFormatter --project`) is the only writer besides mark(). Caller's opts win. Bad JSON: one warning, file stays a marker. Spec: specs/features/run-defaults.md.
 local M = {}
 
 local TITLE = { title = "Nv4J" }
@@ -40,6 +40,32 @@ function M.load(root)
     return {}
   end
   return data
+end
+
+--- Set one top-level key in `.nv4j` at `root`, keeping every other field (pretty JSON, keys sorted). A missing file is only
+--- created when `create` is true (the caller asks the user first). A file that is not a JSON object is never overwritten.
+---@return string|nil path, string|nil err one-line reason
+function M.set(root, key, value, create)
+  local path = marker_path(root)
+  if not path then return nil, "no project root" end
+  local raw = read(path)
+  local data = {}
+  if raw == nil then
+    if not create then return nil, path .. " does not exist" end
+  else
+    local trimmed = raw:match("^%s*(.-)%s*$") or ""
+    if trimmed ~= "" then
+      local ok, d = pcall(vim.json.decode, trimmed)
+      if not ok or type(d) ~= "table" or vim.islist(d) then return nil, path .. " is not a JSON object; not modified" end
+      data = d
+    end
+  end
+  data[key] = value
+  local f, err = io.open(path, "w")
+  if not f then return nil, "cannot write " .. path .. ": " .. tostring(err) end
+  f:write(vim.json.encode(data, { indent = "  ", sort_keys = true }), "\n")
+  f:close()
+  return path, nil
 end
 
 --- Fill omitted run fields from `.nv4j`. `opts` keys win. Never writes the file.

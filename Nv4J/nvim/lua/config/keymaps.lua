@@ -511,11 +511,20 @@ vim.api.nvim_create_user_command("Nv4JInstallCfr", function()
   require("nv4j.decompile").install(function(ok, msg) vim.notify(msg, ok and vim.log.levels.INFO or vim.log.levels.WARN, { title = "Nv4J" }) end)
 end, { desc = "Download the pinned CFR decompiler jar (backup decompiler) once, SHA-256 checked" })
 
--- ── :Nv4JFormatter [intellij|eclipse|google|<path>]: Java formatter profile (nv4j/formatter.lua loads on first use) ──
-vim.api.nvim_create_user_command("Nv4JFormatter", function(o) require("nv4j.formatter").command(o.fargs) end, {
-  nargs = "?",
-  complete = function(lead) return vim.list_extend({ "intellij", "eclipse", "google" }, vim.fn.getcompletion(lead, "file")) end,
-  desc = "Show or switch the Java formatter profile (intellij default, eclipse, google, or an Eclipse XML path); no restart",
+-- ── :Nv4JFormatter [intellij|eclipse|google|<path>] [--project|--global]: Java formatter profile (nv4j/formatter.lua loads on first use) ──
+vim.api.nvim_create_user_command("Nv4JFormatter", function(o)
+  local ok, err = pcall(function() require("nv4j.formatter").command(o.fargs) end)
+  if not ok then vim.notify("Nv4JFormatter failed: " .. tostring(err), vim.log.levels.ERROR, { title = "Nv4J" }) end
+end, {
+  nargs = "*",
+  complete = function(lead)
+    local out = {}
+    for _, c in ipairs({ "intellij", "eclipse", "google", "--project", "--global" }) do
+      if c:find(lead, 1, true) == 1 then out[#out + 1] = c end
+    end
+    return vim.list_extend(out, vim.fn.getcompletion(lead, "file"))
+  end,
+  desc = "Show or switch the Java formatter profile (intellij, eclipse, google, or an Eclipse XML path); --project saves it in .nv4j, --global (default) in the state dir; no restart",
 })
 
 -- ── :Nv4JHealth = :checkhealth nv4j (read-only report; nv4j/health.lua loads only when run) ──
