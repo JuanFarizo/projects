@@ -102,8 +102,8 @@ What Neovim really receives (measured in a private tmux server and in a bare pty
 | `gD` | Go to declaration | LazyVim |
 | `K` | Hover docs | LazyVim |
 | `gK` or `<C-k>` in insert mode | Signature help | LazyVim |
-| `<leader>cS` / `<leader>cP` | Subtype / supertype hierarchy | `config/keymaps.lua` |
-| `<leader>ci` / `<leader>cO` | Incoming / outgoing calls | `config/keymaps.lua` |
+| `<leader>cS` / `<leader>cP` | Subtype / supertype hierarchy (Telescope: name first, package and path dimmed, preview, `<CR>` jumps) | `config/keymaps.lua`, `nv4j/hierarchy.lua` |
+| `<leader>ci` / `<leader>cO` | Incoming / outgoing calls (same picker: `Class#method`, `<CR>` jumps to the first call site / the callee) | `config/keymaps.lua`, `nv4j/hierarchy.lua` |
 | `<leader>cgs` / `<leader>cgS` | Go to super implementation / go to test subjects | LazyVim java extra |
 | `]]` / `[[` | Next / previous reference | LazyVim |
 | `<C-m>` | Methods of the current file (needs the kitty keyboard protocol, else it acts as Enter) | `config/keymaps.lua` |

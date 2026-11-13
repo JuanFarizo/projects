@@ -105,8 +105,8 @@ Date: 2026-11-10. Read-only research; nothing run against jdt.ls. Spring and JPA
 | Go to super method | CE | yes | yes (`findLinks` handler, S1) | DONE `<leader>cgs` | - | - | - |
 | Find usages | CE | yes | yes | DONE `gr`, `<C-Up>` (Telescope/Trouble) | - | - | - |
 | Find usages split read / write, filter by scope | CE | partial | no | MISSING | Filter `textDocument/documentHighlight` kinds (jdt.ls returns Read/Write) | M | low |
-| Type hierarchy | CE | yes | yes (`TypeHierarchyHandler`, S1) | DONE (no tree UI): `<leader>cS`, `<leader>cP` | - | - | - |
-| Call hierarchy | CE | yes | yes (`CallHierarchyHandler`) | DONE: `<leader>ci`, `<leader>cO` | - | - | - |
+| Type hierarchy | CE | yes | yes (`TypeHierarchyHandler`, S1) | DONE (2026-11-13): `<leader>cS`, `<leader>cP` open a Telescope picker (name first, package and path dimmed, preview, `<CR>` jumps; one level, no tree), check 98 | - | - | - |
+| Call hierarchy | CE | yes | yes (`CallHierarchyHandler`) | DONE (2026-11-13): `<leader>ci`, `<leader>cO` in the same picker (`Class#method`, first call site), check 98 | - | - | - |
 | Go to class / symbol / file / action (search everywhere) | CE | yes | yes | PARTIAL: `<leader>ss`, `<leader>sS`, `<C-p>`; no "everything" mix | Telescope pickers exist | - | - |
 | File structure / outline | CE | yes | yes | PARTIAL: `<C-m>` (needs kitty protocol), `<leader>ss`; no persistent outline sidebar (grep aerial: none; Trouble symbols from LazyVim UNVERIFIED) | aerial.nvim or Trouble `symbols` | S | medium |
 | Recent files / locations | CE | yes | yes | DONE: `<leader>fr`, `<C-e>` | - | - | - |

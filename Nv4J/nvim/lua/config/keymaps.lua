@@ -386,18 +386,15 @@ map("n", "<C-Down>", goto_definition, { desc = "Go to definition" })
 map("n", "<C-Up>", goto_references, { desc = "Find references (usages)" })
 map("n", "<F12>", goto_definition, { desc = "Go to definition" })
 
--- ── Type/call hierarchy (IntelliJ-style; builtin since Neovim 0.11+ LSP,
--- backed by jdtls's typeHierarchyProvider/callHierarchyProvider) ───────────
-map("n", "<leader>cS", function()
-  vim.lsp.buf.typehierarchy("subtypes")
-end, { desc = "Subtype hierarchy" })
-map("n", "<leader>cP", function()
-  vim.lsp.buf.typehierarchy("supertypes")
-end, { desc = "Supertype hierarchy" })
-map("n", "<leader>ci", vim.lsp.buf.incoming_calls, { desc = "Incoming calls" })
+-- ── Type/call hierarchy (IntelliJ-style, jdt.ls's typeHierarchyProvider/callHierarchyProvider). Neovim 0.12's builtin
+-- vim.lsp.buf.typehierarchy/incoming_calls/outgoing_calls end in the quickfix list (path first, name last); nv4j.hierarchy
+-- shows the same results in a Telescope picker (name first, package/path dimmed, preview, <CR> jumps). Spec: specs/features/hierarchy.md
+map("n", "<leader>cS", function() require("nv4j.hierarchy").run("subtypes") end, { desc = "Subtype hierarchy" })
+map("n", "<leader>cP", function() require("nv4j.hierarchy").run("supertypes") end, { desc = "Supertype hierarchy" })
+map("n", "<leader>ci", function() require("nv4j.hierarchy").run("incoming") end, { desc = "Incoming calls" })
 -- <leader>co is Organize Imports (LazyVim's jdtls extra, buffer-local in Java buffers); outgoing
 -- calls live on <leader>cO only, so each key means one thing.
-map("n", "<leader>cO", vim.lsp.buf.outgoing_calls, { desc = "Outgoing calls" })
+map("n", "<leader>cO", function() require("nv4j.hierarchy").run("outgoing") end, { desc = "Outgoing calls" })
 
 -- ── Diagnostics / error navigation (VS Code F8 style; LazyVim core already
 -- binds ]d/[d next/prev diagnostic and ]e/[e next/prev error) ──────────────

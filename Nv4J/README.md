@@ -330,8 +330,8 @@ Generate getters, constructors, `toString`, `equals`/`hashCode`: put the cursor 
 | `gr`, `<C-Up>` | references (usages) |
 | `gI` / `gy` | implementation / type definition |
 | `K` | hover docs |
-| `<leader>cS` / `<leader>cP` | subtype / supertype hierarchy |
-| `<leader>ci` / `<leader>cO` | incoming / outgoing calls |
+| `<leader>cS` / `<leader>cP` | subtype / supertype hierarchy (Telescope picker: name first, preview, `<CR>` jumps) |
+| `<leader>ci` / `<leader>cO` | incoming / outgoing calls (same picker; `<CR>` jumps to the first call site / the callee) |
 | `<leader>cgs` / `<leader>cgS` | go to super implementation / go to test subjects |
 | `<C-m>` | methods of the current file (needs a terminal with the kitty keyboard protocol, else it acts as Enter) |
 | `<leader>sp` | Spring symbols: beans and request mappings of the Spring Boot project (Telescope; `<leader>ss` stays LazyVim's symbols of the file; with the snacks picker extra `<leader>sp` would collide with its plugin-spec search) |
