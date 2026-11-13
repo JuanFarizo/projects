@@ -119,7 +119,11 @@ end
 
 --- Telescope entry of a row (quickfix fields filled: <C-q> and the previewer use filename/lnum/col/text).
 function M.entry_maker(row)
-  local file = row.uri and row.uri:sub(1, 5) == "file:" and vim.uri_to_fname(row.uri) or nil
+  -- Always a STRING: telescope's from_entry.path falls back to entry.value (our row TABLE) when path and filename are nil, and
+  -- the grep previewer then crashes ("path: expected string, got table"). A library class (jdt:// URI) gets the URI: the
+  -- previewer's readable check fails (empty preview, no extra request) and <C-q> gets a filename that :cfirst can open
+  -- (jdt.ls's BufReadCmd); a row without a URI gets "" (previewer returns at once).
+  local file = row.uri and row.uri:sub(1, 5) == "file:" and vim.uri_to_fname(row.uri) or row.uri or ""
   local r = row.target.range
   return {
     value = row, ordinal = row.name .. " " .. row.pkg .. " " .. row.path,

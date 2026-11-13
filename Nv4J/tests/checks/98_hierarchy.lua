@@ -99,7 +99,26 @@ do
   local lib = H.row({ name = "Object", kind = 5, detail = "java.lang", uri = "jdt://contents/java.base/java.lang/Object.class?=x",
     range = rng(0, 0, 0, 0), selectionRange = rng(0, 0, 0, 0) }, { root = ROOT })
   local e = H.entry_maker(lib)
-  rep("library_path", lib.path == "java.base/java.lang/Object.class" and e.filename == nil, vim.inspect({ lib.path, e.filename }))
+  rep("library_path", lib.path == "java.base/java.lang/Object.class" and e.filename == lib.uri, vim.inspect({ lib.path, e.filename }))
+end
+
+-- entry_safe (regression, user report E5108 "path: expected string, got table"): telescope's from_entry.path must give a string
+-- (or nil) for file, library (jdt://) and URI-less rows, never the row table; no error for validate true/false.
+do
+  local from_entry = require("telescope.from_entry")
+  local lib = H.row({ name = "println(String)", kind = 6, detail = "java.io.PrintStream", uri = "jdt://contents/java.base/java.io/PrintStream.class?=x",
+    range = rng(0, 0, 0, 1), selectionRange = rng(0, 0, 0, 1) }, { calls = true, root = ROOT })
+  local nouri = H.row({ name = "X", kind = 5, detail = "p", range = rng(0, 0, 0, 1) }, { root = ROOT })
+  local bad = {}
+  for label, row in pairs({ file = circle, lib = lib, nouri = nouri }) do
+    local e = H.entry_maker(row)
+    for _, validate in ipairs({ true, false }) do
+      local ok, p = pcall(from_entry.path, e, validate, false)
+      if not ok or (p ~= nil and type(p) ~= "string") then bad[#bad + 1] = ("%s validate=%s -> %s"):format(label, tostring(validate), ok and type(p) or tostring(p)) end
+    end
+    if type(e.path) ~= "string" or type(e.filename) ~= "string" then bad[#bad + 1] = label .. " path/filename not strings" end
+  end
+  rep("entry_safe", #bad == 0, #bad == 0 and "file, library and URI-less rows: path is a string for from_entry.path (validate true/false)" or table.concat(bad, "; "))
 end
 
 -- no_client: an empty scratch buffer has no server
@@ -173,6 +192,7 @@ if not unit_only then
   w("src/main/java/demo/other/Zeta.java", "package demo.other;\n\npublic class Zeta implements demo.shapes.Shape {\n  public double area() { return 1; }\n}\n")
   w("src/main/java/demo/app/Report.java", "package demo.app;\n\nimport demo.shapes.Shape;\n\npublic class Report {\n  public double total(Shape s) {\n    double a = 1;\n    return s.area() + a;\n  }\n  public double run(Shape s) {\n    return total(s);\n  }\n}\n")
   w("src/main/java/demo/app/Main.java", "package demo.app;\n\npublic class Main {\n  void go(demo.shapes.Shape s) {\n    new Report().total(s);\n  }\n}\n")
+  w("src/main/java/demo/app/Out.java", "package demo.app;\n\npublic class Out {\n  public void hi(demo.shapes.Shape s) {\n    System.out.println(s.area());\n    java.util.List.of(1);\n  }\n}\n")
   local wsname = vim.fs.basename(root) .. "-" .. vim.fn.sha256(root):sub(1, 8)
   vim.fn.delete(require("nv4j.paths").jdtls_data .. "/" .. wsname, "rf")
   local orig_start = vim.lsp.start
@@ -224,6 +244,39 @@ if not unit_only then
     local jl
     if c and c.rows[1] then H.jump(c.rows[1], client.offset_encoding); jl = vim.api.nvim_buf_get_name(0):match("[^/]+$") .. ":" .. vim.api.nvim_win_get_cursor(0)[1] end
     rep("live_calls", c ~= nil and table.concat(cn, ",") == "Main#go@5,Report#run@11" and jl == "Main.java:5", ("rows=%s jump=%s"):format(table.concat(cn, ","), tostring(jl)))
+  end
+  if client then
+    -- live_outgoing_library (regression for the E5108 crash): outgoing calls of Out#hi hold JDK methods (jdt:// targets). The REAL
+    -- picker opens and the selection moves over every row; no error may be raised (v:errmsg, :messages), every row's preview ran.
+    vim.cmd("edit " .. vim.fn.fnameescape(root .. "/src/main/java/demo/app/Out.java"))
+    vim.api.nvim_win_set_cursor(0, { 4, 16 })
+    vim.v.errmsg = ""
+    vim.cmd("messages clear")
+    H.run("outgoing")
+    local picker
+    local state = require("telescope.actions.state")
+    vim.wait(30000, function()
+      picker = state.get_current_picker(vim.api.nvim_get_current_buf())
+      return picker ~= nil and picker.manager ~= nil and picker.manager:num_results() > 0
+    end, 50)
+    local n, libs, errs = 0, 0, {}
+    if picker then
+      n = picker.manager:num_results()
+      for i = 1, n do
+        local e = picker:get_selection()
+        if e and type(e.path) == "string" and e.path:sub(1, 6) == "jdt://" then libs = libs + 1 end
+        local ok, err = pcall(picker.refresh_previewer, picker)
+        if not ok then errs[#errs + 1] = tostring(err) end
+        vim.wait(150)
+        vim.api.nvim_feedkeys(vim.keycode("<C-n>"), "x", false)
+        vim.wait(150)
+      end
+    end
+    local msgs = vim.api.nvim_exec2("messages", { output = true }).output
+    local bad = vim.v.errmsg ~= "" or msgs:find("E5108", 1, true) or msgs:find("expected string", 1, true) or #errs > 0
+    pcall(function() require("telescope.actions").close(picker.prompt_bufnr) end)
+    rep("live_outgoing_library", picker ~= nil and n >= 2 and libs >= 1 and not bad,
+      ("rows=%d library rows=%d errmsg=%q errs=%s messages=%q"):format(n, libs, vim.v.errmsg, vim.inspect(errs), msgs:sub(1, 200)))
   end
   vim.lsp.start = orig_start
 end
