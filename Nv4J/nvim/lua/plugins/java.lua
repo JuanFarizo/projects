@@ -187,6 +187,11 @@ return {
         config.settings = vim.tbl_deep_extend("force", config.settings or {}, {
           java = { configuration = { runtimes = runtimes } },
         })
+        -- Formatter profile (nv4j/formatter.lua): java.format.settings.url/profile. No url = jdt.ls's built-in (eclipse).
+        local fs = require("nv4j.formatter").start_settings(config.root_dir)
+        if fs.url then
+          config.settings = vim.tbl_deep_extend("force", config.settings, { java = { format = { settings = fs } } })
+        end
         return config
       end
       -- Project usage counts for completion ranking (nv4j/usage.lua), started here at attach

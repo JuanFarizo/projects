@@ -139,9 +139,9 @@ Date: 2026-11-10. Read-only research; nothing run against jdt.ls. Spring and JPA
 | Feature | IntelliJ | NetBeans | Eclipse / VS Code | Nv4J today | How in Neovim | Eff | Value |
 |---|---|---|---|---|---|---|---|
 | Reformat file / selection | CE | yes | jdt.ls formatter (S1 `FormatterHandler`) | DONE `<leader>cf`, on demand only | - | - | - |
-| Import project style (Eclipse XML profile) | CE import | no | `java.format.settings.url` (S1) | MISSING (not set) | Point setting to a profile; per-project via `.nv4j` JSON | S | medium |
+| Import project style (Eclipse XML profile) | CE import | no | `java.format.settings.url` (S1) | DONE `:Nv4JFormatter` (intellij default, eclipse, google, own XML path; per project `format_profile` in `.nv4j`; reloaded on didChangeConfiguration, no restart); `specs/features/formatter.md` | - | - | - |
 | `.editorconfig` | CE | yes | jdt.ls: not found in S1 (grep shows none); Neovim reads `.editorconfig` natively for indent | PARTIAL (Neovim built-in applies indent, not formatter rules) | - | - | low |
-| google-java-format | plugin | plugin | VS Code ext | MISSING (grep: none) | conform.nvim formatter (LazyVim ships conform) with the jar via Mason | S | medium |
+| google-java-format | plugin | plugin | VS Code ext | PARTIAL: Google's Eclipse XML profile (`:Nv4JFormatter google`), not the google-java-format jar (Google removed the XML upstream 2026-10-14; pinned to the last commit that has it) | - | - | low |
 | Spotless / Checkstyle on build | plugin | plugin | via build | MISSING | Run `mvn spotless:apply` in a terminal (`<leader>tn`) | S | medium |
 | Optimize / cleanup on save | CE | yes | `java.saveActions.cleanup` (S1) | MISSING (D10 keeps organize imports off) | Per-project opt-in | S | low |
 | Code style hierarchy (file header, templates) | CE | yes | `java.templates.fileHeader` (S1) | PARTIAL: scaffold templates (`nv4j/scaffold.lua`) | - | - | low |

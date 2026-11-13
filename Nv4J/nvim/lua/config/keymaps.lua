@@ -514,6 +514,13 @@ vim.api.nvim_create_user_command("Nv4JInstallCfr", function()
   require("nv4j.decompile").install(function(ok, msg) vim.notify(msg, ok and vim.log.levels.INFO or vim.log.levels.WARN, { title = "Nv4J" }) end)
 end, { desc = "Download the pinned CFR decompiler jar (backup decompiler) once, SHA-256 checked" })
 
+-- ── :Nv4JFormatter [intellij|eclipse|google|<path>]: Java formatter profile (nv4j/formatter.lua loads on first use) ──
+vim.api.nvim_create_user_command("Nv4JFormatter", function(o) require("nv4j.formatter").command(o.fargs) end, {
+  nargs = "?",
+  complete = function(lead) return vim.list_extend({ "intellij", "eclipse", "google" }, vim.fn.getcompletion(lead, "file")) end,
+  desc = "Show or switch the Java formatter profile (intellij default, eclipse, google, or an Eclipse XML path); no restart",
+})
+
 -- ── :Nv4JHealth = :checkhealth nv4j (read-only report; nv4j/health.lua loads only when run) ──
 vim.api.nvim_create_user_command("Nv4JHealth", function() vim.cmd("checkhealth nv4j") end, {
   desc = "Read-only Nv4J health report: tools, bundles, JDK, CFR jar, logs dir, Maven settings, project root",
