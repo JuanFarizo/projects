@@ -19,13 +19,12 @@ return {
       -- per-level icon). Restored to the plugin's own default here so
       -- H1-H6 are visually distinct again.
       heading = { icons = { "󰲡 ", "󰲣 ", "󰲥 ", "󰲧 ", "󰲩 ", "󰲫 " } },
-      -- pipe_table.wrap (multiline cell wrapping) shipped 2026-09-13,
-      -- defaults true, and is the author's own "experimental... hopefully
-      -- none completely breaking" release. Independent of Neovim's
-      -- `wrap`/`nowrap` window option — toggling that has no effect on
-      -- it. Disabled until it stabilizes; falls back to the previous
-      -- stable padded-cell table renderer.
-      pipe_table = { wrap = false },
+      -- Wide tables: with wrap on (config/autocmds.lua) the table is shrunk to the window and the cell text
+      -- wraps inside the boxes. With wrap false (before 2026-11-16) a row wider than the window showed raw,
+      -- and horizontal scroll (leftcol > 0) shows raw by design (render-markdown skips rendering then).
+      -- The cursor row still shows raw while editing (anti_conceal). Rollback: wrap = false here and
+      -- vim.opt_local.wrap = false in config/autocmds.lua.
+      pipe_table = { wrap = true },
     },
     keys = {
       { "<leader>cp", "<cmd>RenderMarkdown toggle<cr>", ft = "markdown", desc = "Toggle Markdown Preview" },

@@ -9,11 +9,13 @@
 
 -- LazyVim's lazyvim_wrap_spell autocmd turns wrap+spell on for markdown/text/
 -- gitcommit. Registered here (after that one, so it runs later and wins),
--- markdown only, to turn both back off — text/gitcommit untouched.
+-- markdown only, to turn spell back off — text/gitcommit untouched.
 vim.api.nvim_create_autocmd("FileType", {
   pattern = "markdown",
   callback = function()
-    vim.opt_local.wrap = false
+    -- wrap stays ON: a wide table is only rendered (boxed, cells wrapped) when the window wraps and
+    -- pipe_table.wrap is true (plugins/markdown.lua); nowrap + horizontal scroll shows the raw table.
+    vim.opt_local.wrap = true
     vim.opt_local.spell = false
   end,
 })
