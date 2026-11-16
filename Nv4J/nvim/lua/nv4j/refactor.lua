@@ -1607,6 +1607,28 @@ function M.rename_package(opts)
 end
 
 --- <leader>jr: rename the package on a `package` line, else the class.
+--- <F2>, <leader>cr and <leader>rn (Java buffers): a type name under the cursor (a capitalised word with a lower
+--- case letter, same rule as `rename_class`) is renamed like <leader>jr (file moved, every dependent written,
+--- summary, strings warning, <leader>ju undo); plain `vim.lsp.buf.rename` left the dependents unsaved (the
+--- project did not compile until :wa) and told nothing. Any other symbol (method, variable, constant, a
+--- `package` line) keeps the plain LSP rename. opts.name answers the prompt (checks).
+function M.rename_symbol(opts)
+  opts = opts or {}
+  local buf = vim.api.nvim_get_current_buf()
+  local path = vim.api.nvim_buf_get_name(buf)
+  local word = vim.fn.expand("<cword>")
+  if vim.bo[buf].filetype == "java" and path:sub(1, 1) == "/" and word:match("^%u[%w_$]*$") and word:match("%l")
+      and not vim.api.nvim_get_current_line():match("^%s*package%s") and jdtls_for(path) then
+    return M.rename_class(opts)
+  end
+  return vim.lsp.buf.rename(opts.name)
+end
+
+--- Buffer-local <leader>cr for a Java buffer (LazyVim's LSP map is buffer-local and would win over a global one).
+function M.bind(buf)
+  vim.keymap.set("n", "<leader>cr", function() M.rename_symbol() end, { buffer = buf, desc = "Rename (class: files and references written)" })
+end
+
 function M.rename(opts)
   if vim.api.nvim_get_current_line():match("^%s*package%s") then return M.rename_package(opts) end
   return M.rename_class(opts)

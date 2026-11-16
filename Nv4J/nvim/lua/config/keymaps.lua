@@ -371,8 +371,9 @@ pcall(function()
 end)
 
 -- ── LSP (additive aliases; LazyVim core already binds gd/gr/gI/gy/K/<leader>ca/<leader>cr) ──
-map("n", "<F2>", vim.lsp.buf.rename, { desc = "Rename symbol" })
-map("n", "<leader>rn", vim.lsp.buf.rename, { desc = "Rename symbol" })
+-- A class name goes through nv4j/refactor.lua rename_symbol (files and references written); the rest stays LSP rename.
+map("n", "<F2>", function() require("nv4j.refactor").rename_symbol() end, { desc = "Rename symbol" })
+map("n", "<leader>rn", function() require("nv4j.refactor").rename_symbol() end, { desc = "Rename symbol" })
 -- Mirrors gd exactly (Telescope-backed once the picker attaches, same as LazyVim's own gd)
 local goto_definition = function()
   if require("nv4j.jpqlcomplete").goto_param() then return end

@@ -557,6 +557,23 @@ Three consecutive full runs of `62_refactor` on the final code, each `DONE 62_re
 - The "not visible" warning depends on jdt.ls publishing diagnostics (the open item "jdt.ls never published Checkout's new errors" in 4a); with revalidate it came in all 6 later runs.
 
 
+## Plain rename keys and the default package (2026-11-16, check `99_rename_symbol`)
+
+Report: "the rename of a class is not working properly" in `codecrafters-redis-java` (Maven, Java 23, every class in the DEFAULT package). Reproduced on a copy (`/tmp/nv4j/rn-redis`, real nvim in tmux, jdt.ls attached), same operations in `tests/fixtures/demo` (packaged) for comparison:
+
+| Operation (default package) | Result |
+|---|---|
+| `<leader>jr` on `EventHandler` (declaration), used by `EventLoop` | **works**: `EventDispatcher.java` on disk, `EventHandler.java` gone, `EventLoop` written, no import needed, zero diagnostics, `mvn -q compile` (JDK 23) clean; `<leader>ju` puts everything back |
+| `<leader>jr` on the record `Command` (variables follow: `Command command` -> `Cmd cmd`, `commandQueue` -> `cmdQueue`) | works, compile clean |
+| `<leader>jr` on `Main` (pom `mainClass`) | file and Java references renamed; the summary warns `pom.xml:34` (string/config scan, "NOT rewritten"). `codecrafters.yml` and `your_program.sh` do not name the class, nothing to warn; the pom `mainClass` is NOT rewritten (not a Java reference). `<leader>ju` works |
+| neo-tree `r` on `EventHandler.java` | works (same `rename_paths`), build clean, buffers re-pointed |
+| a syntax error in the class's own file | jdt.ls refuses ("This refactoring cannot be performed correctly due to syntax errors in the compilation unit"); Nv4J shows `jdt.ls refused (...); nothing changed`. jdt.ls limit; this is the refusal in the user's own jdt.ls log at 12:20:46 |
+| **`<F2>` / `<leader>cr` / `<leader>rn` on the class name (plain `vim.lsp.buf.rename`)** | **bug, general (the packaged fixture does the same)**: the file is renamed but every dependent file is only edited in its buffer: **unsaved**, disk and `mvn compile` still name the old class (`cannot find symbol`), nothing is said, a closed buffer of the old name stays unlisted |
+
+Fix: `refactor.rename_symbol` (keys `<F2>`, `<leader>rn`, and a buffer-local `<leader>cr` bound on the jdt.ls attach, because LazyVim's LSP map is buffer-local): a capitalised mixed-case word under the cursor (the `rename_class` rule: declaration or use of a type) goes through `rename_class` (same as `<leader>jr`: files written, summary, strings warning, `<leader>ju`); a method, variable, constant (`CRLF`), or a `package` line keeps plain LSP rename (its edits stay unsaved buffers, as Neovim does; `:wa`). Cases: `keys`, `routing` (stubs), `live_rename`, `live_undo`, `live_method` on a default-package project. Controls (`tests/lib/control_99.sh`): `plain` -> `routing`, `live_rename` FAIL; `nokeys`, `nobind` -> `keys`; `always` -> `routing`, `live_method`.
+
+Default package, what is known: rename class, rename via neo-tree and undo work (above); moving a class out of it is allowed (jdt.ls adds the `package` line); moving INTO it is not offered; a case-only rename and package rename do not apply. Not reproduced: the user's exact symptom. The user's own jdt.ls log shows the syntax-error refusal at 12:20:46 and a `RespParse` -> `RespParser` rename on disk at 12:21 that is consistent (no stale reference). Once, in the first session, `<leader>ju` right after the first rename of a session did nothing (`undo_op` empty); 4 later runs (including a fresh session) undid correctly, so it is not explained.
+
 ## Trial log
 
 | # | Change | Effect | Kept |

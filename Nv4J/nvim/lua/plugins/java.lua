@@ -219,6 +219,8 @@ return {
         require("nv4j.debug").on_attach(client)
         -- Test keys (nv4j/tests.lua) for this buffer (LazyVim's are off: opts.test = false above).
         require("nv4j.tests").bind(args.buf)
+        -- <leader>cr on a class name = <leader>jr (nv4j/refactor.lua rename_symbol).
+        require("nv4j.refactor").bind(args.buf)
         -- One WARN per jdt.ls at 2 GB RSS, never a limit (nv4j/memwatch.lua).
         require("nv4j.memwatch").start()
       end
