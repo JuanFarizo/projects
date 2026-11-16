@@ -54,7 +54,49 @@ local function note(msg, level) vim.notify(msg, level or vim.log.levels.INFO, { 
 function M.setup()
   if vim.g.nv4j_mermaid == false or not M.installed() then return end
   local d = M.dir()
+  vim.schedule(function() M.hook() end)
   if not (vim.env.PATH or ""):find(d, 1, true) then vim.env.PATH = d .. ":" .. (vim.env.PATH or "") end
+end
+
+-- Mermaid placements per buffer, recorded by wrapping Snacks.image.placement.new (snacks keeps no registry), so toggle()
+-- can flip `conceal` on them. conceal = the code lines are hidden and the image takes their place; the source shows again
+-- while the cursor is inside the block (snacks hides the image under the cursor). Default is off: code visible, image below.
+local tracked, wrapped = {}, false
+local function hook()
+  if wrapped or not rawget(_G, "Snacks") or not Snacks.config.image or not Snacks.config.image.enabled then return end
+  wrapped = true
+  local P = Snacks.image.placement
+  local orig = P.new
+  P.new = function(buf, src, opts)
+    if opts and opts.type == "chart" then opts.conceal = vim.b[buf].nv4j_mermaid_hide == true end
+    local p = orig(buf, src, opts)
+    if opts and opts.type == "chart" then
+      tracked[buf] = tracked[buf] or {}
+      tracked[buf][p.id] = p
+    end
+    return p
+  end
+end
+M.hook = hook
+
+--- <leader>cm: flip this buffer between "code visible, image below" and "image instead of the code" (the text is only hidden).
+function M.toggle()
+  hook()
+  local buf = vim.api.nvim_get_current_buf()
+  if not wrapped then return note("mermaid is not enabled: :Nv4JMermaid install, then restart", vim.log.levels.WARN) end
+  local hide = not (vim.b[buf].nv4j_mermaid_hide == true)
+  vim.b[buf].nv4j_mermaid_hide = hide
+  local n = 0
+  for id, p in pairs(tracked[buf] or {}) do
+    if p.closed then tracked[buf][id] = nil else
+      p.opts.conceal = hide
+      p._state = nil -- snacks skips a re-render when its window state is unchanged; conceal is not part of that state
+      pcall(p.update, p)
+      n = n + 1
+    end
+  end
+  note((hide and "image instead of the code" or "code visible") .. " (" .. n .. " diagram" .. (n == 1 and "" or "s") .. ")")
+  return n
 end
 
 function M.install()

@@ -2,6 +2,7 @@
 --  targets    : this machine has a release target and a pinned 64-hex SHA-256 for it; all four targets are pinned.
 --  shim_args  : the generated `mmdc` shim turns snacks' flags (-i -o -b -t -s) into `mmdr -i -o -e png -t` (a fake mmdr records them).
 --  path_setup : setup() puts the dir first on PATH only when mmdr and mmdc exist there; vim.g.nv4j_mermaid = false or missing files = no change.
+--  toggle_safe : <leader>cm never errors; nil + buffer untouched when snacks.image is off, a count + flag when on.
 --  not_installed : with the dir absent, installed() is false and setup() leaves PATH alone.
 local lsp = require("lsp")
 local P = "101_mermaid."
@@ -39,3 +40,12 @@ rep("path_setup", off_ok and on_ok, "flag off unchanged=" .. tostring(off_ok) ..
 
 vim.env.PATH, M.dir, vim.g.nv4j_mermaid = real_path, real_dir, real_flag
 vim.fn.delete(TMP, "rf")
+
+-- toggle_safe : <leader>cm never errors: it returns nil (and leaves the buffer alone) when snacks.image is off, or a diagram count and flips the buffer flag when it is on.
+do
+  local b = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_set_current_buf(b)
+  local ok, n = pcall(M.toggle)
+  local flag = vim.b[b].nv4j_mermaid_hide
+  rep("toggle_safe", ok and ((n == nil and flag == nil) or (type(n) == "number" and flag == true)), "ok=" .. tostring(ok) .. " ret=" .. tostring(n) .. " hide=" .. tostring(flag))
+end

@@ -3,6 +3,9 @@
 -- Rollback: `:Nv4JMermaid remove` and restart, or `vim.g.nv4j_mermaid = false`, or delete this file.
 return {
   "folke/snacks.nvim",
+  keys = {
+    { "<leader>cm", function() require("nv4j.mermaid").toggle() end, ft = "markdown", desc = "Mermaid: image instead of code / code" },
+  },
   opts = function(_, opts)
     local m = require("nv4j.mermaid")
     if vim.g.nv4j_mermaid == false or not m.installed() then return end

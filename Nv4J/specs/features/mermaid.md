@@ -14,7 +14,13 @@ A ```` ```mermaid ```` block in a markdown buffer is drawn as an image under the
 - `nv4j/mermaid.lua` `setup()` (called from `config/keymaps.lua`) puts that directory first on `PATH` only when both files exist.
 - `plugins/mermaid.lua` turns `snacks.image` on only when mmdr is installed. A machine that never ran `install` pays nothing: image support is off in LazyVim, so no terminal query and no treesitter attach.
 
-Needs: `curl`, `tar`, and `sha256sum` or `shasum` for the install; kitty (or another kitty-graphics terminal); inside tmux `set -g allow-passthrough on`. No root, no compiler, no Linuxbrew, no ImageMagick for diagrams. The same on Ubuntu (tarball `x86_64-unknown-linux-gnu` / `aarch64-unknown-linux-gnu`).
+Needs: `curl`, `tar`, and `sha256sum` or `shasum` for the install; kitty (or another kitty-graphics terminal); inside tmux snacks sets `allow-passthrough` for the pane itself (its tmux environment setup), so no tmux.conf change should be needed (not tested in a user tmux). No root, no compiler, no Linuxbrew, no ImageMagick for diagrams. The same on Ubuntu (tarball `x86_64-unknown-linux-gnu` / `aarch64-unknown-linux-gnu`).
+
+## Code or image (`<leader>cm`)
+
+Default: the code stays visible and the image is drawn under the block. `<leader>cm` (markdown buffers) flips the buffer to "image instead of the code": the block's lines are covered by the image (the text is only hidden, never changed); pressing it again brings the code back. While the cursor is inside the block the code shows again so it can be edited (snacks hides the image under the cursor). Implemented by wrapping `Snacks.image.placement.new` to remember the mermaid placements (snacks keeps no registry), flipping their `conceal` and forcing a re-render (`_state = nil`, snacks skips re-rendering when its window state is unchanged).
+
+Verified with real key presses in a private tmux with kitty detection forced (`SNACKS_KITTY=1`): after `<leader>cm` the code lines were replaced by the image rows, after a second press the code was back. The picture itself in kitty: not seen by the author.
 
 ## Commands
 
@@ -22,6 +28,7 @@ Needs: `curl`, `tar`, and `sha256sum` or `shasum` for the install; kitty (or ano
 |---------|------|
 | `:Nv4JMermaid install` | download, verify, write the shim. Restart Neovim afterwards |
 | `:Nv4JMermaid remove` | delete `~/.local/share/nv4j/mermaid` (rollback). Restart |
+| `<leader>cm` | markdown buffer: image instead of the code / code visible |
 | `:Nv4JMermaid status` | mmdr version, terminal image support, dir, target |
 
 ## Rollback (any one)
@@ -37,7 +44,7 @@ Needs: `curl`, `tar`, and `sha256sum` or `shasum` for the install; kitty (or ano
 - `:Nv4JMermaid install` end to end: download, SHA-256, unpack, shim, PATH.
 - snacks `Snacks.image.convert` on a `.mmd` file, through the shim, produced a valid 13.6 KB PNG (same size as calling mmdr directly).
 - snacks attaches to a markdown buffer once enabled and finds the mermaid block (`doc.find` returned 1 image).
-- Check `101_mermaid` (4 cases; the shim control, `-e png` changed to `-e svg`, fails `shim_args`).
+- Check `101_mermaid` (5 cases; the shim control, `-e png` changed to `-e svg`, fails `shim_args`).
 
 ## NOT verified
 
