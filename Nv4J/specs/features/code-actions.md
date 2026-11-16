@@ -8,7 +8,20 @@ Status: proven by `tests/checks/91_codeactions.lua` (2026-11-10, jdt.ls 1.63.0 f
 - Asserted: the exact text of the whole file after the action (imports included), then no ERROR diagnostic (a publish after the edit is awaited, polled with a real 250 ms sleep per round, and the state must hold 1.5 s).
 - `*_not_offered` cases pass only when the codeAction list verifiably lacks every listed title (several positions asked for the type-level ones). That is a finding, not a failure.
 - Only UI prompts are stubbed: nvim-jdtls's `vim.fn.input` multi-picker (Override, Delegate: the case types the number of the wanted method), `vim.fn.inputlist`, `vim.ui.input` (rename after extract: cancelled), `vim.ui.select` (Move: "new file").
-- No product bug found: every action jdt.ls offers produced the right edit through Nv4J's setup, no Nv4J Lua was changed for this task.
+- No product bug found: every action jdt.ls offers produced the right edit through Nv4J's setup, no Nv4J Lua was changed for this task. CORRECTION (2026-11-16): that statement covers the Lua-driven path only. The `*_key` cases call `require("jdtls").extract_constant(true)` from Lua with marks set from Lua, and the key check only asks that the mapping exists; no key was pressed. Pressed keys are now proven by check 100 (below), which found a product gap (silent no-op on a selection that is not a whole expression) and fixed it.
+
+## Pressed keys (check `100_extract_keys`, 2026-11-16)
+
+One real nvim (`NVIM_APPNAME=nv4j`) in a private `tmux -L xc100-<pid>` with one jdt.ls on a tiny Maven project; keys sent with `tmux send-keys`, the BUFFER text read through the nvim socket, the screen through `capture-pane`. Proven by keypress: `<leader>cxc` (normal on `2` of `2 * 3`: a "Choices" picker lists `2` and `2 * 3`, Down + Enter; visual `v4l`; visual `vi"` inside a string; default package), `<leader>ca` menu + filter "to constant" and "lambda" + Enter, `<leader>cxv` (normal with picker, visual), `<leader>cxm` (visual lines), `<leader>ji`, `<leader>co`. Everything else in the table below is proven by the Lua path only.
+
+Findings from pressing the keys:
+
+- Not reproduced: `<leader>cxc` failing on a literal, in a package, in the default package, or on the real codecrafters-redis copy (`split("\\r\\n")`, `new byte[1024]`): all produced the constant.
+- With the cursor on a literal inside an expression (`2` of `2 * 3`, `1024` of `new byte[1024]`) nvim-jdtls opens a "Choices" picker (jdt.ls `java/inferSelection` returns the literal and the enclosing expression); nothing changes until Enter. By design, not a bug.
+- Product gap, fixed in `nv4j/extract.lua`: when the selection is not a whole expression (`vi"` on a string, `viw`, `V`, the cursor on whitespace) jdt.ls answers `null` and nvim-jdtls says nothing (cursor case: a `print` that vanishes). Now: `vi"` / `vi'` and edge blanks are widened or trimmed to the literal before the request (extract variable and constant), and one WARN notification says "nothing under the cursor" / "the selection is not a whole expression". Keys bound buffer-local from `on_attach` (they win over LazyVim's which-key ones). `V` (linewise) on a statement still extracts nothing: a statement is not an expression, only the WARN is new.
+- jdt.ls limitation (evidence: the `java/getRefactorEdit` answer, no Nv4J code between): extract constant on a LONE NUMBER literal (`42`, `7`) replaces only the selected occurrence; strings (`"\\r\\n"`) and `2 * 3` replace every occurrence. Case `cxc_ca_menu` pins it.
+
+Cases: `cxc_normal_pick`, `cxc_visual`, `cxc_visual_quotes`, `cxc_ca_menu`, `cxc_default_package`, `cxc_nothing_cursor`, `cxc_nothing_selection`, `cxv_normal`, `cxv_visual`, `cxm_visual`, `ji_inline`, `co_organize`, `ca_lambda`. Controls (`tests/lib/control_100.sh`): nonorm, nowarn, wrongkind, nobind.
 
 ## Code actions proven
 
@@ -17,7 +30,7 @@ Key to trigger: `<leader>ca` (LazyVim, normal or visual mode) lists the actions 
 | Action | Offered by jdt.ls | Proven by case | Notes / limits | Key |
 |--------|-------------------|----------------|----------------|-----|
 | Extract to local variable, all occurrences | yes | `extract_variable_all`, `extract_variable_key` | replaces both `2 * 3`; jdt.ls names it `i` (the rename prompt follows, cancelled in the check) | ca, `<leader>cxv` |
-| Extract to constant (replaces every occurrence) | yes | `extract_constant_all`, `extract_constant_key` | `private static final int INT`, both uses replaced. There is no separate "replace all" title: the single action replaces all | ca, `<leader>cxc` |
+| Extract to constant (replaces every occurrence) | yes | `extract_constant_all`, `extract_constant_key` | (Lua path; keys pressed in check 100) `private static final int INT`, both uses replaced. There is no separate "replace all" title: the single action replaces all | ca, `<leader>cxc` |
 | Extract to field | yes | `extract_field` | `private int i;` plus assignment in place (field initialised in the method, not at the declaration) | ca |
 | Extract to method with parameters | yes | `extract_method_params`, `extract_method_key` | locals read in the selection become parameters (`getZ(int x, int y)`), the result is returned | ca, `<leader>cxm` |
 | Introduce parameter | yes ("Introduce Parameter...") | `introduce_parameter` | `42` becomes new parameter `i` | ca |

@@ -221,6 +221,8 @@ return {
         require("nv4j.tests").bind(args.buf)
         -- <leader>cr on a class name = <leader>jr (nv4j/refactor.lua rename_symbol).
         require("nv4j.refactor").bind(args.buf)
+        -- <leader>cxv / cxc / cxm: nvim-jdtls extract, selection normalised and a WARN when nothing is extractable (nv4j/extract.lua).
+        require("nv4j.extract").bind(args.buf)
         -- One WARN per jdt.ls at 2 GB RSS, never a limit (nv4j/memwatch.lua).
         require("nv4j.memwatch").start()
       end
