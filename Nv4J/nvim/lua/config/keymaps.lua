@@ -533,5 +533,18 @@ vim.api.nvim_create_user_command("Nv4JHealth", function() vim.cmd("checkhealth n
   desc = "Read-only Nv4J health report: tools, bundles, JDK, CFR jar, logs dir, Maven settings, project root",
 })
 
+-- ── :Nv4JMermaid install|remove|status: mermaid diagrams in markdown buffers via snacks.image + mmdr (nv4j/mermaid.lua).
+-- Nothing changes until `install`; setup() is one stat that puts <data>/mermaid on PATH when it exists. ──
+require("nv4j.mermaid").setup()
+vim.api.nvim_create_user_command("Nv4JMermaid", function(o)
+  local m = require("nv4j.mermaid")
+  local a = o.args == "" and "status" or o.args
+  if m[a] and (a == "install" or a == "remove" or a == "status") then m[a]() else vim.notify("Nv4JMermaid: install | remove | status", vim.log.levels.WARN, { title = "Nv4J" }) end
+end, {
+  nargs = "?",
+  complete = function() return { "install", "remove", "status" } end,
+  desc = "Mermaid diagrams in markdown: install (downloads the pinned mmdr, no root), remove (rollback), status",
+})
+
 -- ── IntelliJ debugger keys: F7/F8/S-F8/F9/A-F9/A-F8/S-F7 only during a debug session, <D-F8> (<C-F8> on Linux) breakpoint (nv4j/debugkeys.lua) ──
 require("nv4j.debugkeys").setup()
