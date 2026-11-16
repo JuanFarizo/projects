@@ -93,17 +93,32 @@ local function sdkman_current_real()
   return vim.uv.fs_realpath(sdk .. "/candidates/java/current")
 end
 
---- JDK jdtls itself runs on (needs >= 21): $JAVA_HOME if it is >= 21, else the newest >= 21.
---- Errors with an actionable message if there is none.
+--- Minimum Java that jdt.ls itself needs (NOT the project's JDK, which is chosen separately). Measured against
+--- Mason jdtls 1.63.0: its bundles require `osgi.ee JavaSE 25`, so on JDK 21 to 24 it exits with code 13. To find the
+--- number again after a Mason upgrade: the `Unresolved requirement ... (&(osgi.ee=JavaSE)(version=NN))` lines in
+--- ~/.cache/nv4j/jdtls-config/<project>-<hash>/*.log, or the `java.version` requirement of the Mason jdtls package.
+--- The Mason wrapper's own `--validate-java-version` only refuses < 21, which is not enough.
+M.SERVER_MIN_JAVA = 25
+
+--- Describe a JDK home dir ({home, major, version, ...}) or nil. For messages and health.
+M.describe = describe
+
+--- JDK jdtls itself runs on (needs >= SERVER_MIN_JAVA): $JAVA_HOME if it is that new, else the newest non-EA
+--- discovered JDK that is. Errors with an actionable message if there is none.
 ---@return string home
 function M.server_home()
+  local min = M.SERVER_MIN_JAVA
   local jh = java_home_jdk()
-  if jh and jh.major >= 21 then return jh.home end
+  if jh and jh.major >= min then return jh.home end
+  local found = {}
   for _, d in ipairs(M.discover()) do
-    if d.major >= 21 and not d.ea then return d.home end
+    if d.major >= min and not d.ea then return d.home end
+    found[#found + 1] = ("%s (%s)"):format(d.version, d.home)
   end
-  error(("nv4j: no JDK >= 21 found for jdtls. Searched: %s. JAVA_HOME=%s. Install one, e.g. `sdk install java 25-amzn`."):format(
-    table.concat(M.roots(), ", "), tostring(vim.env.JAVA_HOME)), 0)
+  error(("nv4j: jdt.ls needs a JDK >= %d to run, and none was found. Installed: %s. JAVA_HOME=%s. Searched: %s. "
+    .. "Your project's JDK is a separate choice and can stay 21/23: install one more JDK just for jdt.ls, "
+    .. "e.g. `sdk install java %d-amzn`."):format(min, #found > 0 and table.concat(found, ", ") or "none",
+    tostring(vim.env.JAVA_HOME), table.concat(M.roots(), ", "), min), 0)
 end
 
 --- Comments removed from Groovy/Kotlin source, string literals kept. Returns the text and a table

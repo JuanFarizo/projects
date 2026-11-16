@@ -48,7 +48,13 @@ local function mason_bundles()
   end
 
   local okJ, home = pcall(function() return require("nv4j.jdk").server_home() end)
-  if okJ then h.ok("Java for jdt.ls (nv4j.jdk.server_home): " .. home) else h.error(tostring(home)) end
+  local jdk = require("nv4j.jdk")
+  if okJ then
+    local d = jdk.describe(home)
+    h.ok(("Java for jdt.ls (nv4j.jdk.server_home, needs >= %d): %s (%s)"):format(jdk.SERVER_MIN_JAVA, home, d and d.version or "?"))
+  else
+    h.error(tostring(home))
+  end
 end
 
 local function cfr()

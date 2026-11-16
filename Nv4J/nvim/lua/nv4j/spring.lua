@@ -6,7 +6,7 @@
 --    in a module below it); plain Maven/Gradle projects and loose files get no client, no process, no plugin
 --    load and no Mason install; a Boot file opened later installs the server once if it is missing;
 --  * the same project root as jdt.ls (nv4j/root.lua), not the plugin's .git/mvnw markers;
---  * on a JDK >= 21 from nv4j.jdk (never PATH or a stale $JAVA_HOME);
+--  * on the JDK of jdt.ls (nv4j.jdk.server_home, >= SERVER_MIN_JAVA; never PATH or a stale $JAVA_HOME);
 --  * the server jar and the jdt.ls extension bundles from the Mason package `vscode-spring-boot-tools`
 --    (no version in any path: share/ links and the package's own package.json).
 -- vim.g.nv4j_spring = false turns it off: set at startup (options.lua) the plugin never loads (plugins/spring.lua

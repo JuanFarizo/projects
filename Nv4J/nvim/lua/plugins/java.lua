@@ -16,9 +16,9 @@ return {
         return (require("nv4j.root").project(path))
       end
 
-      -- JVM that runs jdtls itself (>= 21): $JAVA_HOME if >= 21, else the newest JDK found by
-      -- nv4j.jdk (SDKMAN, ~/Library/Java/JavaVirtualMachines, /Library/...). Nothing here reads PATH
-      -- or calls the lazy `java` shell function. Raises a clear error if no JDK >= 21 exists.
+      -- JVM that runs jdtls itself (>= nv4j.jdk.SERVER_MIN_JAVA, 25 for Mason jdtls 1.63.0): $JAVA_HOME if new
+      -- enough, else the newest JDK found by nv4j.jdk (SDKMAN, ~/Library/Java/JavaVirtualMachines, /Library/...).
+      -- Nothing here reads PATH or calls the lazy `java` shell function. Raises a clear error if none exists.
       -- The per-project runtimes (java.configuration.runtimes) are set in opts.jdtls below, once the
       -- project root is known.
       -- No test keys from the extra (its <leader>tr/tt/tT through which-key on LspAttach): Nv4J binds its
@@ -145,6 +145,14 @@ return {
         local prev_exit = config.on_exit
         config.on_exit = function(...)
           for _, f in ipairs(vim._ensure_list(prev_exit or {})) do pcall(f, ...) end
+          -- Exit 13 = the JVM is too old for jdt.ls's bundles (osgi.ee): say so instead of the bare exit code.
+          if (...) == 13 then
+            local d = require("nv4j.jdk").describe(server_home)
+            vim.schedule(function()
+              vim.notify(("jdt.ls exit 13: it needs JDK >= %d; it ran on %s (%s). See :Nv4JHealth"):format(
+                require("nv4j.jdk").SERVER_MIN_JAVA, server_home, d and d.version or "?"), vim.log.levels.ERROR)
+            end)
+          end
           vim.schedule(function() pcall(require("nv4j.root").release_refused) end)
         end
         -- A corrupt jdt.ls stream leaves a deaf client: stop it and start a fresh one (nv4j/root.lua recover_stream).

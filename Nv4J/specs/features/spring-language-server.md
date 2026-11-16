@@ -29,7 +29,7 @@ share/vscode-spring-boot-tools/jdtls/*.jar -> the 7 jars in jars/
 
 ## How VS Code starts it (exact command)
 
-`vscode-spring-boot/lib/Main.ts` (options) and `commons-vscode/src/launch-util.ts` (`prepareJvmArgs`, `addCpAndLauncherToJvmArgs`), same in the installed `dist/extension.js`. stdio transport (a socket only with `SPRING_LS_USE_SOCKET`), cwd the extension dir, a JDK >= 21 (`checkjvm` refuses less; `preferJdk`):
+`vscode-spring-boot/lib/Main.ts` (options) and `commons-vscode/src/launch-util.ts` (`prepareJvmArgs`, `addCpAndLauncherToJvmArgs`), same in the installed `dist/extension.js`. stdio transport (a socket only with `SPRING_LS_USE_SOCKET`), cwd the extension dir, a JDK >= 21 (`checkjvm` refuses less; `preferJdk`); nv4j runs it on jdt.ls's JDK (>= 25 since 2026-11-16):
 
 ```
 <jdk>/bin/java \

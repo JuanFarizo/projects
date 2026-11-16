@@ -76,7 +76,7 @@ Offered by jdt.ls, applied through Neovim's own code action UI. Round trip 9 to 
 
 Nothing is pinned to one JDK. `nvim/lua/nv4j/jdk.lua` finds JDKs in SDKMAN (`~/.sdkman/candidates/java`), `~/Library/Java/JavaVirtualMachines` and `/Library/Java/JavaVirtualMachines`, reading each JDK's `release` file.
 
-- jdt.ls itself runs on `$JAVA_HOME` if that is a JDK 21 or newer, else the newest JDK 21+ it finds, else you get a clear error.
+- jdt.ls itself needs JDK 25 or newer (Mason jdtls 1.63.0) and runs on `$JAVA_HOME` if that is a JDK 25+, else the newest JDK 25+ it finds, else you get a clear error. This is separate from the project JDK: with `sdk use java 23` your project still compiles on 23 while jdt.ls runs on 25.
 - Every JDK found is registered with jdt.ls. The one used to compile a project follows the build file: `.sdkmanrc`, then the pom's `maven.compiler.release`, `java.version` or `maven.compiler.source`, then `$JAVA_HOME`, then the newest.
 - Proven by `20_java25` with a hostile setup (`JAVA_HOME` unset, a JDK 21 first on `PATH`): the Java 25 fixture reports release 25 and a JDK 25 location with zero errors, jdt.ls does not run on `PATH`'s Java 21, and a second Maven project with release 21 gets a JDK 21 runtime.
 
@@ -195,7 +195,7 @@ Boot detection (one rule shared with the Spring Boot language server, `nvim/lua/
 
 ### Spring Boot language server (P2)
 
-In a Spring Boot project (same detection as Run Spring Boot above, also in a module up to 2 levels below the project root) the Spring Boot language server (VMware's, Mason package `vscode-spring-boot-tools`) runs next to jdt.ls as a second client named `spring-boot`, on Java files and on `application*.properties`/`application*.yml`. Typing a key in `application.properties` completes it (blink menu as usual), `K` shows its type, default and description (no new keys: the usual completion menu and `K`). A plain Maven or Gradle project and a loose `.java` file get no Spring server, no extra process, no plugin load and no Mason install of the Spring package. The server runs on a JDK >= 21 picked by the same discovery as jdt.ls (never `PATH`). Wiring: `JavaHello/spring-boot.nvim` pinned (decision D14), configured in `nvim/lua/nv4j/spring.lua`; details and trials in `specs/features/spring-language-server.md`. Turn it off with `vim.g.nv4j_spring = false` in `nvim/lua/config/options.lua`: the plugin is then not loaded at all (no `:SpringBoot`, no client). The server starts with the first Java buffer of the project, so "initialized" below overlaps jdt.ls's import; the server keeps indexing after that. Numbers from 3 consecutive runs of `50_spring_ls` (11 of 11 PASS each when measured; the file has 28 cases now (2026-11-03: the three `spring-route.log` lines and the Mason `is_installing` guard added): the 13 of review fix round 1, Boot-only Mason/plugin load, and two-Boot routing; `DONE 50_spring_ls 22 0` in `/tmp/nv4j/logs/test-20261102-091443.log`; the timings in the rows below are from the earlier runs) and the three final full runs (13 of 13 each, before the 9 later cases):
+In a Spring Boot project (same detection as Run Spring Boot above, also in a module up to 2 levels below the project root) the Spring Boot language server (VMware's, Mason package `vscode-spring-boot-tools`) runs next to jdt.ls as a second client named `spring-boot`, on Java files and on `application*.properties`/`application*.yml`. Typing a key in `application.properties` completes it (blink menu as usual), `K` shows its type, default and description (no new keys: the usual completion menu and `K`). A plain Maven or Gradle project and a loose `.java` file get no Spring server, no extra process, no plugin load and no Mason install of the Spring package. The server runs on the same JDK as jdt.ls (>= 25, same discovery) (never `PATH`). Wiring: `JavaHello/spring-boot.nvim` pinned (decision D14), configured in `nvim/lua/nv4j/spring.lua`; details and trials in `specs/features/spring-language-server.md`. Turn it off with `vim.g.nv4j_spring = false` in `nvim/lua/config/options.lua`: the plugin is then not loaded at all (no `:SpringBoot`, no client). The server starts with the first Java buffer of the project, so "initialized" below overlaps jdt.ls's import; the server keeps indexing after that. Numbers from 3 consecutive runs of `50_spring_ls` (11 of 11 PASS each when measured; the file has 28 cases now (2026-11-03: the three `spring-route.log` lines and the Mason `is_installing` guard added): the 13 of review fix round 1, Boot-only Mason/plugin load, and two-Boot routing; `DONE 50_spring_ls 22 0` in `/tmp/nv4j/logs/test-20261102-091443.log`; the timings in the rows below are from the earlier runs) and the three final full runs (13 of 13 each, before the 9 later cases):
 
 | What you get | Measured (budget) | Check |
 |--------------|-------------------|-------|
@@ -248,7 +248,7 @@ Be aware before you rely on Nv4J for a full workday:
 ### Requirements
 
 - Neovim 0.12 or newer (`nvim --version`). Developed on 0.12.4.
-- A JDK 21 or newer for jdt.ls, via SDKMAN or installed on the system. Your projects can use any JDK from 8 up that is installed; `.sdkmanrc` and the pom decide.
+- A JDK 25 or newer for jdt.ls (just for the server; install with `sdk install java 25-amzn`), via SDKMAN or installed on the system. Your projects can use any JDK from 8 up that is installed; `.sdkmanrc` and the pom decide.
 - Maven (`mvn`) on `PATH`. Needed for the test fixture build; jdt.ls brings its own m2e for project imports.
 - ripgrep (`rg`). Used for the project usage counts that improve ranking. Without it everything works, ranking just falls back to jdt.ls order.
 - The tree-sitter CLI (`tree-sitter`). `brew install tree-sitter-cli`. If it is missing, LazyVim installs it through Mason on first start.
@@ -425,7 +425,7 @@ The JDK that jdt.ls runs on is chosen when it starts, from `$JAVA_HOME`. Set it 
 
 ```sh
 sdk use java 21.0.7-amzn     # sets JAVA_HOME in this shell (SDKMAN)
-nv4j path/to/File.java       # jdt.ls now runs on JDK 21
+nv4j path/to/File.java       # jdt.ls now runs on JDK 25
 ```
 
 Checked: with that command, `JAVA_HOME` was the 21 JDK and the config picked it as the server JVM. The JDK used to compile your project is separate and follows the build file (the fixture still got JavaSE-25 as its default with `JAVA_HOME` on 21). To change the project's JDK edit `<maven.compiler.release>` or `.sdkmanrc`. After changing either of these in a running session, quit and start Neovim again.
@@ -575,7 +575,7 @@ The test run keeps its blink.cmp state in `/tmp/nv4j/state` so your own accepted
 | Symptom | What to do |
 |---------|-----------|
 | jdt.ls does not start | `<leader>cl` (LSP info), then read `/tmp/nv4j/logs/lsp-<project>-<pid>.log` (`:LspLog`) and `~/.cache/nv4j/jdtls-data/<project>-<hash>/.metadata/.log`. Check `:Mason` that `jdtls` is installed. |
-| Error "no JDK >= 21 found for jdtls. Searched: ..." | Install one: `sdk install java 25-amzn` (or any 21+), or set `JAVA_HOME` to a JDK 21+ before starting. The message lists the folders searched. |
+| Error "jdt.ls needs a JDK >= 25 to run" (or `jdt.ls exit 13: it needs JDK >= 25` after a start) | Install one: `sdk install java 25-amzn`, or set `JAVA_HOME` to a JDK 25+ before starting. Your project JDK can stay 21 or 23. The message lists the JDKs found and the folders searched. The message lists the folders searched. |
 | Several `java` processes of jdt.ls, GBs of memory, or a warning "Not starting a second jdt.ls" / "Starting a second jdt.ls" | A project without a build file: each folder wants its own jdt.ls. By default (`vim.g.nv4j_loose_max = 1`) only the first loose folder gets one; the next opens as a plain buffer without LSP and the warning says so. Put an empty `.nv4j` in the project's top folder (How to use: Projects without a build file) and restart Neovim. |
 | A warning "jdt.ls for ... uses N MB" | A jdt.ls reached 2 GB RSS (`vim.g.nv4j_jdtls_warn_mb`). There is no memory limit; it only warns, once per jdt.ls. Check for several jdt.ls (`ps`), put an empty `.nv4j` in the project's top folder, or restart it with `:LspRestart` / quit and reopen. |
 | `/tmp/nv4j/logs` is big, or an old log is gone | At each start Nv4J renames `lsp.log`, `spring-route.log` and `spring-boot-ls.log` above `vim.g.nv4j_log_max_mb` (20 MB) to `<name>.1` (only one old copy is kept) and deletes `test-*.log` and `lsp-capture-*.bin` older than `vim.g.nv4j_log_keep_days` (14 days). A Neovim that was already running keeps writing to the renamed `.1` file until it quits. Look in `<name>.1` for what happened before the last rotation. |
