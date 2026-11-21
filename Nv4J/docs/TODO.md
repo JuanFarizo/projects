@@ -1,12 +1,23 @@
 # Nv4J: pending work
 
-One list of what is open. Update it when you finish or add something. Newest decisions are in `specs/001-architecture.md`; how to resume is in `docs/HANDOFF-p3.md`. Last update: 2026-11-03.
+One list of what is open. Update it when you finish or add something. Newest decisions are in `specs/001-architecture.md`; how to resume is in `docs/HANDOFF-p3.md`. Last update: 2026-11-21.
 
 ## Waiting for your decision
 
 | Item | What to decide | Cost if wrong |
 |------|----------------|---------------|
 | D23 move via `workspace/willRenameFiles` | Keep it, or go back to the code action. The IntelliJ audit (2026-11-04, `specs/features/refactors.md`) shows both give the same edits; the differences from IntelliJ are not caused by this choice | Move class differs from IntelliJ only in the cases still listed in the audit table (several classes at once, whole package into another, nested class, default package; the earlier gaps were closed in the IntelliJ-gaps round) |
+
+## Next (2026-11-21, in this order)
+
+1. **Mermaid in kitty, by eye** (`specs/features/mermaid.md`, POC): restart Neovim, open a markdown file with a `mermaid` block (for example `dia-nrps-membership-services/readme-2-csv-file.md`), `:Nv4JMermaid status` must say `terminal images: true`, press `<leader>cm`. Look at: image drawn, size of a tall diagram (`max_height = 30`), code shows when the cursor enters the block, scrolling. Then decide: keep, or `:Nv4JMermaid remove`. If kept: Linux run (Ubuntu, same kitty), other diagram types, `vim.g.nv4j_mermaid_hide` default (code-or-image at open), light theme.
+2. **Wide markdown tables** (`212b355`): check a real wide table in `render-markdown` with wrap on; the cursor row still shows raw (anti_conceal) and `zL` still shows raw by the plugin's design. If the cursor row bothers, try `anti_conceal` options; not a bug of ours.
+3. **JPA polish**: which items matter was never asked. Candidates: Gradle AOT lens (parked: the Spring LS returns no lens), unmeasured JPQL semantic tokens, named queries (J4, skipped).
+4. **Library navigation**: lazy online sources download untested, CFR replaces the whole class, `<CR>` on a library row (hierarchy picker) untried.
+5. **Test results view**: no class > method tree, TestNG shows nothing.
+6. **Gradle `<leader>rd` breakpoint**: also Boot 2.x, composite builds, offline import unverified.
+
+Smaller open items: the "Cannot refresh bundle org.eclipse.jdt.ls.core / Failed to load extension bundles" lines in the jdt.ls log (233 since 2026-11-05, not investigated); the exit-13 notification (JDK < 25) never exercised for real; the user's `:Nv4JFormatter google` error text never seen; class rename "not properly" symptom not reproduced (`88df18b` fixes the plain-rename path); `lazy-lock.json` holds plugin updates nobody committed (decide: commit or `git checkout`); flakes `two_boot_index`, `64 single_client`, C, F not proven fixed; Linux run, real Claude/Cursor run, kitty debug keys. Idea only, not started: `docs/IDEA-fzf-migration.md`. Rule kept: no heavy test runs while the user works, and never open extra kitty windows for tests (use a private tmux or headless).
 
 ## Open work
 
