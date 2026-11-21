@@ -52,6 +52,9 @@ return {
             -- test classpath of the project (JUnit, Mockito, AssertJ, MockMvc, Hamcrest) are added at ServiceReady (nv4j/favorites.lua).
             favoriteStaticMembers = require("nv4j.favorites").for_classpath({}),
             guessMethodArguments = "insertBestGuessedArguments",
+            -- Opt-in (vim.g.nv4j_match_case_first = true, set before jdt.ls starts): the first typed letter must
+            -- match case, so a lower-case `a` no longer lists every `A...` type (specs/features/completion-ranking.md, experiment 3).
+            matchCase = vim.g.nv4j_match_case_first and "firstLetter" or "off",
             -- Import groups, IntelliJ-like (its default: all other, javax, java, static), with
             -- jakarta next to javax. "" = every package no other entry matches, "#" = static imports.
             -- Used by auto-import on completion, quick fix imports and organize imports.
