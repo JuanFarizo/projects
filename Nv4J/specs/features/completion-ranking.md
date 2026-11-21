@@ -153,3 +153,13 @@ What was tried and dropped is in the 002 trial log.
 - Latency: p95 <= 150 ms warm per case, <= 400 ms for the first request after jdtls is ready (confirmed, `specs/001-architecture.md` D13).
 - Ranking: expected item in the top 5 of the blink-visible order, plus the relative rule of each case (local above keywords, field above non-project types).
 - Task 5 added: ranks measured through blink's own pipeline (`M.menu` in `tests/lib/completion.lua`), `menu_p95` under the same 150 ms budget, typed-prefix and postfix-key cases, and rule cases (snippets after every member after `.`; no filtered type or qualified package for a bare identifier).
+
+## Experiments after the reference map (docs/REFERENCE-MAP.md finding 2)
+
+One change at a time, each measured with `tests/checks/10_completion_latency.lua`, `11_completion_ranking.lua` and the new `13_completion_tiebreak.lua` (ranks through blink's pipeline). Run with the worktree config (`XDG_CONFIG_HOME` pointing at a folder whose `nv4j` link is this repo's `nvim`), machine idle (load under 1), one run at a time. Baseline before any experiment: check 10 `DONE 17 0` (menu p95 8 to 40 ms, noise about 5 ms), check 11 `DONE 26 0`. Source of the tie-breaker ideas: IntelliJ `JavaCompletionSorting.java` (`PreferShorter` `:738`, `PreferNonGeneric` `:519`, `isTooGeneric` `:545`; they sit after the stats and proximity weighers, so they only break ties).
+
+Check 13 is written to fail on the baseline: jdt.ls gives every `java.util` type the same relevance and lists them alphabetically, so `List` is 57th of 124 and `java.io.File` is 26th of 84.
+
+| # | Experiment | Result | Decision |
+|---|------------|--------|----------|
+| 1a | Shorter type name first, after usage (`java_sort`, and after frecency in `java_sort_empty`) | `java.util.` `List` 57 -> 4 (check 10 `java_util_pkg`, check 13 `shorter_java_util`), `java.io.` `File` 26 -> 1 (`shorter_java_io`); check 10 `DONE 17 0`, check 11 `DONE 26 0`; menu p95 unchanged within noise. First variant (every item kind) broke check 11 `column_attrs` (`nullable` 5 -> 6) and moved `http.` `authorizeHttpRequests` 2 -> 4, so only types get a length. Side effect: `@RestController` of the Spring annotation list 1 -> 2 (budget 5), `MyAnno` of the plain `@` list 2 -> 1 | kept, types only |

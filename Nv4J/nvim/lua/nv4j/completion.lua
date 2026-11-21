@@ -165,6 +165,7 @@ function M.transform_lsp(ctx, items)
       it.nv4j = true -- transform also runs again on resolved items: apply once
       it.nv4j_idx = i
       it.nv4j_rel = relevance(it)
+      if TYPE_KINDS[it.kind] then it.nv4j_len = #it.label end -- tie breaker, types only (java_sort)
       if uses and (before == "@" or (MEMBER_KINDS[it.kind] and not OBJECT_METHODS[it.label])) then
         it.nv4j_uses = uses[it.label]
       end
@@ -187,7 +188,10 @@ end
 --- 1. jdt.ls relevance (its sortText) without the java.* library bonus;
 --- 2. project usage (nv4j.usage): more uses first. Only breaks relevance ties, like IntelliJ's
 ---    mostUsed weigher sits after its kind, expected-type and proximity weighers;
---- 3. jdt.ls's own order.
+--- 3. shorter type name first (types only; IntelliJ's PreferShorter): jdt.ls lists 124 `java.util` types of one
+---    relevance alphabetically, so `List` was 57th; members and annotation attributes keep jdt.ls's order
+---    (a shorter-first member order moved `nullable` of `@Column(` from 5 to 6);
+--- 4. jdt.ls's own order.
 --- Other items (snippets, buffer) come after jdt.ls items of the same score, ordered by sortText.
 --- A strict weak order on purpose: table.sort can fail on a comparator that is not.
 function M.java_sort(a, b)
@@ -197,6 +201,7 @@ function M.java_sort(a, b)
     if ra ~= rb then return ra > rb end
     local ua, ub = a.nv4j_uses or 0, b.nv4j_uses or 0
     if ua ~= ub then return ua > ub end
+    if a.nv4j_len ~= b.nv4j_len then return a.nv4j_len < b.nv4j_len end
     if a.nv4j_idx ~= b.nv4j_idx then return a.nv4j_idx < b.nv4j_idx end
     return
   end
@@ -238,6 +243,8 @@ function M.java_sort_empty(a, b)
   end
   local fa, fb = a.score or 0, b.score or 0
   if fa ~= fb then return fa > fb end
+  local la, lb = a.nv4j_len or math.huge, b.nv4j_len or math.huge
+  if la ~= lb then return la < lb end
   local ia, ib = a.nv4j_idx or math.huge, b.nv4j_idx or math.huge
   if ia ~= ib then return ia < ib end
 end
