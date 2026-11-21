@@ -48,13 +48,9 @@ return {
             -- Hidden from completion, auto-import and quick fix (explicit imports still work).
             -- Defaults and the vim.g.nv4j_filtered_types override: nv4j/completion.lua.
             filteredTypes = require("nv4j.completion").filtered_types(),
-            favoriteStaticMembers = {
-              "org.junit.Assert.*",
-              "org.junit.jupiter.api.Assertions.*",
-              "org.mockito.Mockito.*",
-              "org.assertj.core.api.Assertions.*",
-              "java.util.Objects.*",
-            },
+            -- Static members proposed without an import. JDK groups here; the groups of the libraries on the
+            -- test classpath of the project (JUnit, Mockito, AssertJ, MockMvc, Hamcrest) are added at ServiceReady (nv4j/favorites.lua).
+            favoriteStaticMembers = require("nv4j.favorites").for_classpath({}),
             guessMethodArguments = "insertBestGuessedArguments",
             -- Import groups, IntelliJ-like (its default: all other, javax, java, static), with
             -- jakarta next to javax. "" = every package no other entry matches, "#" = static imports.
