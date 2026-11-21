@@ -23,10 +23,13 @@ local function first_demo(it) return is_type(it) and pkg(it):find("^demo") ~= ni
 local after_main = "Repo repo = new Repo"
 local cases = {
   -- near: in package demo, a project type of the typed prefix beats java.lang/java.awt types of the same relevance.
+  { name = "near_C", tag = "near", file = "App.java", after = after_main, line = "        C", expect = first_demo, what = "first demo type", max = 3 },
+  { name = "near_S", tag = "near", file = "App.java", after = after_main, line = "        S", expect = first_demo, what = "first demo type", max = 3 },
+  { name = "near_Mod", tag = "near", file = "App.java", after = after_main, line = "        Mod", expect = label_pkg("Modern", "demo"), what = "demo.Modern", max = 1 },
+  { name = "near_Se", tag = "near", file = "App.java", after = after_main, line = "        Se", expect = label_pkg("SecurityConfig", "demo"), what = "demo.SecurityConfig", max = 1 },
   -- shorter: java.util has 124 types of one relevance; the short, common names come before AbstractSequentialList.
   { name = "shorter_java_util", tag = "shorter", file = "App.java", after = after_main, line = "        java.util.", expect = label_pkg("List", "java.util"), what = "java.util.List", max = 8 },
   { name = "shorter_java_io", tag = "shorter", file = "App.java", after = after_main, line = "        java.io.", expect = label_pkg("File", "java.io"), what = "java.io.File", max = 5 },
-  -- generic: apply(C) returns a method type variable; it goes after every plain method of the same tier.
 }
 
 local fuzzy = C.blink()

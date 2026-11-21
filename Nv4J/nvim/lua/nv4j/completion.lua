@@ -151,6 +151,30 @@ local function boost_project_keys(ctx, items)
   end
 end
 
+-- Proximity (IntelliJ's proximity weigher: same package, then same module, before libraries): jdt.ls gives a
+-- project type and a java.lang type the same relevance (the java.* bonus is taken out above), so `C` listed
+-- CharSequence, Character, ClassCastException... and the project's `Customer` was 14th. A type whose package
+-- (labelDetails.description) is the file's own package is tier 0, one that shares the file's first two package
+-- segments (one for a single-segment package) is tier 1, any other tier 2.
+local function current_package(bufnr)
+  if not vim.api.nvim_buf_is_valid(bufnr) then return nil end
+  for _, l in ipairs(vim.api.nvim_buf_get_lines(bufnr, 0, 60, false)) do
+    local p = l:match("^%s*package%s+([%w_.]+)%s*;")
+    if p then return p end
+  end
+end
+local function proximity(cur, pkg)
+  if not cur or type(pkg) ~= "string" then return 2 end
+  if pkg == cur then return 0 end
+  local n = 0
+  for seg in cur:gmatch("[^.]+") do
+    n = n + 1
+    if n > 2 then break end
+  end
+  local want = table.concat(vim.list_slice(vim.split(cur, ".", { plain = true }), 1, math.min(n, 2)), ".")
+  return (pkg == want or vim.startswith(pkg, want .. ".")) and 1 or 2
+end
+
 function M.transform_lsp(ctx, items)
   if not is_java(ctx) then return items end
   boost_project_keys(ctx, items)
@@ -158,6 +182,7 @@ function M.transform_lsp(ctx, items)
   local bare = before ~= "." -- not qualified by a receiver or package
   local counts = items[1] and items[1].client_id and project_counts(items[1].client_id)
   local uses = counts and (before == "." and counts.member or before == "@" and counts.anno) or nil
+  local cur_pkg = current_package(ctx.bufnr)
   local out = {}
   for i, it in ipairs(items) do
     local keep = true
@@ -165,7 +190,10 @@ function M.transform_lsp(ctx, items)
       it.nv4j = true -- transform also runs again on resolved items: apply once
       it.nv4j_idx = i
       it.nv4j_rel = relevance(it)
-      if TYPE_KINDS[it.kind] then it.nv4j_len = #it.label end -- tie breaker, types only (java_sort)
+      if TYPE_KINDS[it.kind] then -- tie breakers, types only (java_sort)
+        it.nv4j_len = #it.label
+        it.nv4j_near = proximity(cur_pkg, it.labelDetails and it.labelDetails.description)
+      end
       if uses and (before == "@" or (MEMBER_KINDS[it.kind] and not OBJECT_METHODS[it.label])) then
         it.nv4j_uses = uses[it.label]
       end
@@ -201,7 +229,10 @@ function M.java_sort(a, b)
     if ra ~= rb then return ra > rb end
     local ua, ub = a.nv4j_uses or 0, b.nv4j_uses or 0
     if ua ~= ub then return ua > ub end
-    if a.nv4j_len ~= b.nv4j_len then return a.nv4j_len < b.nv4j_len end
+    local na, nb = a.nv4j_near or 2, b.nv4j_near or 2
+    if na ~= nb then return na < nb end
+    local la, lb = a.nv4j_len or math.huge, b.nv4j_len or math.huge
+    if la ~= lb then return la < lb end
     if a.nv4j_idx ~= b.nv4j_idx then return a.nv4j_idx < b.nv4j_idx end
     return
   end
@@ -243,6 +274,8 @@ function M.java_sort_empty(a, b)
   end
   local fa, fb = a.score or 0, b.score or 0
   if fa ~= fb then return fa > fb end
+  local na, nb = a.nv4j_near or 2, b.nv4j_near or 2
+  if na ~= nb then return na < nb end
   local la, lb = a.nv4j_len or math.huge, b.nv4j_len or math.huge
   if la ~= lb then return la < lb end
   local ia, ib = a.nv4j_idx or math.huge, b.nv4j_idx or math.huge
