@@ -48,9 +48,9 @@ Verified with real key presses in a private tmux with kitty detection forced (`S
 
 ## NOT verified
 
-- The picture drawn on screen in kitty (and in kitty inside tmux). My test terminal was a nested private tmux, where snacks reports no image support, so no placement was exercised. First thing to look at when you try it: `:Nv4JMermaid status` must say `terminal images: true`.
+- The picture drawn on screen in kitty (and in kitty inside tmux). The author tested placements in a private tmux with kitty detection forced (`SNACKS_KITTY=1`), which shows the placeholder rows, not the image. In a plain kitty window the converter, detection (`supported=true`) and one placement under the block were confirmed by a script, not by eye. First thing to look at when you try it: `:Nv4JMermaid status` must say `terminal images: true`.
 - Other diagram types (Gantt, mindmap, git graph, C4...) and big diagrams: mmdr lists 23 types but is not the real Mermaid engine; output may differ from mermaid.js or fail.
 - Light themes (snacks passes `neutral` when `background=light`; mmdr has a `neutral` preset, not seen).
 - Linux: the pinned hashes are computed from the release files; the Linux binaries were not run.
-- Cursor placement and scrolling with the image under the block; `conceal` of the source block (not enabled: the code stays visible).
+- Cursor placement and scrolling with the image under the block; a very wide code block (snacks then draws the image below and blanks the code in place, not over it).
 - Pinned version bump process: update `M.VERSION` and the four hashes together.
