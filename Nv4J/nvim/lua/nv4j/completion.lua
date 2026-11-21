@@ -190,6 +190,10 @@ function M.transform_lsp(ctx, items)
       it.nv4j = true -- transform also runs again on resolved items: apply once
       it.nv4j_idx = i
       it.nv4j_rel = relevance(it)
+      if it.kind == Kind.Method then
+        local ret = it.labelDetails and it.labelDetails.description
+        it.nv4j_generic = type(ret) == "string" and ret:find("^[A-Z][A-Z0-9]?$") and 1 or 0
+      end
       if TYPE_KINDS[it.kind] then -- tie breakers, types only (java_sort)
         it.nv4j_len = #it.label
         it.nv4j_near = proximity(cur_pkg, it.labelDetails and it.labelDetails.description)
@@ -229,6 +233,8 @@ function M.java_sort(a, b)
     if ra ~= rb then return ra > rb end
     local ua, ub = a.nv4j_uses or 0, b.nv4j_uses or 0
     if ua ~= ub then return ua > ub end
+    local ga, gb = a.nv4j_generic or 0, b.nv4j_generic or 0
+    if ga ~= gb then return ga < gb end
     local na, nb = a.nv4j_near or 2, b.nv4j_near or 2
     if na ~= nb then return na < nb end
     local la, lb = a.nv4j_len or math.huge, b.nv4j_len or math.huge
@@ -274,6 +280,8 @@ function M.java_sort_empty(a, b)
   end
   local fa, fb = a.score or 0, b.score or 0
   if fa ~= fb then return fa > fb end
+  local ga, gb = a.nv4j_generic or 0, b.nv4j_generic or 0
+  if ga ~= gb then return ga < gb end
   local na, nb = a.nv4j_near or 2, b.nv4j_near or 2
   if na ~= nb then return na < nb end
   local la, lb = a.nv4j_len or math.huge, b.nv4j_len or math.huge

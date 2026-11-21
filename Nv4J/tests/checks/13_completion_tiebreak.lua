@@ -30,6 +30,9 @@ local cases = {
   -- shorter: java.util has 124 types of one relevance; the short, common names come before AbstractSequentialList.
   { name = "shorter_java_util", tag = "shorter", file = "App.java", after = after_main, line = "        java.util.", expect = label_pkg("List", "java.util"), what = "java.util.List", max = 8 },
   { name = "shorter_java_io", tag = "shorter", file = "App.java", after = after_main, line = "        java.io.", expect = label_pkg("File", "java.io"), what = "java.io.File", max = 5 },
+  -- generic: apply(C) returns a method type variable; it goes after every plain method of the same tier.
+  { name = "generic_last_http", tag = "generic", file = "SecurityConfig.java", after = "public SecurityFilterChain filterChain", line = "        http.",
+    expect = label_is("apply"), what = "apply (C apply(C))", after_label = "userDetailsService" },
 }
 
 local fuzzy = C.blink()
