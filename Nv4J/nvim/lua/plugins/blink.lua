@@ -25,6 +25,10 @@ return {
         providers = {
           lsp = {
             transform_items = function(ctx, items) return require("nv4j.completion").transform_lsp(ctx, items) end,
+            -- jdt.ls resolves (javadoc, 0.4 to 0.8 s) are reused inside one completion session (nv4j/completion.lua).
+            override = {
+              resolve = function(module, item, callback) return require("nv4j.completion").resolve_cached(module, item, callback) end,
+            },
           },
           snippets = {
             should_show_items = function(ctx, items) return require("nv4j.completion").snippets_should_show(ctx, items) end,
@@ -41,7 +45,9 @@ return {
         ghost_text = { enabled = true },
         documentation = {
           auto_show = true,
-          auto_show_delay_ms = 200,
+          -- 450: a resolve is a jdt.ls request that renders javadoc (0.4 to 0.8 s); 200 ms fired one for every item
+          -- the cursor passed while scrolling the menu (specs/features/completion-ranking.md, experiment 6).
+          auto_show_delay_ms = 450,
           window = {
             border = "rounded",
             max_width = 100,

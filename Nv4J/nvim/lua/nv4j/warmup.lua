@@ -78,7 +78,10 @@ function M.status_handler(_, result, root_dir)
   if result.type == "Started" or result.type == "ServiceReady" then
     vim.schedule(function()
       for _, c in ipairs(vim.lsp.get_clients({ name = "jdtls" })) do
-        if root_dir == nil or c.config.root_dir == root_dir then M.run(c, result.type) end
+        if root_dir == nil or c.config.root_dir == root_dir then
+          M.run(c, result.type)
+          if result.type == "ServiceReady" then pcall(require("nv4j.favorites").apply, c) end
+        end
       end
     end)
   end

@@ -151,6 +151,30 @@ local function boost_project_keys(ctx, items)
   end
 end
 
+-- Proximity (IntelliJ's proximity weigher: same package, then same module, before libraries): jdt.ls gives a
+-- project type and a java.lang type the same relevance (the java.* bonus is taken out above), so `C` listed
+-- CharSequence, Character, ClassCastException... and the project's `Customer` was 14th. A type whose package
+-- (labelDetails.description) is the file's own package is tier 0, one that shares the file's first two package
+-- segments (one for a single-segment package) is tier 1, any other tier 2.
+local function current_package(bufnr)
+  if not vim.api.nvim_buf_is_valid(bufnr) then return nil end
+  for _, l in ipairs(vim.api.nvim_buf_get_lines(bufnr, 0, 60, false)) do
+    local p = l:match("^%s*package%s+([%w_.]+)%s*;")
+    if p then return p end
+  end
+end
+local function proximity(cur, pkg)
+  if not cur or type(pkg) ~= "string" then return 2 end
+  if pkg == cur then return 0 end
+  local n = 0
+  for seg in cur:gmatch("[^.]+") do
+    n = n + 1
+    if n > 2 then break end
+  end
+  local want = table.concat(vim.list_slice(vim.split(cur, ".", { plain = true }), 1, math.min(n, 2)), ".")
+  return (pkg == want or vim.startswith(pkg, want .. ".")) and 1 or 2
+end
+
 function M.transform_lsp(ctx, items)
   if not is_java(ctx) then return items end
   boost_project_keys(ctx, items)
@@ -158,6 +182,7 @@ function M.transform_lsp(ctx, items)
   local bare = before ~= "." -- not qualified by a receiver or package
   local counts = items[1] and items[1].client_id and project_counts(items[1].client_id)
   local uses = counts and (before == "." and counts.member or before == "@" and counts.anno) or nil
+  local cur_pkg = current_package(ctx.bufnr)
   local out = {}
   for i, it in ipairs(items) do
     local keep = true
@@ -165,6 +190,14 @@ function M.transform_lsp(ctx, items)
       it.nv4j = true -- transform also runs again on resolved items: apply once
       it.nv4j_idx = i
       it.nv4j_rel = relevance(it)
+      if it.kind == Kind.Method then
+        local ret = it.labelDetails and it.labelDetails.description
+        it.nv4j_generic = type(ret) == "string" and ret:find("^[A-Z][A-Z0-9]?$") and 1 or 0
+      end
+      if TYPE_KINDS[it.kind] then -- tie breakers, types only (java_sort)
+        it.nv4j_len = #it.label
+        it.nv4j_near = proximity(cur_pkg, it.labelDetails and it.labelDetails.description)
+      end
       if uses and (before == "@" or (MEMBER_KINDS[it.kind] and not OBJECT_METHODS[it.label])) then
         it.nv4j_uses = uses[it.label]
       end
@@ -187,7 +220,10 @@ end
 --- 1. jdt.ls relevance (its sortText) without the java.* library bonus;
 --- 2. project usage (nv4j.usage): more uses first. Only breaks relevance ties, like IntelliJ's
 ---    mostUsed weigher sits after its kind, expected-type and proximity weighers;
---- 3. jdt.ls's own order.
+--- 3. shorter type name first (types only; IntelliJ's PreferShorter): jdt.ls lists 124 `java.util` types of one
+---    relevance alphabetically, so `List` was 57th; members and annotation attributes keep jdt.ls's order
+---    (a shorter-first member order moved `nullable` of `@Column(` from 5 to 6);
+--- 4. jdt.ls's own order.
 --- Other items (snippets, buffer) come after jdt.ls items of the same score, ordered by sortText.
 --- A strict weak order on purpose: table.sort can fail on a comparator that is not.
 function M.java_sort(a, b)
@@ -197,6 +233,12 @@ function M.java_sort(a, b)
     if ra ~= rb then return ra > rb end
     local ua, ub = a.nv4j_uses or 0, b.nv4j_uses or 0
     if ua ~= ub then return ua > ub end
+    local ga, gb = a.nv4j_generic or 0, b.nv4j_generic or 0
+    if ga ~= gb then return ga < gb end
+    local na, nb = a.nv4j_near or 2, b.nv4j_near or 2
+    if na ~= nb then return na < nb end
+    local la, lb = a.nv4j_len or math.huge, b.nv4j_len or math.huge
+    if la ~= lb then return la < lb end
     if a.nv4j_idx ~= b.nv4j_idx then return a.nv4j_idx < b.nv4j_idx end
     return
   end
@@ -238,6 +280,12 @@ function M.java_sort_empty(a, b)
   end
   local fa, fb = a.score or 0, b.score or 0
   if fa ~= fb then return fa > fb end
+  local ga, gb = a.nv4j_generic or 0, b.nv4j_generic or 0
+  if ga ~= gb then return ga < gb end
+  local na, nb = a.nv4j_near or 2, b.nv4j_near or 2
+  if na ~= nb then return na < nb end
+  local la, lb = a.nv4j_len or math.huge, b.nv4j_len or math.huge
+  if la ~= lb then return la < lb end
   local ia, ib = a.nv4j_idx or math.huge, b.nv4j_idx or math.huge
   if ia ~= ib then return ia < ib end
 end
@@ -315,6 +363,55 @@ local function import_lines(edit)
     end
   end
   return out
+end
+
+-- Resolve cache per completion session (experiment 6, specs/features/completion-ranking.md).
+-- blink caches completionItem/resolve per item object and per context id; an isIncomplete list (identifier
+-- and annotation lists with jdt.ls's 200 cap) is requested again on every keystroke, so the highlighted `ArrayList`
+-- is a new object each time and its javadoc (0.4 to 0.8 s in jdt.ls) is resolved again. Here the answer of a
+-- jdt.ls item is reused inside the same blink context (one completion session in one buffer) for items with the
+-- same label, detail and package, never across contexts (the file's imports decide whether jdt.ls sends an
+-- import edit). Only documentation, detail and import-only additionalTextEdits are reused: textEdit and the
+-- ranges of a resolved answer belong to the request it answered. Answers with other edits are not cached.
+M.resolve_cache_hits, M.resolve_cache_misses = 0, 0
+local resolve_cache = { ctx = nil, items = {} }
+--- Id of blink's current completion context; replaced in tests (which drive blink's sources without the menu).
+function M.context_id()
+  local ok, list = pcall(require, "blink.cmp.completion.list")
+  return ok and list.context and list.context.id or nil
+end
+local function resolve_key(it)
+  local ld = it.labelDetails
+  return table.concat({ tostring(it.client_id), tostring(it.kind), it.label or "", it.detail or "", ld and ld.description or "" }, "\0")
+end
+
+--- provider override for sources.providers.lsp.override.resolve (module = blink's lsp source).
+function M.resolve_cached(module, item, callback)
+  local ctx = M.context_id()
+  if ctx == nil or not from_jdtls(item) then return module:resolve(item, callback) end
+  if resolve_cache.ctx ~= ctx then resolve_cache = { ctx = ctx, items = {} } end
+  local key = resolve_key(item)
+  local hit = resolve_cache.items[key]
+  if hit then
+    M.resolve_cache_hits = M.resolve_cache_hits + 1
+    callback(vim.deepcopy(hit))
+    return
+  end
+  M.resolve_cache_misses = M.resolve_cache_misses + 1
+  return module:resolve(item, function(resolved)
+    if resolved and resolved ~= item and resolve_cache.ctx == ctx then
+      local only_imports = true
+      for _, e in ipairs(resolved.additionalTextEdits or {}) do
+        if not import_lines(e) then only_imports = false end
+      end
+      if only_imports then
+        resolve_cache.items[key] = {
+          documentation = resolved.documentation, detail = resolved.detail, additionalTextEdits = resolved.additionalTextEdits,
+        }
+      end
+    end
+    callback(resolved)
+  end)
 end
 
 --- `import [static] a.b.C;` -> { name = "a.b.C", static = bool, module = bool, text = normalized } or nil.
