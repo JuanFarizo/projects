@@ -11,6 +11,10 @@
 #   nowarn     unit  decompile.lua  missing_jar
 #   nosha      unit  decompile.lua  install_verify
 #   nohdr      unit  decompile.lua  after_open_stubbed
+#   nolru      unit  decompile.lua  lru
+#   noinner    unit  decompile.lua  inner_filter
+#   nobound    unit  decompile.lua  watch_bounded watch_stale
+#   noedit     unit  decompile.lua  watch_edited
 #   l_noeclipse live java.lua       settings
 #   l_nowrap    live java.lua       fernflower_failed_live
 #   l_nohdr     live decompile.lua  cfr_live cfr_manual fernflower_failed_live
@@ -30,17 +34,21 @@ spec_of() { # unit|live file|perl|cases
   case "$1" in
     nomarker) echo 'unit|nv4j/decompile.lua|s/if l:find\(M\.FF_FAILED, 1, true\) then/if false then/|trigger_marker' ;;
     always) echo 'unit|nv4j/decompile.lua|s/if blank then return true, "jdt\.ls returned no content" end/if true then return true, "jdt.ls returned no content" end/|trigger_normal_kept after_open_stubbed' ;;
-    nocache) echo 'unit|nv4j/decompile.lua|s/if cache\[key\] then return cb/if false then return cb/|cache_hit' ;;
+    nocache) echo 'unit|nv4j/decompile.lua|s/if hit then return cb/if false then return cb/|cache_hit' ;;
     notimeout) echo 'unit|nv4j/decompile.lua|s/\{ text = true, timeout = M\.TIMEOUT_MS \}/{ text = true }/|timeout' ;;
     nowarn) echo 'unit|nv4j/decompile.lua|s/if not warned_jar then/if false then/|missing_jar' ;;
     nosha) echo 'unit|nv4j/decompile.lua|s/if got ~= M\.CFR\.sha256 then/if false then/|install_verify' ;;
     nohdr) echo 'unit|nv4j/decompile.lua|s/  table\.insert\(lines, 1, M\.header\(reason\)\)\n//|after_open_stubbed' ;;
+    nolru) echo 'unit|nv4j/decompile.lua|s/\(#order > M\.CACHE_MAX or cache_bytes > M\.CACHE_BYTES\)/false/|lru' ;;
+    noinner) echo 'unit|nv4j/decompile.lua|s/"\(\\\\\$\.\*\)\?\$"/"\$"/|inner_filter' ;;
+    nobound) echo 'unit|nv4j/decompile.lua|s/or polls > M\.POLL_MAX then/then/|watch_bounded watch_stale' ;;
+    noedit) echo 'unit|nv4j/decompile.lua|s/ and vim\.api\.nvim_buf_get_changedtick\(buf\) == tick//|watch_edited' ;;
     l_noeclipse) echo 'live|plugins/java.lua|s/eclipse = \{ downloadSources = true \}/eclipse = { downloadSources = false }/|settings' ;;
     l_nowrap) echo 'live|plugins/java.lua|s/if type\(fname\) == "string" and fname:find\("\^jdt:\/\/"\) then pcall/if false then pcall/|fernflower_failed_live' ;;
     l_nohdr) echo 'live|nv4j/decompile.lua|s/  table\.insert\(lines, 1, M\.header\(reason\)\)\n//|cfr_live cfr_manual fernflower_failed_live' ;;
   esac
 }
-PATCHES=("$@"); [ ${#PATCHES[@]} -gt 0 ] || PATCHES=(nomarker always nocache notimeout nowarn nosha nohdr)
+PATCHES=("$@"); [ ${#PATCHES[@]} -gt 0 ] || PATCHES=(nomarker always nocache notimeout nowarn nosha nohdr nolru noinner nobound noedit)
 rc=0
 for p in "${PATCHES[@]}"; do
   IFS='|' read -r kind file expr cases <<<"$(spec_of "$p")"

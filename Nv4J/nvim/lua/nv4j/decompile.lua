@@ -37,11 +37,39 @@ end
 M.spawn = function(cmd, opts, on_exit) return vim.system(cmd, opts, on_exit) end
 M.notify = function(msg, level) vim.notify(msg, level or vim.log.levels.WARN, { title = "Nv4J" }) end
 
+-- Bounded LRU (jdt.ls's DecompilerImpl keeps one too): at most CACHE_MAX classes and CACHE_BYTES of text, least recently
+-- used out first; the entry just stored always stays. A cache hit counts as a use.
+M.CACHE_MAX = 32
+M.CACHE_BYTES = 8 * 1024 * 1024
 local cache = {} -- "jar!class" -> text
+local order = {} -- keys, least recently used first
+local cache_bytes = 0
 local warned_jar = false -- the "CFR jar missing" warning, once per session
 local install_state -- nil | "running" | "done" | "failed"
 
-function M.reset_for_tests() cache = {}; warned_jar = false; install_state = nil end
+local function untrack(key)
+  for i, k in ipairs(order) do if k == key then table.remove(order, i); return end end
+end
+local function cache_get(key)
+  local v = cache[key]
+  if v then untrack(key); order[#order + 1] = key end
+  return v
+end
+local function cache_put(key, text)
+  if cache[key] then cache_bytes = cache_bytes - #cache[key]; untrack(key) end
+  cache[key] = text
+  cache_bytes = cache_bytes + #text
+  order[#order + 1] = key
+  while #order > 1 and (#order > M.CACHE_MAX or cache_bytes > M.CACHE_BYTES) do
+    local old = table.remove(order, 1)
+    cache_bytes = cache_bytes - #cache[old]
+    cache[old] = nil
+  end
+end
+--- Keys in the cache, least recently used first (tests).
+function M.cache_keys() return vim.deepcopy(order) end
+
+function M.reset_for_tests() cache = {}; order = {}; cache_bytes = 0; warned_jar = false; install_state = nil end
 
 --- Is this buffer content a Fernflower failure? Empty (no non-blank line) or a `// $FF: Couldn't be decompiled` marker.
 ---@param lines string[]
@@ -132,7 +160,8 @@ end
 ---@param cb fun(text: string|nil, err: string|nil, how: string|nil)
 function M.decompile(jar, class, cb)
   local key = jar .. "!" .. class
-  if cache[key] then return cb(cache[key], nil, "cache") end
+  local hit = cache_get(key)
+  if hit then return cb(hit, nil, "cache") end
   local jarfile = M.jar_path()
   if not vim.uv.fs_stat(jarfile) then
     if not warned_jar then
@@ -153,7 +182,7 @@ function M.decompile(jar, class, cb)
       if out.code ~= 0 then return cb(nil, ("CFR exit %d: %s"):format(out.code, vim.trim(out.stderr or "")), "run") end
       local text = out.stdout or ""
       if not text:find("%S") then return cb(nil, "CFR produced no output for " .. class .. " (not in " .. jar .. "?)", "run") end
-      cache[key] = text
+      cache_put(key, text)
       cb(text, nil, ("run %.0f ms"):format(ms))
     end)
   end)
@@ -192,31 +221,91 @@ function M.cfr_into(buf, reason, cb)
   end)
 end
 
+--- jdt.ls's content for the buffer's URI (its own cache answers at once; after m2e attached a sources jar, the sources).
+--- Replaceable in tests. cb(lines|nil, err|nil)
+M.contents = function(buf, cb)
+  local uri = vim.api.nvim_buf_get_name(buf)
+  local client = vim.lsp.get_clients({ name = "jdtls" })[1]
+  if not client then return cb(nil, "no jdt.ls client") end
+  client:request("java/classFileContents", { uri = uri }, function(err, result)
+    if err or type(result) ~= "string" then return cb(nil, "jdt.ls: " .. vim.inspect(err or result)) end
+    cb(vim.split((result:gsub("\r\n", "\n")), "\n", { plain = true }))
+  end, buf)
+end
+
+--- Asks jdt.ls for the content again and puts it in the buffer.
+function M.fernflower_into(buf, cb)
+  cb = cb or function() end
+  M.contents(buf, function(lines, err)
+    if not lines then return cb(false, err) end
+    set_lines(buf, lines)
+    cb(true, lines[1] and lines[1]:find("FernFlower", 1, true) and "Fernflower" or "jdt.ls content (sources)")
+  end)
+end
+
+-- Lazy sources: jdt.ls (Maven) starts the `-sources.jar` download on the first navigation and waits only 3 s
+-- (MavenSourceDownloader MAX_TIME_MILLIS), so a slow download leaves Fernflower in the buffer. This polls the place m2e
+-- puts the jar (next to the class jar) and reopens the buffer with the real sources when it shows up. Bounded: POLL_MAX
+-- polls POLL_MS apart, then it gives up; one timer per buffer, stopped as soon as the buffer is gone, edited or replaced.
+M.POLL_MS = 2000
+M.POLL_MAX = 20
+local watching = {} -- buf -> timer
+
+local function stop_watch(buf)
+  local t = watching[buf]
+  watching[buf] = nil
+  if t and not t:is_closing() then t:stop(); t:close() end
+end
+function M.watching(buf) return watching[buf] ~= nil end
+
+---@return boolean started
+function M.watch_sources(buf, uri)
+  if watching[buf] or not vim.api.nvim_buf_is_valid(buf) then return false end
+  local t = M.parse_uri(uri)
+  if not t or not vim.uv.fs_stat(t.jar) then return false end
+  local src = (t.jar:gsub("%.jar$", "-sources.jar"))
+  if vim.uv.fs_stat(src) then return false end -- sources were there already: jdt.ls used them
+  if vim.api.nvim_buf_get_lines(buf, 0, 1, false)[1] ~= M.FERNFLOWER_HEADER then return false end
+  local tick, polls, busy = vim.api.nvim_buf_get_changedtick(buf), 0, false
+  local function unchanged()
+    return vim.api.nvim_buf_is_valid(buf) and vim.api.nvim_buf_get_changedtick(buf) == tick
+      and vim.api.nvim_buf_get_name(buf) == uri and not vim.bo[buf].modified
+  end
+  local timer = vim.uv.new_timer()
+  watching[buf] = timer
+  timer:start(M.POLL_MS, M.POLL_MS, vim.schedule_wrap(function()
+    if watching[buf] ~= timer then return end
+    polls = polls + 1
+    if not unchanged() or polls > M.POLL_MAX then return stop_watch(buf) end
+    if busy or not vim.uv.fs_stat(src) then return end
+    busy = true
+    M.contents(buf, function(lines)
+      busy = false
+      if watching[buf] ~= timer then return end
+      if not unchanged() then return stop_watch(buf) end
+      if not lines or lines[1] == M.FERNFLOWER_HEADER or not table.concat(lines):find("%S") then return end -- not attached yet: next poll
+      local wins = {}
+      for _, w in ipairs(vim.fn.win_findbuf(buf)) do wins[w] = vim.api.nvim_win_get_cursor(w) end
+      set_lines(buf, lines)
+      for w, pos in pairs(wins) do pcall(vim.api.nvim_win_set_cursor, w, { math.min(pos[1], #lines), pos[2] }) end
+      stop_watch(buf)
+      M.notify(("%s: sources arrived, buffer reopened (%d lines)"):format(t.class, #lines), vim.log.levels.INFO)
+    end)
+  end))
+  return true
+end
+
 --- After nvim-jdtls filled a `jdt://` buffer (plugins/java.lua wraps open_classfile): CFR only when Fernflower failed.
 ---@return boolean triggered
 function M.after_open(buf, uri)
   if not (vim.api.nvim_buf_is_valid(buf) and type(uri) == "string" and uri:find("^jdt://")) then return false end
   local need, why = M.needs_fallback(vim.api.nvim_buf_get_lines(buf, 0, -1, false))
-  if not need then return false end
+  if not need then M.watch_sources(buf, uri); return false end
   if not M.parse_uri(uri) then return false end -- JDK module class: nothing CFR can read without the jar
   M.cfr_into(buf, "Fernflower failed", function(ok, msg)
     M.notify((ok and "%s: %s" or "CFR fallback failed: %s (%s)"):format(ok and why or msg, ok and msg or why), ok and vim.log.levels.INFO or vim.log.levels.WARN)
   end)
   return true
-end
-
---- Asks jdt.ls for the content again (its own cache answers at once) and puts it in the buffer.
-function M.fernflower_into(buf, cb)
-  cb = cb or function() end
-  local uri = vim.api.nvim_buf_get_name(buf)
-  local client = vim.lsp.get_clients({ name = "jdtls" })[1]
-  if not client then return cb(false, "no jdt.ls client") end
-  client:request("java/classFileContents", { uri = uri }, function(err, result)
-    if err or type(result) ~= "string" then return cb(false, "jdt.ls: " .. vim.inspect(err or result)) end
-    local lines = vim.split((result:gsub("\r\n", "\n")), "\n", { plain = true })
-    set_lines(buf, lines)
-    cb(true, lines[1] and lines[1]:find("FernFlower", 1, true) and "Fernflower" or "jdt.ls content (sources)")
-  end, buf)
 end
 
 --- :Nv4JDecompile [cfr|fernflower] on the current `jdt://` buffer.
