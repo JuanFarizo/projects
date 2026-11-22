@@ -4,6 +4,8 @@
 --  no_tool         no wrapper and no tool on PATH: nil plus a reason naming the folder
 --  empty_goal      an empty goal string is refused
 --  registered      setup() puts maven.goal.custom and gradle.runBuild in vim.lsp.commands
+--  resync_gradle   Gradle after the build: java/projectConfigurationUpdate goes to the jdt.ls whose root holds the build file (stub clients)
+--  resync_other    a jdt.ls of another root gets nothing (control: the root test is what decides)
 --  bad_args        run() with nonsense arguments does not start anything (false), no error
 local lsp = require("lsp")
 local aot = require("nv4j.aot")
@@ -39,5 +41,13 @@ lsp.report(P .. "registered", type(vim.lsp.commands["maven.goal.custom"]) == "fu
 local started = aot.run("maven", { 1, 2 })
 local started2 = aot.run("maven", nil)
 lsp.report(P .. "bad_args", started == false and started2 == false, ("%s %s"):format(tostring(started), tostring(started2)))
+local sent_a, sent_b = {}, {}
+local function stub(root, sink) return { name = "jdtls", config = { root_dir = root }, notify = function(_, m, p) sink[#sink + 1] = { m, p } return true end } end
+local orig_get = vim.lsp.get_clients
+vim.lsp.get_clients = function() return { stub(TMP .. "/g", sent_a), stub(TMP .. "/gg", sent_b) } end -- "/gg": shares the prefix, is not the folder
+local ok_rs, did = pcall(aot.resync, TMP .. "/g/build.gradle")
+vim.lsp.get_clients = orig_get
+lsp.report(P .. "resync_gradle", ok_rs and did == true and #sent_a == 1 and sent_a[1][1] == "java/projectConfigurationUpdate" and sent_a[1][2].uri == vim.uri_from_fname(TMP .. "/g/build.gradle"), vim.inspect(sent_a))
+lsp.report(P .. "resync_other", #sent_b == 0, vim.inspect(sent_b))
 vim.fn.delete(TMP, "rf")
 lsp.finish()

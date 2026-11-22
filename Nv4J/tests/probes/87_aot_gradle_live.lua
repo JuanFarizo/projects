@@ -1,4 +1,4 @@
--- PROBE, not run by tests/run.sh (it fails: see specs/features/jpa.md "Gradle live"). Move to tests/checks when the Spring LS shows the lens for the Gradle fixture.
+-- PROBE, not run by tests/run.sh: it passes (4/4, 2026-11-21) only with a Spring LS newer than Mason's 2.2.0 (OpenVSX pre-release 2.5.x, see specs/features/jpa.md "Gradle live"); with 2.2.0 the lens never appears. Move to tests/checks when a stable release has it.
 -- Spring Data AOT lens on a GRADLE Boot 4 project, live (tests/fixtures/jpa4-gradle copied to /tmp). HEAVY: real jdt.ls + Gradle import.
 --  no_aot_lens   before any metadata the lens over findByEmail runs gradle.runBuild (the Spring LS leaves the build to the client)
 --  aot_command   that command through nv4j.aot (gradlew classes aotClasses): exit 0, build/generated/aotResources/.../CustomerRepository.json

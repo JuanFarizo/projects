@@ -49,6 +49,23 @@ local function relens()
   end
 end
 
+--- Gradle only. Buildship lists `build/generated/aotResources` as a source folder only when the folder exists at import, and
+--- the Spring LS finds the metadata through that source folder: after the first build it has to re-sync the project
+--- (jdt.ls `java/projectConfigurationUpdate`, what nvim-jdtls update_project_config does). Verified 2026-11-21 against
+--- the vscode-spring-boot 2.5 pre-release (specs/features/jpa.md "Gradle live"). Returns true when a notification was sent.
+function M.resync(build_file)
+  local dir = vim.fs.dirname(build_file)
+  local sent = false
+  for _, c in ipairs(vim.lsp.get_clients({ name = "jdtls" })) do
+    local root = c.config and c.config.root_dir
+    if root and (dir == root or vim.startswith(dir .. "/", root .. "/")) then
+      pcall(c.notify, c, "java/projectConfigurationUpdate", { uri = vim.uri_from_fname(build_file) })
+      sent = true
+    end
+  end
+  return sent
+end
+
 --- Run the build for `args` = { build_file, goals, env }. `on_done(code)` (tests).
 function M.run(tool, args, on_done)
   local build_file, goals, env = args and args[1], args and args[2], args and args[3]
@@ -86,6 +103,10 @@ function M.run(tool, args, on_done)
       if r.code == 0 then
         notify(("AOT metadata for %s is ready"):format(name))
         relens()
+        if tool == "gradle" and M.resync(build_file) then
+          -- the re-sync takes a few seconds; the lenses are asked for again while it runs and after it
+          for _, ms in ipairs({ 6000, 15000, 30000 }) do vim.defer_fn(relens, ms) end
+        end
       else
         local tail = vim.trim((r.stdout or "") .. "\n" .. (r.stderr or "")):sub(-1800)
         notify(("AOT metadata for %s failed (exit %d)\n%s"):format(name, r.code, tail), vim.log.levels.ERROR)
