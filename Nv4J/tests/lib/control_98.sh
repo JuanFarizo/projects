@@ -10,6 +10,11 @@
 #   keys      <leader>cS asks for supertypes      -> keys   (config/keymaps.lua)
 #   nilpath   non-file rows get no path (the E5108 bug) -> entry_safe (pure), live_outgoing_library (full)
 #   live      only the first subtype kept         -> live_subtypes (full check)
+#   nocache   cache never answers                 -> cache_hit
+#   noinval   didChange does not empty the cache  -> cache_invalidate
+#   noepoch   in-flight answer stored anyway      -> cache_inflight
+#   nolru     cache never evicts                  -> cache_lru
+#   badprog   every progress end empties it       -> cache_invalidate (Validate documents case)
 set -u
 HERE="$(cd "$(dirname "$0")/.." && pwd)"; SRC="$HERE/../nvim/lua"
 mkdir -p /tmp/nv4j/logs
@@ -22,8 +27,13 @@ spec() { case "$1" in
   keys) echo 'config/keymaps.lua|s/run\("subtypes"\)/run("supertypes")/|keys' ;;
   nilpath) echo 'nv4j/hierarchy.lua|s/ or row\.uri or ""$/ or nil/m|entry_safe live_outgoing_library' ;;
   live) echo 'nv4j/hierarchy.lua|s/for _, r in ipairs\(res or \{\}\) do/for _, r in ipairs({ (res or {})[1] }) do/|live_subtypes' ;;
+  nocache) echo 'nv4j/hierarchy.lua|s/local v = cache\[key\]/local v = nil/|cache_hit' ;;
+  noinval) echo 'nv4j/hierarchy.lua|s/\["textDocument\/didChange"\] = true, //|cache_invalidate' ;;
+  noepoch) echo 'nv4j/hierarchy.lua|s/if epoch == epoch0 then cache_put\(ikey, mine\) end/cache_put(ikey, mine)/|cache_inflight' ;;
+  nolru) echo 'nv4j/hierarchy.lua|s/while #order > M\.CACHE_MAX do/while false do/|cache_lru' ;;
+  badprog) echo 'nv4j/hierarchy.lua|s/if t and \(t:find\("Build"\)[^\n]*then M/if t then M/|cache_invalidate' ;;
 esac; }
-P=("$@"); [ ${#P[@]} -gt 0 ] || P=(sortrev firstsite nosel nopkg stale keys nilpath live); rc=0
+P=("$@"); [ ${#P[@]} -gt 0 ] || P=(sortrev firstsite nosel nopkg stale keys nilpath live nocache noinval noepoch nolru badprog); rc=0
 for p in "${P[@]}"; do
   IFS='|' read -r file expr case <<<"$(spec "$p")"
   F="$SRC/$file"; BAK="$(mktemp /tmp/nv4j/ctl98.XXXXXX)"; cp "$F" "$BAK"
