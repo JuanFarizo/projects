@@ -41,7 +41,9 @@ return {
         ghost_text = { enabled = true },
         documentation = {
           auto_show = true,
-          auto_show_delay_ms = 200,
+          -- 450: a resolve is a jdt.ls request that renders javadoc (0.4 to 0.8 s); 200 ms fired one for every item
+          -- the cursor passed while scrolling the menu (specs/features/completion-ranking.md, experiment 6).
+          auto_show_delay_ms = 450,
           window = {
             border = "rounded",
             max_width = 100,
