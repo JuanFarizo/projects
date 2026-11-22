@@ -365,6 +365,55 @@ local function import_lines(edit)
   return out
 end
 
+-- Resolve cache per completion session (experiment 6, specs/features/completion-ranking.md).
+-- blink caches completionItem/resolve per item object and per context id; an isIncomplete list (identifier
+-- and annotation lists with jdt.ls's 200 cap) is requested again on every keystroke, so the highlighted `ArrayList`
+-- is a new object each time and its javadoc (0.4 to 0.8 s in jdt.ls) is resolved again. Here the answer of a
+-- jdt.ls item is reused inside the same blink context (one completion session in one buffer) for items with the
+-- same label, detail and package, never across contexts (the file's imports decide whether jdt.ls sends an
+-- import edit). Only documentation, detail and import-only additionalTextEdits are reused: textEdit and the
+-- ranges of a resolved answer belong to the request it answered. Answers with other edits are not cached.
+M.resolve_cache_hits, M.resolve_cache_misses = 0, 0
+local resolve_cache = { ctx = nil, items = {} }
+--- Id of blink's current completion context; replaced in tests (which drive blink's sources without the menu).
+function M.context_id()
+  local ok, list = pcall(require, "blink.cmp.completion.list")
+  return ok and list.context and list.context.id or nil
+end
+local function resolve_key(it)
+  local ld = it.labelDetails
+  return table.concat({ tostring(it.client_id), tostring(it.kind), it.label or "", it.detail or "", ld and ld.description or "" }, "\0")
+end
+
+--- provider override for sources.providers.lsp.override.resolve (module = blink's lsp source).
+function M.resolve_cached(module, item, callback)
+  local ctx = M.context_id()
+  if ctx == nil or not from_jdtls(item) then return module:resolve(item, callback) end
+  if resolve_cache.ctx ~= ctx then resolve_cache = { ctx = ctx, items = {} } end
+  local key = resolve_key(item)
+  local hit = resolve_cache.items[key]
+  if hit then
+    M.resolve_cache_hits = M.resolve_cache_hits + 1
+    callback(vim.deepcopy(hit))
+    return
+  end
+  M.resolve_cache_misses = M.resolve_cache_misses + 1
+  return module:resolve(item, function(resolved)
+    if resolved and resolved ~= item and resolve_cache.ctx == ctx then
+      local only_imports = true
+      for _, e in ipairs(resolved.additionalTextEdits or {}) do
+        if not import_lines(e) then only_imports = false end
+      end
+      if only_imports then
+        resolve_cache.items[key] = {
+          documentation = resolved.documentation, detail = resolved.detail, additionalTextEdits = resolved.additionalTextEdits,
+        }
+      end
+    end
+    callback(resolved)
+  end)
+end
+
 --- `import [static] a.b.C;` -> { name = "a.b.C", static = bool, module = bool, text = normalized } or nil.
 --- Resolved jdt.ls items: import-only additionalTextEdits move to `nv4j_imports`, so blink never
 --- applies jdt.ls's ranges (they can be stale or lossy: measured 22 of 50 `HashMap` resolves sent

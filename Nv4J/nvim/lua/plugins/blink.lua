@@ -25,6 +25,10 @@ return {
         providers = {
           lsp = {
             transform_items = function(ctx, items) return require("nv4j.completion").transform_lsp(ctx, items) end,
+            -- jdt.ls resolves (javadoc, 0.4 to 0.8 s) are reused inside one completion session (nv4j/completion.lua).
+            override = {
+              resolve = function(module, item, callback) return require("nv4j.completion").resolve_cached(module, item, callback) end,
+            },
           },
           snippets = {
             should_show_items = function(ctx, items) return require("nv4j.completion").snippets_should_show(ctx, items) end,
