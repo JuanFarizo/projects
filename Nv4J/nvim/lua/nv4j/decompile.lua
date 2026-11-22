@@ -3,7 +3,7 @@
 -- content) or marked a method it could not decompile (`// $FF: Couldn't be decompiled`), and on demand (:Nv4JDecompile cfr).
 -- Costs nothing at startup and when idle: it is required the first time a `jdt://` buffer opens (plugins/java.lua wraps
 -- nvim-jdtls's open_classfile), CFR is never loaded into jdt.ls, it runs as a separate short-lived `java -jar` (vim.system,
--- 20 s timeout) on the JDK nv4j.jdk found for jdt.ls, output cached in memory per jar!class for the session.
+-- 20 s timeout) on the JDK nv4j.jdk found for jdt.ls, output cached in memory per jar!class (bounded LRU).
 -- The jar is one pinned release from Maven Central (CFR below), downloaded once, on first need or by :Nv4JInstallCfr, into
 -- stdpath("data")/nv4j/tools/, SHA-256 checked against the value recorded here before it is kept. Upgrading = edit CFR.
 -- Spec: specs/features/library-navigation.md. Check: tests/checks/95_library_nav.lua.
