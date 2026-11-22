@@ -52,8 +52,18 @@ vim.fn.input = function(p)
   return ""
 end
 vim.ui.input = function(_, cb) cb(nil) end
-vim.ui.select = function(items, _, cb)
+vim.ui.select = function(items, o, cb)
   ask.log[#ask.log + 1] = "select"
+  if ask.many and o and o.format_item and items[1] and items[1].isField == nil and #items > 1 and tostring(o.format_item(items[1])):find("^Done") then
+    -- the multi-picker (nv4j.codegen pick_many: "Done" line first, then one checkbox line per item). The case still answers
+    -- with the number of the wanted line, as it did for the old vim.fn.input prompt; "" finishes (= cancel).
+    local lines = {}
+    for i = 2, #items do lines[#lines + 1] = ("%d. %s"):format(i - 1, (o.format_item(items[i]):gsub("^%[.%] ", ""))) end
+    local ans = ask.many(table.concat(lines, "\n"))
+    local n = tonumber(ans)
+    if n and items[n + 1] then return cb(items[n + 1], n + 1) end
+    return cb(nil)
+  end
   local i = ask.select and ask.select(items) or 1
   cb(items[i], i)
 end
@@ -105,7 +115,7 @@ local function run(c)
   local ok_case, err = pcall(function()
     local lines, sl, sc, el, ec = plant(c.src)
     if c.cursor then sl, sc, el, ec = c.cursor[1], c.cursor[2], c.cursor[1], c.cursor[2] end
-    ask.many, ask.select, ask.log = c.many, c.select, {}
+    ask.many, ask.select, ask.log = (not ask.many_off) and c.many or nil, c.select, {}
     E.set(buf, lines)
     if c.diag then
       sleep_until(15000, function() return E.has(vim.diagnostic.get(buf), nil, c.diag) ~= nil end)
@@ -221,7 +231,8 @@ local cases = {
   { name = "concat_stringbuilder", title = "^Use 'StringBuilder' for string", src = '    String f(String a, int b) {\n        return "a" + @@a + b;\n    }', expect = '    String f(String a, int b) {\n        StringBuilder stringBuilder = new StringBuilder();\n        stringBuilder.append("a");\n        stringBuilder.append(a);\n        stringBuilder.append(b);\n        return stringBuilder.toString();\n    }' },
   { name = "concat_string_format", title = "^Use 'String.format' for string", src = '    String f(String a, int b) {\n        return "a" + @@a + b;\n    }', expect = '    String f(String a, int b) {\n        return String.format("a%s%d", a, b);\n    }' },
   { name = "concat_messageformat", title = "^Use 'MessageFormat' for string", src = '    String f(String a, int b) {\n        return "a" + @@a + b;\n    }', head = "package ca;\n\nimport java.text.MessageFormat;\nimport java.util.*;\n\npublic class Ca {\n", expect = '    String f(String a, int b) {\n        return MessageFormat.format("a{0}{1}", a, b);\n    }' },
-  { name = "convert_to_text_block_not_offered", absent = { "[Tt]ext block" }, src = '    String f() {\n        return @@"line1\\n" + "line2\\n";\n    }' },
+  { name = "string_to_text_block", title = "^Convert String concatenation to Text Block", src = '    String f() {\n        String s = @@"line1\\n" + "line2\\n" + "line3\\n";\n        return s;\n    }', expect = '    String f() {\n        String s = """\n            line1\n            line2\n            line3\n            """;\n        return s;\n    }' },
+  { name = "string_to_text_block_return_not_offered", absent = { "[Tt]ext [Bb]lock" }, src = '    String f() {\n        return @@"a\\n" + "b\\n";\n    }' },
   { name = "delegate_methods", title = "^Generate Delegate", many = pick_by("shout"), src = "    private Helper helper;\n    @@", expect = "    private Helper helper;\n\n    public String shout(String s) {\n        return helper.shout(s);\n    }\n    " },
   { name = "add_braces_not_offered", absent = { "[Bb]race", "[Bb]lock", "curly" }, src = "    void f(boolean b) {\n        @@if (b) System.out.println(1);\n    }" },
   { name = "remove_braces_not_offered", absent = { "[Bb]race", "[Bb]lock", "curly" }, src = "    void f(boolean b) {\n        @@if (b) { System.out.println(1); }\n    }" },
@@ -230,7 +241,8 @@ local cases = {
   { name = "move_inner", title = "^Move 'Inner'", select = pick_new_file, after = inner_file, src = "    static class @@Inner {}", expect = "" },
   { name = "var_to_explicit", title = "^Change type of 'x' to 'ArrayList<String>'", src = '    void f() {\n        var @@x = new ArrayList<String>();\n        x.add("a");\n    }', expect = '    void f() {\n        ArrayList<String> x = new ArrayList<String>();\n        x.add("a");\n    }' },
   { name = "explicit_to_var", title = "^Change type of 'x' to 'var'", src = "    void f() {\n        int @@x = 5;\n        x++;\n    }", expect = "    void f() {\n        var x = 5;\n        x++;\n    }" },
-  { name = "class_to_record_not_offered", absent = { "[Rr]ecord" }, src = "    static class @@P {\n        final int x;\n        P(int x) { this.x = x; }\n        int x() { return x; }\n    }" },
+  { name = "class_to_record", title = "^Convert to record", src = "    public static final class @@P {\n        private final int a;\n        private final String b;\n\n        public P(int a, String b) {\n            this.a= a;\n            this.b= b;\n        }\n\n        public int getA() {\n            return a;\n        }\n\n        public String getB() {\n            return b;\n        }\n    }", expect = "    public static record P(int a, String b) {\n    }" },
+  { name = "class_to_record_not_simple_not_offered", absent = { "[Rr]ecord" }, src = "    static class @@P {\n        final int x;\n        P(int x) { this.x = x; }\n        int x() { return x; }\n    }" },
   { name = "local_to_field", title = "^Extract to field", src = "    void f() {\n        int @@x = 5;\n        x++;\n    }", expect = "    private int x;\n\n    void f() {\n        x = 5;\n        x++;\n    }" },
   { name = "encapsulate_field_not_offered", absent = { "^Encapsulate" }, src = "    int @@x;" },
   { name = "getter_setter_one_field", title = "^Generate Getter and Setter for 'x'", src = "    int @@x;", expect = "    int x;\n\n    public int getX() {\n        return x;\n    }\n\n    public void setX(int x) {\n        this.x = x;\n    }" },
@@ -258,7 +270,7 @@ local cases = {
 -- case must FAIL. noinput: the nvim-jdtls pickers answer nothing; nokey: the key function is not called; noedit: the
 -- workspace edit is not applied; keeperror: a type error stays in the file after the action.
 local CONTROL = vim.env.NV4J_CA_CONTROL
-if CONTROL == "noinput" then vim.fn.input = function() return "" end end
+if CONTROL == "noinput" then vim.fn.input = function() return "" end; ask.many_off = true end
 if CONTROL == "noedit" then vim.lsp.util.apply_workspace_edit = function() end end
 if CONTROL == "nokey" then for _, c in ipairs(cases) do if c.call then c.call = function() end end end end
 if CONTROL == "keeperror" then for _, c in ipairs(cases) do c.src = c.src .. '\n    int broken_ctrl = "x";' ; c.expect = c.expect and (c.expect .. '\n    int broken_ctrl = "x";') end end

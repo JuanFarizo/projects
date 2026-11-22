@@ -1155,13 +1155,20 @@ local function package_lines_edit(from, to)
   return #changes > 0 and { documentChanges = changes } or false
 end
 
-local function will_rename(client, from, to)
-  local res, rerr = client:request_sync("workspace/willRenameFiles",
-    { files = { { oldUri = vim.uri_from_fname(from), newUri = vim.uri_from_fname(to) } } }, REQUEST_MS, 0)
+M.will_requests = 0 -- willRenameFiles requests sent by rename_paths (checks count them)
+
+--- One willRenameFiles request for `pairs` ({ {from, to}, ... }): several Java files to one folder are one jdt.ls move
+--- (FileEventHandler.computeMoveEdit takes them together).
+local function will_rename_many(client, pairs_)
+  M.will_requests = M.will_requests + 1
+  local files = vim.tbl_map(function(p) return { oldUri = vim.uri_from_fname(p[1]), newUri = vim.uri_from_fname(p[2]) } end, pairs_)
+  local res, rerr = client:request_sync("workspace/willRenameFiles", { files = files }, REQUEST_MS, 0)
   if not res then return nil, ("jdt.ls did not answer willRenameFiles in %d ms (%s)"):format(REQUEST_MS, tostring(rerr)) end
   if res.err then return nil, ("jdt.ls refused (%s)"):format(res.err.message or vim.inspect(res.err)) end
   return res.result or false
 end
+
+local function will_rename(client, from, to) return will_rename_many(client, { { from, to } }) end
 
 --- Imports of the file's own package (`import demo.billing.X;` in a file of demo.billing) removed: a merge moves a
 --- class into the package of the classes it imported, and jdt.ls leaves those imports behind. A blank line left
@@ -1243,8 +1250,22 @@ function M.rename_paths(moves, label, client, opts)
     local n = vim.uv.hrtime()
     ms[k], t = ms[k] + (n - t) / 1e6, n
   end
-  for i, m in ipairs(moves) do
+  -- a merge: runs of Java files going to one folder are ONE willRenameFiles request (jdt.ls moves them together, MoveHandler);
+  -- when that answers nothing the run falls back to file by file below
+  local function is_java_move(m)
+    return m[1]:match("%.java$") ~= nil and vim.fn.isdirectory(m[1]) == 0 and vim.fs.basename(m[1]) == vim.fs.basename(m[2])
+  end
+  local i = 0
+  while i < #moves do
+    i = i + 1
+    local m = moves[i]
     local from, to = m[1], m[2]
+    local batch = { i }
+    if opts.merge and is_java_move(m) then
+      while moves[i + #batch] and is_java_move(moves[i + #batch]) and vim.fs.dirname(moves[i + #batch][2]) == vim.fs.dirname(to) do
+        batch[#batch + 1] = i + #batch
+      end
+    end
     if opts.mkdirs and not vim.uv.fs_stat(vim.fs.dirname(to)) then -- undoing a merge: the folder the file came from is gone
       local made, d = {}, vim.fs.dirname(to)
       while not vim.uv.fs_stat(d) do
@@ -1256,20 +1277,31 @@ function M.rename_paths(moves, label, client, opts)
         return { uri = vim.uri_from_fname(q), type = 1 }
       end, made) })
     end
-    local edit, err = will_rename(client, from, to)
-    -- a later root right after the previous move: jdt.ls sometimes answers null while it is still taking
-    -- that move in (measured in the check run, not alone): ask again for up to 1 s, then fall back to the
-    -- package lines only (said in the summary)
-    local tries = 1
-    local needs = needs_edit(from, to) and not opts.same_package -- same package name, other source root: nothing to rewrite
-    -- an undo must not give up on jdt.ls's first answer either: right after the refactor it is undoing, jdt.ls can still be
-    -- taking the move in and answer an error ("Internal error.") or null
-    while ((edit == false and needs) or (edit == nil and opts.undoing)) and tries < 10 do
-      vim.wait(edit == nil and 200 or 100)
-      edit, err = will_rename(client, from, to)
-      tries = tries + 1
+    local edit, err
+    if #batch > 1 then
+      edit, err = will_rename_many(client, vim.tbl_map(function(k) return moves[k] end, batch))
+      if edit then
+        for _, k in ipairs(batch) do tries_by[moves[k][1]] = 1 end
+      else
+        batch = { i } -- no edit: the run goes file by file, with the retries and fallbacks below
+      end
     end
-    tries_by[from] = tries
+    local tries, needs = 1, false
+    if #batch == 1 then
+      edit, err = will_rename(client, from, to)
+      -- a later root right after the previous move: jdt.ls sometimes answers null while it is still taking
+      -- that move in (measured in the check run, not alone): ask again for up to 1 s, then fall back to the
+      -- package lines only (said in the summary)
+      needs = needs_edit(from, to) and not opts.same_package -- same package name, other source root: nothing to rewrite
+      -- an undo must not give up on jdt.ls's first answer either: right after the refactor it is undoing, jdt.ls can still be
+      -- taking the move in and answer an error ("Internal error.") or null
+      while ((edit == false and needs) or (edit == nil and opts.undoing)) and tries < 10 do
+        vim.wait(edit == nil and 200 or 100)
+        edit, err = will_rename(client, from, to)
+        tries = tries + 1
+      end
+      tries_by[from] = tries
+    end
     lap("will")
     -- refused only where an edit was due: the first move holds a top-level type named like its file. An
     -- empty or broken file, package-info.java or a file without its own type gets null legitimately:
@@ -1317,31 +1349,35 @@ function M.rename_paths(moves, label, client, opts)
       if not ok then return failed_part_way(label, why, files, root, done_moves()) end
     end
     lap("apply")
-    -- the edit may have moved it already (a RenameFile in jdt.ls's answer)
-    if vim.uv.fs_stat(from) then
-      local mok, merr = pcall(vim.lsp.util.rename, from, to, { overwrite = false })
-      if not mok or vim.uv.fs_stat(from) or not vim.uv.fs_stat(to) then
-        return failed_part_way(label, ("moving %s to %s failed: %s; the edits above are applied"):format(rel(from, root),
-          rel(to, root), tostring(merr or "not moved")), files, root, done_moves())
+    for bi, k in ipairs(batch) do
+      local from, to = moves[k][1], moves[k][2]
+      -- the edit may have moved it already (a RenameFile in jdt.ls's answer)
+      if vim.uv.fs_stat(from) then
+        local mok, merr = pcall(vim.lsp.util.rename, from, to, { overwrite = false })
+        if not mok or vim.uv.fs_stat(from) or not vim.uv.fs_stat(to) then
+          return failed_part_way(label, ("moving %s to %s failed: %s; the edits above are applied"):format(rel(from, root),
+            rel(to, root), tostring(merr or "not moved")), files, root, done_moves())
+        end
+      end
+      lap("move")
+      step_log[#step_log + 1] = { from = from, to = to, rec = bi == 1 and rec or {} }
+      local change = { oldUri = vim.uri_from_fname(from), newUri = vim.uri_from_fname(to) }
+      changes.files[#changes.files + 1] = change
+      client:notify("workspace/didRenameFiles", { files = { change } })
+      -- jdt.ls's resource tree learns of a move into a package folder that did not exist (or across source roots) only from
+      -- the file events: without them its next willRenameFiles for the moved file (the undo) answered "Internal error."
+      -- until something else refreshed it (Java model errors "File not found <old path>" in lsp.log)
+      client:notify("workspace/didChangeWatchedFiles", { changes = {
+        { uri = change.newUri, type = 1 }, { uri = change.oldUri, type = 3 } } })
+      for _, f in ipairs(files) do
+        if under(f.path, from) then
+          f.from = f.from or f.path
+          f.path = to .. f.path:sub(#from + 1)
+          if dirty[f.from] then f.unsaved, f.saved_dirty = nil, true end
+        end
       end
     end
-    lap("move")
-    step_log[#step_log + 1] = { from = from, to = to, rec = rec }
-    local change = { oldUri = vim.uri_from_fname(from), newUri = vim.uri_from_fname(to) }
-    changes.files[#changes.files + 1] = change
-    client:notify("workspace/didRenameFiles", { files = { change } })
-    -- jdt.ls's resource tree learns of a move into a package folder that did not exist (or across source roots) only from
-    -- the file events: without them its next willRenameFiles for the moved file (the undo) answered "Internal error."
-    -- until something else refreshed it (Java model errors "File not found <old path>" in lsp.log)
-    client:notify("workspace/didChangeWatchedFiles", { changes = {
-      { uri = change.newUri, type = 1 }, { uri = change.oldUri, type = 3 } } })
-    for _, f in ipairs(files) do
-      if under(f.path, from) then
-        f.from = f.from or f.path
-        f.path = to .. f.path:sub(#from + 1)
-        if dirty[f.from] then f.unsaved, f.saved_dirty = nil, true end
-      end
-    end
+    i = i + #batch - 1
   end
   -- buffers under a moved folder that the edit did not touch but had unsaved changes: written by the move
   for p in pairs(dirty) do

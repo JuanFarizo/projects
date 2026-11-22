@@ -4956,6 +4956,42 @@ case("rename_package_merge", function()
   lsp.report(P .. "rename_package_merge_undo", uok, utxt)
 end)
 
+-- several classes of the merged package go to jdt.ls as ONE willRenameFiles request per source folder (jdt.ls moves Java
+-- files to one folder together, FileEventHandler.computeMoveEdit); classes that reference each other, a same-package
+-- import dropped, undo byte for byte. Control (tests/lib/control_62.sh `nobatch`): one request per file -> FAIL.
+case("rename_package_merge_batch", function()
+  plant_files({
+    [SHOP_TEST] = "package demo.shop;\n\nclass CheckoutTest {\n    Checkout c = new Checkout();\n}\n",
+    [main .. "demo/shop/Extra1.java"] = "package demo.shop;\n\npublic class Extra1 {\n    Checkout c = new Checkout();\n}\n",
+    [main .. "demo/shop/Extra2.java"] = "package demo.shop;\n\nimport demo.billing.Invoice;\n\npublic class Extra2 {\n    Extra1 e;\n    Invoice i;\n}\n",
+    [main .. "demo/billing/UsesExtra.java"] = "package demo.billing;\n\nimport demo.shop.Extra1;\n\nclass UsesExtra {\n    Extra1 e;\n}\n",
+  })
+  local base = F.snapshot()
+  local b = lsp.open(CHECKOUT); lsp.open(INVOICE); lsp.open(CALC)
+  vim.api.nvim_set_current_buf(b); vim.api.nvim_win_set_cursor(0, { 1, 9 })
+  local got, stop = capture()
+  local res, t0, r0 = {}, E.now(), refactor.will_requests
+  refactor.rename_package({ name = "demo.billing", on_done = function(ok) res.done = ok end })
+  local ok = done_wait(res)
+  local ms = E.now() - t0
+  local requests = refactor.will_requests - r0
+  stop()
+  local BM = main .. "demo/billing/"
+  local a = {
+    { "Extra1 moved with the new package line", select(1, has_all(disk(BM .. "Extra1.java"), { "package demo.billing;", "Checkout c" })) },
+    { "Extra2 moved, its import of a class of the target package dropped, the reference to Extra1 kept",
+      disk(BM .. "Extra2.java") == "package demo.billing;\n\npublic class Extra2 {\n    Extra1 e;\n    Invoice i;\n}\n" },
+    { "a class of the target package that imported Extra1: import gone (same package now)", select(1, has_none(disk(BM .. "UsesExtra.java"), { "import demo.shop." })) },
+    { "the shop folder gone, test root merged", vim.uv.fs_stat(main .. "demo/shop") == nil and vim.uv.fs_stat(TEST .. "demo/billing/CheckoutTest.java") ~= nil },
+    { ("willRenameFiles requests: %d (main files in one, test file one: at most 2 for the 4 classes)"):format(requests), requests <= 2 },
+  }
+  local all, txt = results(a, ok)
+  local ok_clean, why = clean({ BM .. "Extra1.java", BM .. "Extra2.java", BM .. "UsesExtra.java", BM .. "Checkout.java" }, t0)
+  lsp.report(P .. "rename_package_merge_batch", all and ok_clean and ms <= APPLY_MS, txt .. (ok_clean and "; build clean" or ("; NOT clean: " .. why)) .. ("; %d ms (budget %d)"):format(ms, APPLY_MS))
+  local uok, utxt = undo_matches(base, 4 * APPLY_MS)
+  lsp.report(P .. "rename_package_merge_batch_undo", uok, utxt)
+end)
+
 -- a name in both packages: refused naming it, nothing changed
 case("rename_package_merge_clash", function()
   plant_files({ [SHOP_INV] = "package demo.shop;\n\npublic class Invoice {\n}\n" })
