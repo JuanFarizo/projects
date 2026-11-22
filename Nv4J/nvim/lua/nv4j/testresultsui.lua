@@ -6,8 +6,10 @@ local tr = require("nv4j.testresults")
 local M = {}
 
 local NS = vim.api.nvim_create_namespace("nv4j_test_results")
-local state = { buf = nil, win = nil, origin = nil, root = nil, meta = {}, expanded = {} }
+local state = { buf = nil, win = nil, origin = nil, root = nil, meta = {}, expanded = {}, folded = {} }
 M._state = state
+M.min_ms = 100 -- live refresh: at most one redraw per this many ms (about 10 per second)
+M._draws = 0
 
 local function define_hl()
   local function hl(name, opts) vim.api.nvim_set_hl(0, name, vim.tbl_extend("force", { default = true }, opts)) end
@@ -15,6 +17,7 @@ local function define_hl()
   hl("Nv4JTestFailed", { link = "DiagnosticError" })
   hl("Nv4JTestSkipped", { link = "DiagnosticWarn" })
   hl("Nv4JTestDim", { link = "Comment" })
+  hl("Nv4JTestRunning", { link = "DiagnosticInfo" })
   hl("Nv4JTestProject", { link = "Special" }) -- the project's own frames stand out, library frames are Nv4JTestDim
 end
 
@@ -33,24 +36,29 @@ local function current_root()
   return state.root or tr.last_root
 end
 
---- Re-draw the buffer from the model (keeps the cursor on the same test when it is still there).
+--- Re-draw the buffer from the model (keeps the cursor on the same row id when it is still there). Cursor policy: until the user
+--- moves it, the cursor goes to the first failed test, once; after that it stays on its row (a row is found again by its id).
 function M.render()
   if not valid() then return end
   local model = tr.get(state.root)
   if not model then return end
-  local expanded = state.expanded[state.root] or {}
-  local keep_key, keep_off
-  if state.win and vim.api.nvim_win_is_valid(state.win) then
-    local row = vim.api.nvim_win_get_cursor(state.win)[1]
+  local win_ok = state.win and vim.api.nvim_win_is_valid(state.win)
+  local keep_id, keep_off
+  if win_ok then
+    local cur = vim.api.nvim_win_get_cursor(state.win)
+    -- the cursor is not where the last render left it: the user moved it
+    if state.set_pos and (cur[1] ~= state.set_pos[1] or cur[2] ~= state.set_pos[2]) then state.user_moved = true end
+    local row = cur[1]
     local m = state.meta[row]
-    if m and m.test then
-      keep_key = m.test.key
+    if m and m.id then
+      keep_id = m.id
       for r = row, 1, -1 do
-        if state.meta[r] and state.meta[r].kind == "test" then keep_off = row - r; break end
+        local k = state.meta[r] and state.meta[r].kind
+        if k == "test" or k == "class" or k == "method" then keep_off = row - r; break end
       end
     end
   end
-  local lines, meta, spans = tr.render(model, expanded)
+  local lines, meta, spans = tr.render(model, state.expanded[state.root] or {}, state.folded[state.root] or {})
   state.meta = meta
   vim.bo[state.buf].modifiable = true
   vim.api.nvim_buf_set_lines(state.buf, 0, -1, false, lines)
@@ -59,20 +67,53 @@ function M.render()
   for _, s in ipairs(spans) do
     pcall(vim.api.nvim_buf_set_extmark, state.buf, NS, s[1] - 1, s[2], { end_col = s[3] >= 0 and s[3] or #lines[s[1]], hl_group = s[4] })
   end
-  if state.win and vim.api.nvim_win_is_valid(state.win) then
+  if win_ok then
     local target
-    if keep_key then
+    if not state.user_moved and not state.placed then
       for i, m in ipairs(meta) do
-        if m.kind == "test" and m.test.key == keep_key then target = math.min(i + (keep_off or 0), #lines); break end
+        if m.kind == "test" and m.test.state == "failed" and (m.test.fresh or not model.running) then target = i; state.placed = true; break end
+      end
+    end
+    if not target and keep_id then
+      for i, m in ipairs(meta) do
+        if m.id == keep_id and (m.kind == "test" or m.kind == "class" or m.kind == "method") then target = math.min(i + (keep_off or 0), #lines); break end
       end
     end
     if not target then
       for i, m in ipairs(meta) do
-        if m.kind == "test" then target = i; break end
+        if m.kind == "class" then target = i; break end
       end
     end
     pcall(vim.api.nvim_win_set_cursor, state.win, { target or 1, 0 })
+    state.set_pos = vim.api.nvim_win_get_cursor(state.win)
   end
+  M._draws = M._draws + 1
+end
+
+--- A run starts: the next first failure may take the cursor again.
+function M.run_started()
+  state.user_moved, state.placed, state.set_pos = false, false, nil
+  M.request()
+end
+
+--- Throttled live refresh: events only mark the view dirty; at most one redraw per `min_ms` (default 100), and only while the
+--- view is open (nothing is built otherwise). The model is built by the run (tr.live_source) at redraw time, not per event.
+function M.request()
+  if not (state.win and vim.api.nvim_win_is_valid(state.win) and valid()) then return end
+  local now = vim.uv.hrtime() / 1e6
+  local wait = state.last_draw and (state.last_draw + M.min_ms - now) or 0
+  if wait <= 0 then return M.flush() end
+  if state.timer then return end
+  state.timer = true
+  vim.defer_fn(function() state.timer = nil; M.flush() end, wait)
+end
+
+function M.flush()
+  if not (state.win and vim.api.nvim_win_is_valid(state.win) and valid()) then return end
+  state.last_draw = vim.uv.hrtime() / 1e6
+  local root = tr.refresh_live()
+  if root and root ~= state.root then state.root = root end
+  M.render()
 end
 
 --- After a run: re-draw an open view (of the project that just ran, or switch to it).
@@ -115,6 +156,12 @@ function M.activate()
     if m.file then return jump(m.file, m.lnum) end
     return vim.notify("Library frame: no source of the project here", vim.log.levels.INFO, { title = "Tests" })
   end
+  if m.kind == "class" or m.kind == "method" then
+    local set = state.folded[state.root] or {}
+    state.folded[state.root] = set
+    set[m.id] = not set[m.id] or nil
+    return M.render()
+  end
   if m.test then
     local set = state.expanded[state.root] or {}
     state.expanded[state.root] = set
@@ -136,13 +183,18 @@ end
 
 function M.rerun()
   local m = entry_at_cursor()
-  if not (m and m.test) then return vim.notify("No test under the cursor", vim.log.levels.INFO, { title = "Tests" }) end
+  if not (m and (m.test or m.kind == "class" or m.kind == "method")) then
+    return vim.notify("No test under the cursor", vim.log.levels.INFO, { title = "Tests" })
+  end
   if not same_project() then return end
-  require("nv4j.tests").run({ scope = "failed", only = { m.test } })
+  -- a class row reruns the class, a parameterized method row the method (all its invocations), a test row that test
+  local only = m.test and { m.test }
+    or { { class = m.class, method = m.method, name = m.method and (m.method .. "(" .. m.class .. ")") or m.class } }
+  require("nv4j.tests").run({ scope = "failed", only = only })
 end
 
 function M.rerun_failed()
-  local failed = tr.failed(tr.get(state.root))
+  local failed = tr.rerun_set(tr.get(state.root))
   if #failed == 0 then return vim.notify("No failed tests in these results", vim.log.levels.INFO, { title = "Tests" }) end
   if not same_project() then return end
   require("nv4j.tests").run({ scope = "failed", only = failed })
@@ -158,6 +210,7 @@ end
 --- Open (or focus) the view for the current project.
 function M.open()
   define_hl()
+  tr.refresh_live() -- a run in progress: its seeded model is there before the first redraw
   local root = current_root()
   if not root or not tr.get(root) then
     return vim.notify("No test results yet in this session: run a test first (<leader>tr, <leader>tt, <leader>tp)", vim.log.levels.INFO,
@@ -169,6 +222,7 @@ function M.open()
     return M.render()
   end
   state.origin = vim.api.nvim_get_current_win()
+  state.user_moved, state.placed, state.set_pos = false, false, nil
   if not valid() then
     state.buf = vim.api.nvim_create_buf(false, true)
     vim.bo[state.buf].buftype = "nofile"

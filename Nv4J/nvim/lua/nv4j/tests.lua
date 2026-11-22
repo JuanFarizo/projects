@@ -308,13 +308,16 @@ local function detail_of(n, state, cls, method, ctx)
   local parsed = tr.parse_trace(n.trace, function(c) return class_file(c, ctx) end)
   local ms = n.ms
   return { name = n.name, key = n.name or n.id, display = n.display, class = cls, method = method, state = state,
-    aborted = n.aborted or nil, error = n.is_error or nil, ms = ms, message = parsed.message or (n.failed and "failed (no message)" or nil),
+    aborted = n.aborted or nil, error = n.is_error or nil, ms = ms,
+    invocation = (n.dynamic or (n.name or ""):find("%)%[%d+%]") ~= nil) or nil, message = parsed.message or (n.failed and "failed (no message)" or nil),
     lines = parsed.lines, output = n.output or {}, file = cls and class_file(cls, ctx) or nil }
 end
 
 --- Aggregate parsed launches into a result.
-local function collect(parsers, ctx)
-  local r = { passed = 0, failed = 0, skipped = 0, failures = {}, tests = {}, output = {} }
+--- live = the run is still going: a started test without an end is "running"; at the end it is "notrun" (it never finished).
+--- r.notrun: tests the stream announced (%TSTTREE) that have no result (not counted, not in r.tests; the view shows them).
+local function collect(parsers, ctx, live)
+  local r = { passed = 0, failed = 0, skipped = 0, failures = {}, tests = {}, output = {}, notrun = {} }
   for _, p in ipairs(parsers) do
     vim.list_extend(r.output, p.orphan or {})
     if p.runtime_ms then r.runtime_ms = (r.runtime_ms or 0) + p.runtime_ms end
@@ -331,6 +334,9 @@ local function collect(parsers, ctx)
         r.tests[#r.tests + 1] = detail_of(n, state, cls, method, ctx)
         r[state] = r[state] + 1
         if state == "failed" then r.failures[#r.failures + 1] = failure_of(n, ctx) end
+      elseif leaf and n.name then
+        local cls, method = split_name(n.name)
+        r.notrun[#r.notrun + 1] = detail_of(n, (live and n.started) and "running" or "notrun", cls, method, ctx)
       end
     end
     -- class-level errors (e.g. a failing static initializer) reported on a suite that never started a leaf
@@ -346,6 +352,8 @@ local function collect(parsers, ctx)
   end
   return r
 end
+
+M._collect = collect -- for check 93_testresults_unit
 
 local function summary(r)
   local s = ("%d passed, %d failed, %d skipped"):format(r.passed, r.failed, r.skipped)
@@ -499,6 +507,7 @@ local function launch_one(run, launch, done, idx)
     if not la then return done(nil, err) end
     local uv = vim.uv
     local parser = new_parser()
+    run.current = parser
     local server = assert(uv.new_tcp())
     local finished = false
     local socks = {}
@@ -514,7 +523,10 @@ local function launch_one(run, launch, done, idx)
         l = l:gsub("\r$", "")
         console[#console + 1] = l
         -- stdout/stderr of the JVM: kept for the results view, on the test running when it arrived
-        if (body.category == "stdout" or body.category == "stderr") and not (i == #pieces and l == "") then parser.output(l) end
+        if (body.category == "stdout" or body.category == "stderr") and not (i == #pieces and l == "") then
+          parser.output(l)
+          if run.on_event then run.on_event() end
+        end
       end
       if #console > 120 then console = vim.list_slice(console, #console - 59) end
     end
@@ -532,6 +544,7 @@ local function launch_one(run, launch, done, idx)
       run.cancel_launch = nil
       parser.flush()
       done(parser, e)
+      if run.current == parser then run.current = nil end
     end
     run.cancel_launch = function() finish("cancelled") end
     -- the JVM of a finished stream must not linger: its session is closed 3 s after the results. The name is
@@ -565,6 +578,7 @@ local function launch_one(run, launch, done, idx)
       sock:read_start(vim.schedule_wrap(function(rerr, chunk)
         if chunk then
           parser.feed(chunk)
+          if run.on_event then run.on_event() end
           -- %RUNTIME ends the stream: report now instead of waiting for EOF (defensive: no check case depends
           -- on it, control n60h)
           if parser.done then finish(nil) end
@@ -617,9 +631,33 @@ end
 local next_id = 0
 local index -- forward declaration (lens index, defined below)
 
+--- Test list of the results view for a collected result: the results (an assumption failure shown as aborted) then the tests
+--- without a result (running while the run goes on, "not run" for those that never started or finished).
+local function view_tests(r)
+  local view = vim.tbl_map(function(t) return t.aborted and vim.tbl_extend("force", t, { state = "aborted" }) or t end, r.tests)
+  return vim.list_extend(view, r.notrun or {})
+end
+
+--- Merge options of a run's model into the stored one (see testresults.merge).
+local function merge_opts(sc) return { replace_all = sc == "project", replace_classes = sc == "class" or sc == "file" } end
+
+--- Model of a run in progress: its launches so far (seeded from %TSTTREE: nothing has to have reported yet), merged into the
+--- stored model like the final one. Built by the view when it redraws (nv4j/testresultsui.lua), never per stream event.
+local function live_model(run)
+  local tr = require("nv4j.testresults")
+  local ps = vim.list_extend({}, run.parsers or {})
+  if run.current then ps[#ps + 1] = run.current end
+  local r = collect(ps, run.ctx, true)
+  local view = view_tests(r)
+  for _, t in ipairs(view) do t.fresh = true end -- of this run (the view puts the cursor on its first failure, not on an older one)
+  local m = { label = run.label, scope = run.scope, at = os.date("%H:%M:%S"), tests = view, output = r.output, running = true }
+  return tr.merge(tr.get_stored(run.root), m, merge_opts(run.scope))
+end
+
 local function finish_run(run, r)
   if run.finished then return end
   run.finished = true
+  pcall(function() require("nv4j.testresults").end_live(run.root) end)
   if run.timer then pcall(function() run.timer:stop(); run.timer:close() end) end
   if running == run then running = nil end
   r.ms = (vim.uv.hrtime() - run.t0) / 1e6
@@ -635,9 +673,8 @@ local function finish_run(run, r)
     pcall(function()
       local sc = run.scope
       -- the counts keep an assumption failure as skipped; the view tells it apart
-      local view = vim.tbl_map(function(t) return t.aborted and vim.tbl_extend("force", t, { state = "aborted" }) or t end, r.tests)
       require("nv4j.testresults").store(run.root, { label = run.label, scope = sc, at = os.date("%H:%M:%S"), ms = r.runtime_ms,
-        tests = view, output = r.output, error = r.error }, { replace_all = sc == "project", replace_classes = sc == "class" or sc == "file" })
+        tests = view_tests(r), output = r.output, error = r.error }, merge_opts(sc))
     end)
   end
   show(r, run.ctx, run.label)
@@ -717,6 +754,12 @@ local function start(req, opts)
     end)
   end))
   run.parsers = {}
+  -- the results view follows the run: seeded from the %TSTTREE entries, redrawn (throttled) as results arrive
+  pcall(function()
+    require("nv4j.testresults").set_live_source(run.root, function() return live_model(run) end)
+    require("nv4j.testresultsui").run_started()
+  end)
+  run.on_event = function() pcall(function() require("nv4j.testresultsui").request() end) end
   local errors = {}
   local i = 0
   local function step()
@@ -925,7 +968,10 @@ local function from_failed(opts)
   end
   local missing = {}
   for _, f in ipairs(list) do
-    if f.method and f.class and not req.methods[f.class .. "#" .. f.method] then
+    -- a class-level failure (no method) is rerun as its class: the class must be known to the request too
+    local known = f.method and req.methods[(f.class or "") .. "#" .. f.method]
+      or (not f.method and (req.classes[f.class or ""] or req.classes[top_class(f.class or "")]))
+    if f.class and not known then
       local file = class_file(f.class, { files = req.files, roots = req.roots })
       if file then missing[file] = true end
     end

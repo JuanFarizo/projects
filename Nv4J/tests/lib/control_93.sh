@@ -13,6 +13,21 @@
 #   l_nojump  live   testresultsui.lua jump_frame
 #   l_noonly  live   tests.lua         rerun_one rerun_failed
 #   l_nonotify live  tests.lua         notify_key
+#   notree    unit   testresults.lua   tree_params
+#   nofold    unit   testresults.lua   tree_classes
+#   noseed    unit   tests.lua         seed_tsttree
+#   nostates  unit   testresults.lua   states_pending
+#   nothrottle unit  testresultsui.lua throttle
+#   noplace   unit   testresultsui.lua cursor_first_failure
+#   nodedupe  unit   testresults.lua   rerun_class_level
+#   nostale   unit   testresults.lua   rerun_class_level
+#   l_noseed  live   tests.lua         live_states
+#   l_nothrottle live testresultsui.lua live_throttle
+#   l_noplace live   testresultsui.lua live_cursor_failure
+#   l_nomoved live   testresultsui.lua live_cursor_kept
+#   l_nostale live   testresults.lua   class_level_rerun class_level_fixed
+# Config: the nvim config symlink (~/.config/nv4j) may point to another checkout; run this script through a wrapper that exports
+# XDG_CONFIG_HOME when the product files patched here are in a worktree.
 # Usage: control_93.sh [patch ...] (default: all; live ones need a free jdt.ls machine, about 2 min each).
 set -u
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
@@ -38,10 +53,23 @@ spec_of() { # unit|live file|perl|cases
     l_noorder) echo 'live|testresults.lua|s/(function M\.order\(tests\)\n)/$1  if true then return vim.fn.reverse(vim.deepcopy(tests)) end\n/|view_lines' ;;
     l_nojump) echo 'live|testresultsui.lua|s/(local function jump\(file, lnum\)\n)/$1  if true then return end\n/|jump_frame' ;;
     l_noonly) echo 'live|tests.lua|s/local list = opts\.only or \(r and r\.failures\)/local list = (r and r.failures)/|rerun_one' ;;
+    notree) echo 'unit|testresults.lua|s/if it\.method and \(#it\.tests > 1 or it\.tests\[1\]\.invocation\) then/if false then/|tree_params' ;;
+    nofold) echo 'unit|testresults.lua|s/local open = not folded\[ckey\]/local open = true/|tree_classes' ;;
+    noseed) echo 'unit|tests.lua|s/elseif leaf and n\.name then/elseif false then/|seed_tsttree' ;;
+    nostates) echo 'unit|testresults.lua|s/if c\.running > 0 then s = s/if false then s = s/|states_pending' ;;
+    nothrottle) echo 'unit|testresultsui.lua|s/if wait <= 0 then return M\.flush\(\) end/if true then return M.flush() end/|throttle' ;;
+    noplace) echo 'unit|testresultsui.lua|s/if not state\.user_moved and not state\.placed then/if false then/|cursor_first_failure' ;;
+    nodedupe) echo 'unit|testresults.lua|s/(local failed = M\.failed\(model\)\n  local classes = \{\})/local failed = M.failed(model)\n  if true then return failed end\n  local classes = {}/|rerun_class_level' ;;
+    nostale) echo 'unit|testresults.lua|s/elseif t\.method == nil and classes\[/elseif false and classes[/|rerun_class_level' ;;
+    l_noseed) echo 'live|tests.lua|s/elseif leaf and n\.name then/elseif false then/|live_states' ;;
+    l_nothrottle) echo 'live|testresultsui.lua|s/if wait <= 0 then return M\.flush\(\) end/if true then return M.flush() end/|live_throttle' ;;
+    l_noplace) echo 'live|testresultsui.lua|s/if not state\.user_moved and not state\.placed then/if false then/|live_cursor_failure' ;;
+    l_nomoved) echo 'live|testresultsui.lua|s/state\.user_moved = true end\n/state.user_moved = false end\n/|live_cursor_kept' ;;
+    l_nostale) echo 'live|testresults.lua|s/elseif t\.method == nil and classes\[/elseif false and classes[/|class_level_rerun class_level_fixed' ;;
     l_nonotify) echo 'live|tests.lua|s/<leader>tv: results/results/|notify_key' ;;
   esac
 }
-PATCHES=("$@"); [ ${#PATCHES[@]} -gt 0 ] || PATCHES=(noorder noclassify nomerge notime nooutput l_notime l_nooutput l_noorder l_nojump l_noonly l_nonotify)
+PATCHES=("$@"); [ ${#PATCHES[@]} -gt 0 ] || PATCHES=(noorder noclassify nomerge notime nooutput l_notime l_nooutput l_noorder l_nojump l_noonly l_nonotify notree nofold noseed nostates nothrottle noplace nodedupe nostale l_noseed l_nothrottle l_noplace l_nomoved l_nostale)
 rc=0
 for p in "${PATCHES[@]}"; do
   IFS='|' read -r kind file expr cases <<<"$(spec_of "$p")"
