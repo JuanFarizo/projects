@@ -283,7 +283,7 @@ do
   local t = D.parse_uri(HEX_URI)
   local jdk = D.parse_uri("jdt://contents/java.base/java.lang/String.class?=decomp/%5C/Users%5C/me%5C/jdk%5C/lib%5C/jrt-fs.jar%60java.base=/javadoc_location=/x=/%3Cjava.lang%28String.class")
   local bad = D.parse_uri("file:///x/y.java")
-  rep("uri_parse", t and t.jar == JARS.codec and t.class == "org.apache.commons.codec.binary.Hex" and t.name == "Hex" and bad == nil
+  rep("uri_parse", t and t.jar == "/Users/juan.farizo/.m2/repository/commons-codec/commons-codec/1.20.0/commons-codec-1.20.0.jar" and t.class == "org.apache.commons.codec.binary.Hex" and t.name == "Hex" and bad == nil
     and (jdk == nil or jdk.jar:find("jrt%-fs%.jar$")),
     ("jar=%s class=%s; jrt -> %s; file -> %s"):format(t and t.jar or "-", t and t.class or "-", vim.inspect(jdk), tostring(bad)))
 end
@@ -307,26 +307,40 @@ do
   rep("trigger_normal_kept", n == false and src == false, ("fernflower=%s sources=%s"):format(tostring(n), tostring(src)))
 end
 
+-- Fake CFR jar, fake library jar and fake java: the cases that stub the spawn need no real CFR, JDK or ~/.m2.
+local FD = "/tmp/nv4j/95_fake"
+vim.fn.delete(FD, "rf")
+vim.fn.mkdir(FD .. "/w", "p")
+local function touch(path) local f = io.open(path, "w"); f:write("x"); f:close() end
+touch(FD .. "/cfr.jar"); touch(FD .. "/lib-1.jar")
+local real_java = D.java
+local function fake_env() D.jar_path = function() return FD .. "/cfr.jar" end; D.java = function() return "/fake/java" end end
+local function unfake_env() D.jar_path = real_jar; D.java = real_java end
+
 -- timeout
 do
   D.reset_for_tests()
+  fake_env()
   local seen_opts
   D.spawn = function(cmd, opts, on_exit) seen_opts = opts; on_exit({ code = 124, signal = 15, stdout = "", stderr = "" }) end
   local err
-  D.decompile(JARS.codec, "a.B", function(_, e) err = e end)
+  D.decompile(FD .. "/lib-1.jar", "a.B", function(_, e) err = e end)
   until_(2000, 50, function() return err ~= nil end)
+  unfake_env()
   rep("timeout", seen_opts and seen_opts.timeout == 20000 and err and err:find("timed out after 20 s"), ("opts.timeout=%s err=%s"):format(tostring(seen_opts and seen_opts.timeout), tostring(err)))
 end
 
 -- cache_hit
 do
   D.reset_for_tests()
+  fake_env()
   local spawns = 0
   D.spawn = function(cmd, opts, on_exit) spawns = spawns + 1; on_exit({ code = 0, stdout = "/*\n * Decompiled with CFR 0.152.\n */\nclass B {}\n", stderr = "" }) end
   local t1, h1, t2, h2
-  D.decompile(JARS.codec, "a.B", function(t, _, h) t1, h1 = t, h end)
+  D.decompile(FD .. "/lib-1.jar", "a.B", function(t, _, h) t1, h1 = t, h end)
   until_(2000, 50, function() return t1 ~= nil end)
-  D.decompile(JARS.codec, "a.B", function(t, _, h) t2, h2 = t, h end)
+  D.decompile(FD .. "/lib-1.jar", "a.B", function(t, _, h) t2, h2 = t, h end)
+  unfake_env()
   rep("cache_hit", spawns == 1 and t1 == t2 and (h1 or ""):find("^run") and h2 == "cache", ("spawns=%d how1=%s how2=%s"):format(spawns, tostring(h1), tostring(h2)))
 end
 
@@ -414,6 +428,139 @@ do
     and t2 == false and vim.deep_equal(l2, ff),
     ("empty: triggered=%s line1=%s lines=%d; fernflower: triggered=%s unchanged=%s%s"):format(tostring(t1), tostring(l1[1]), #l1, tostring(t2), tostring(vim.deep_equal(l2, ff)), skip))
 end
+
+-- lru: bounded cache, least recently used out first (a hit counts as a use), the newest entry always stays; a byte cap too.
+do
+  D.reset_for_tests()
+  fake_env()
+  local max, bytes = D.CACHE_MAX, D.CACHE_BYTES
+  D.CACHE_MAX = 3
+  local spawns = 0
+  D.spawn = function(cmd, opts, on_exit) spawns = spawns + 1; on_exit({ code = 0, stdout = "class X {}\n", stderr = "" }) end
+  local jar = FD .. "/lib-1.jar"
+  local function dec(c) local how; D.decompile(jar, c, function(_, _, h) how = h end); until_(2000, 20, function() return how ~= nil end); return how end
+  dec("c1"); dec("c2"); dec("c3")
+  local hit_c1 = dec("c1") -- c1 becomes the most recent: order c2 c3 c1
+  dec("c4") -- over the cap: c2 (least recently used) goes
+  local keys = table.concat(vim.tbl_map(function(k) return k:match("!(.*)$") end, D.cache_keys()), ",")
+  local before = spawns
+  local how_c2 = dec("c2") -- gone: spawns again; c3 goes
+  local spawned_again = spawns == before + 1
+  D.reset_for_tests()
+  D.CACHE_MAX = 100
+  D.CACHE_BYTES = 15 -- each text is 11 bytes: only the newest fits
+  dec("b1"); dec("b2")
+  local byte_keys = #D.cache_keys()
+  D.CACHE_MAX, D.CACHE_BYTES = max, bytes
+  unfake_env()
+  rep("lru", hit_c1 == "cache" and keys == "c3,c1,c4" and spawned_again and (how_c2 or ""):find("^run") and byte_keys == 1,
+    ("c1 again=%s; keys after c4=%s (want c3,c1,c4); c2 re-run=%s spawned=%s; byte cap keeps %d entry"):format(tostring(hit_c1), keys, tostring(how_c2), tostring(spawned_again), byte_keys))
+end
+
+-- inner_filter: the --jarfilter regex lets Outer and every Outer$... class through (CFR folds them into the outer class's
+-- output), and nothing else (OuterX, Outer2$A). Java regex and Vim "very magic" agree on this pattern.
+do
+  local c = D.command("/j", "/a.jar", "p.q.Outer")
+  local re = vim.regex("\\v" .. c[6])
+  local function m(n) return re:match_str(n) ~= nil end
+  rep("inner_filter", m("p.q.Outer") and m("p.q.Outer$Inner") and m("p.q.Outer$Inner$1") and m("p.q.Outer$1") and not m("p.q.OuterX") and not m("p.q.Outer2$A") and not m("p.q.Other"),
+    "pattern " .. c[6])
+end
+
+-- watch_*: the lazy sources jar shows up after the buffer opened with Fernflower -> reopen with the real sources.
+do
+  D.reset_for_tests()
+  local notes2 = {}
+  D.notify = function(msg) notes2[#notes2 + 1] = msg end
+  local poll_ms, poll_max = D.POLL_MS, D.POLL_MAX
+  D.POLL_MS, D.POLL_MAX = 40, 12
+  local calls, answer = 0, { "/* real sources */", "class Foo { int x; }" }
+  local real_contents = D.contents
+  D.contents = function(b, cb) calls = calls + 1; vim.schedule(function() cb(vim.deepcopy(answer)) end) end
+  local n = 0
+  local function uri_for(jar) n = n + 1; return ("jdt://contents/w.jar/p/Foo%d.class?=proj/%s=/maven.x=/1=/%%3Cp%%28Foo%d.class"):format(n, (jar:gsub("/", "%%5C/")), n) end
+  local FF = { D.FERNFLOWER_HEADER, "package p;", "class Foo {}" }
+  local function mkbuf(uri, lines)
+    local b = vim.api.nvim_create_buf(false, true)
+    vim.api.nvim_buf_set_name(b, uri)
+    vim.api.nvim_buf_set_lines(b, 0, -1, false, lines)
+    vim.bo[b].modified = false
+    return b
+  end
+  local function first(b) return vim.api.nvim_buf_is_valid(b) and vim.api.nvim_buf_get_lines(b, 0, 1, false)[1] or nil end
+
+  -- watch_reopen
+  local jar = FD .. "/w/a-1.jar"; touch(jar)
+  local u = uri_for(jar)
+  local b = mkbuf(u, FF)
+  local started = D.watch_sources(b, u)
+  sleep(250)
+  local calls_before, kept = calls, first(b) == D.FERNFLOWER_HEADER
+  touch(FD .. "/w/a-1-sources.jar")
+  local reopened = until_(3000, 40, function() return first(b) == "/* real sources */" end)
+  rep("watch_reopen", started and calls_before == 0 and kept and reopened and not D.watching(b) and vim.bo[b].modified == false and not vim.bo[b].modifiable and #notes2 == 1,
+    ("started=%s contents asked before the jar existed=%d buffer kept=%s reopened=%s still watching=%s notes=%s"):format(tostring(started), calls_before, tostring(kept), tostring(reopened), tostring(D.watching(b)), vim.inspect(notes2)))
+
+  -- watch_edited: the buffer changed before the jar arrived -> nothing is overwritten, the watch ends
+  jar = FD .. "/w/b-1.jar"; touch(jar)
+  u = uri_for(jar)
+  b = mkbuf(u, FF)
+  calls = 0
+  D.watch_sources(b, u)
+  vim.bo[b].modifiable = true
+  vim.api.nvim_buf_set_lines(b, 2, 3, false, { "class Foo { /* mine */ }" })
+  touch(FD .. "/w/b-1-sources.jar")
+  sleep(400)
+  rep("watch_edited", calls == 0 and vim.api.nvim_buf_get_lines(b, 2, 3, false)[1] == "class Foo { /* mine */ }" and not D.watching(b),
+    ("contents asked=%d line3=%s watching=%s"):format(calls, tostring(vim.api.nvim_buf_get_lines(b, 2, 3, false)[1]), tostring(D.watching(b))))
+
+  -- watch_bounded: the jar never comes -> the timer stops by itself after POLL_MAX polls, nothing asked; a closed buffer stops it too
+  jar = FD .. "/w/c-1.jar"; touch(jar)
+  u = uri_for(jar)
+  b = mkbuf(u, FF)
+  calls = 0
+  D.POLL_MAX = 3
+  D.watch_sources(b, u)
+  local running = D.watching(b)
+  local gone = until_(2000, 40, function() return not D.watching(b) end)
+  local jar2 = FD .. "/w/d-1.jar"; touch(jar2)
+  local u2 = uri_for(jar2)
+  local b2 = mkbuf(u2, FF)
+  D.POLL_MAX = 50
+  D.watch_sources(b2, u2)
+  vim.api.nvim_buf_delete(b2, { force = true })
+  local gone2 = until_(2000, 40, function() return not D.watching(b2) end)
+  rep("watch_bounded", running and gone and gone2 and calls == 0, ("running=%s stopped by the bound=%s stopped by a closed buffer=%s contents asked=%d"):format(tostring(running), tostring(gone), tostring(gone2), calls))
+
+  -- watch_stale: the jar is there but jdt.ls still answers Fernflower -> buffer kept, asked again, stops at the bound
+  jar = FD .. "/w/e-1.jar"; touch(jar)
+  u = uri_for(jar)
+  b = mkbuf(u, FF)
+  calls = 0
+  D.POLL_MAX = 6
+  answer = vim.deepcopy(FF)
+  D.watch_sources(b, u)
+  touch(FD .. "/w/e-1-sources.jar")
+  local ended = until_(3000, 40, function() return not D.watching(b) end)
+  rep("watch_stale", ended and calls >= 2 and vim.deep_equal(vim.api.nvim_buf_get_lines(b, 0, -1, false), FF), ("asked %d times, stopped=%s, buffer kept=%s"):format(calls, tostring(ended), tostring(vim.deep_equal(vim.api.nvim_buf_get_lines(b, 0, -1, false), FF))))
+
+  -- watch_guards: no watch when sources exist already, when the buffer is not Fernflower, when the jar is not on disk
+  answer = { "x" }
+  jar = FD .. "/w/f-1.jar"; touch(jar); touch(FD .. "/w/f-1-sources.jar")
+  local uf = uri_for(jar)
+  local g1 = D.watch_sources(mkbuf(uf, FF), uf)
+  jar = FD .. "/w/g-1.jar"; touch(jar)
+  local ub = uri_for(jar)
+  local g2 = D.watch_sources(mkbuf(ub, { "// Decompiled with CFR", "class X {}" }), ub)
+  local un = uri_for(FD .. "/w/none-1.jar")
+  local g3 = D.watch_sources(mkbuf(un, FF), un)
+  rep("watch_guards", g1 == false and g2 == false and g3 == false, ("sources exist=%s, not Fernflower=%s, jar missing=%s (all want false)"):format(tostring(g1), tostring(g2), tostring(g3)))
+
+  D.contents, D.notify = real_contents, real_notify
+  D.POLL_MS, D.POLL_MAX = poll_ms, poll_max
+  D.reset_for_tests()
+end
+vim.fn.delete(FD, "rf")
 
 restore()
 lsp.finish()

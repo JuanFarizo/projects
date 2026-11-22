@@ -1,6 +1,6 @@
 # Type and call hierarchy picker
 
-`<leader>cS` subtypes, `<leader>cP` supertypes, `<leader>ci` incoming calls, `<leader>cO` outgoing calls (same keys as before). Code: `nvim/lua/nv4j/hierarchy.lua` (loaded on first key press, zero startup cost), keys in `nvim/lua/config/keymaps.lua`. Check: `tests/checks/98_hierarchy.lua` (15 cases, 3 live; controls `tests/lib/control_98.sh`, 8).
+`<leader>cS` subtypes, `<leader>cP` supertypes, `<leader>ci` incoming calls, `<leader>cO` outgoing calls (same keys as before). Code: `nvim/lua/nv4j/hierarchy.lua` (loaded on first key press, zero startup cost), keys in `nvim/lua/config/keymaps.lua`. Check: `tests/checks/98_hierarchy.lua` (23 cases, 5 live; controls `tests/lib/control_98.sh`, 13).
 
 ## Why
 
@@ -13,6 +13,18 @@ Neovim 0.12's `vim.lsp.buf.typehierarchy`, `incoming_calls` and `outgoing_calls`
 - Preview: the target in a grep preview (line highlighted). `<CR>` jumps with `vim.lsp.util.show_document` (offset encoding of the client). `<C-q>`, `<Tab>`, filtering: the default Telescope keys (entries carry filename/lnum/col/text).
 - Jump target: the item's `selectionRange` (the name in the declaration), else `range`. Incoming calls: the FIRST call site (smallest position of `fromRanges`, which lie in the caller's file). Outgoing calls: the callee's declaration (its call sites are in the origin file and are only counted).
 - Messages: no attached client supporting the method, "No subtypes of X" (same for supertypes, callers, callees; INFO), an LSP error (WARN), no answer within 15 s (WARN, requests cancelled). A new hierarchy command cancels the request in flight; an answer of a superseded run is dropped.
+
+## Level-1 cache (2026-11-21)
+
+Reference: `TypeHierarchyHandler.java:162-163` (jdt.ls builds a workspace hierarchy for subtypes: the slow request, 68 to 1300 ms). Two caches in `hierarchy.lua`, one LRU of `M.CACHE_MAX` = 64 entries: the prepare answer per (method, buffer, changedtick, cursor position, client), and the rows per prepared item (method + uri + name + selection range). A repeat press finds both and sends no request at all: `finish` runs inside `M.run`, the picker opens at once. Supertypes right after subtypes at the same cursor reuse the prepare answer and send only `typeHierarchy/supertypes`.
+
+Emptied (`M.invalidate`) by: `LspNotify` of `textDocument/didChange`, `textDocument/didSave`, `workspace/didChangeWatchedFiles`; `LspProgress` end of a jdt.ls job whose title has Build, Updat, Import, Initializ or Refresh; `LspAttach`/`LspDetach`. NOT by the end of "Validate documents" / "Publish Diagnostics": measured live, those end after every buffer switch and an edit, which made the first version of the cache empty itself between two presses (the edit already reports through didChange). An answer that was in flight when an invalidation happened is shown but not stored (epoch counter); an LSP error is not stored. The hooks are created on the first key press, not at startup.
+
+Checked: pure `cache_hit`, `cache_other_kind`, `cache_invalidate` (each event, plus the three that must NOT empty it), `cache_inflight`, `cache_error`, `cache_lru` (stub client, requests counted); live `live_cache` (first press 2 requests and 2 entries; repeat press 0 requests; after an edit the cache is empty and the next press sends 2 requests; same rows each time). On the 6-file project jdt.ls answers in 17 to 44 ms warm, so the measured gain there is 17-44 ms to 0; the 68 to 1300 ms of the earlier measurement is what a repeat press saves on a larger workspace (not re-measured). Controls: `nocache`, `noinval`, `noepoch`, `nolru`, `badprog` each make their case fail.
+
+## `<CR>` on a library row (2026-11-21)
+
+Tried live (`live_enter_library`): outgoing calls of `Out#hi`, selection moved to `List#of  java.util  java.base/java.util/List.java:936`, `<CR>`: the picker closes, the current window shows the `jdt://contents/java.base/java.util/List.java?=...` buffer (1196 lines, read-only, content from jdt.ls), cursor on line 936 (the row's line), 47 ms. `show_document` already behaves sensibly for a `jdt://` target (nvim-jdtls's BufReadCmd fills it), so no code change was needed. One message appears in `v:errmsg` when any Java buffer's filetype loads in the check's headless session: `E216: No such group or event: java_spotbugs_post User <buffer>`, raised by Neovim's own `runtime/ftplugin/java.vim`, not by Nv4J; the case ignores that one string.
 
 ## Verified
 
@@ -29,5 +41,5 @@ Live check 98 on a 6-file Maven project: subtypes of an interface = its 3 implem
 ## Not done / limits
 
 - No tree: one level at a time (select a row and press the key again on the target).
-- Not exercised live: several clients, multiple prepare results, the 15 s timeout (stub only), `<CR>` on a library row (the jump to a jdt:// target through `show_document` was not tried; `:cc` on a quickfix entry was).
+- Not exercised live: several clients, multiple prepare results, the 15 s timeout (stub only), `<CR>` on a library row is now exercised (see above).
 - Library rows show no preview text (empty by design: no extra request).

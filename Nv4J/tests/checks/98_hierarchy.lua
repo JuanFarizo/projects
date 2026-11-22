@@ -147,6 +147,7 @@ do
   vim.lsp.get_clients = function() return { fake } end
   vim.lsp.util.make_position_params = function() return { textDocument = { uri = "file:///x" }, position = { line = 0, character = 0 } } end
   local got
+  H.invalidate()
   local function items(names) local t = {}; for _, n in ipairs(names) do t[#t + 1] = { name = n, kind = 5, detail = "p", uri = U("A.java"), range = rng(0, 0, 0, 1), selectionRange = rng(0, 0, 0, 1) } end return t end
   H.run("subtypes", { on_rows = function(rows) got = rows end })
   answers[1](items({ "Shape" }))
@@ -157,6 +158,7 @@ do
   local notes, orig = {}, vim.notify
   vim.notify = function(m) notes[#notes + 1] = m end
   reqs, answers, got = {}, {}, nil
+  H.invalidate()
   H.run("subtypes", { on_rows = function(rows) got = rows end })
   answers[1](items({ "Shape" }))
   answers[2]({})
@@ -164,9 +166,11 @@ do
   -- stale: a second run supersedes the first; the first answer is dropped
   notes, reqs, answers, got = {}, {}, {}, nil
   local rows1, rows2
+  H.invalidate()
   H.run("supertypes", { on_rows = function(rows) rows1 = rows end })
   local first = answers[1]
   H.run("supertypes", { on_rows = function(rows) rows2 = rows end })
+  H.invalidate()
   first(items({ "Old" })) -- superseded run: dropped, no hierarchy request sent
   local sent_after_stale = #reqs
   answers[2](items({ "New" }))
@@ -175,6 +179,125 @@ do
   vim.notify = orig
   vim.lsp.get_clients, vim.lsp.util.make_position_params = orig_get, orig_pos
   rep("stub_flow", ok1 and ok2 and ok3, ("ok1=%s ok2=%s ok3=%s reqs=%s notes=%s"):format(tostring(ok1), tostring(ok2), tostring(ok3), vim.inspect(reqs), vim.inspect(notes)))
+end
+
+-- level-1 cache (stub client): a repeat press sends nothing; invalidated by didChange / didSave / didChangeWatchedFiles /
+-- LspProgress end; an answer that was in flight across an invalidation, an error and a failed request are not stored; LRU bound.
+do
+  local reqs, answers, pos = {}, {}, { line = 0, character = 0 }
+  local fake = { offset_encoding = "utf-16", name = "stub", id = 7 }
+  function fake:cancel_request() end
+  function fake:request(method, params, cb)
+    reqs[#reqs + 1] = method
+    local n = #reqs
+    answers[n] = function(res, err) cb(err, res) end
+    return true, n
+  end
+  local orig_get, orig_pos = vim.lsp.get_clients, vim.lsp.util.make_position_params
+  vim.lsp.get_clients = function() return { fake } end
+  vim.lsp.util.make_position_params = function() return { textDocument = { uri = "file:///x" }, position = vim.deepcopy(pos) } end
+  local function items(names) local t = {}; for _, n in ipairs(names) do t[#t + 1] = { name = n, kind = 5, detail = "p", uri = U(n .. ".java"), range = rng(0, 0, 0, 1), selectionRange = rng(0, 0, 0, 1) } end return t end
+  local b = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_set_current_buf(b)
+  local notes, orig_notify = {}, vim.notify
+  vim.notify = function(m) notes[#notes + 1] = m end
+  local function press(kind)
+    local got
+    reqs, answers = {}, {}
+    H.run(kind or "subtypes", { on_rows = function(rows) got = rows end })
+    return got
+  end
+  local function names_of(rows) return table.concat(vim.tbl_map(function(r) return r.name end, rows or {}), ",") end
+  local function press_full(prep, subs) -- a press that must ask everything (cache emptied first)
+    local got
+    H.invalidate()
+    reqs, answers = {}, {}
+    H.run("subtypes", { on_rows = function(rows) got = rows end })
+    answers[1](items(prep))
+    answers[2](items(subs))
+    return got
+  end
+
+  -- cache_hit: second press -> nothing sent, rows at once (before this function returns), same rows
+  H.invalidate()
+  local first = press_full({ "Shape" }, { "Zed", "alpha" })
+  local first_reqs = #reqs
+  local second = press()
+  local ok_hit = first_reqs == 2 and #reqs == 0 and second ~= nil and names_of(second) == "alpha,Zed" and names_of(first) == "alpha,Zed" and H.cache_size() == 2
+  rep("cache_hit", ok_hit, ("first press %d requests, repeat press %d requests, rows %s, cache size %d"):format(first_reqs, #reqs, names_of(second), H.cache_size()))
+
+  -- cache_other_kind: supertypes of the same item is another method: only its own request is sent (the prepare answer of
+  -- the same cursor and buffer state is shared), never the subtypes entry
+  press("supertypes")
+  rep("cache_other_kind", #reqs == 1 and reqs[1] == "typeHierarchy/supertypes", ("supertypes after subtypes sent %s"):format(vim.inspect(reqs)))
+  answers[1](items({ "Base" }))
+
+  -- cache_invalidate: each workspace-change event empties the cache; the next press asks again
+  local bad = {}
+  local events = {
+    { "LspNotify", { method = "textDocument/didChange" } },
+    { "LspNotify", { method = "textDocument/didSave" } },
+    { "LspNotify", { method = "workspace/didChangeWatchedFiles" } },
+    { "LspProgress", { params = { value = { kind = "end", title = "Building workspace" } } } },
+  }
+  for _, e in ipairs(events) do
+    press_full({ "Shape" }, { "A" })
+    local size = H.cache_size()
+    vim.api.nvim_exec_autocmds(e[1], { data = e[2], modeline = false })
+    local after = H.cache_size()
+    local again = press()
+    if not (size > 0 and after == 0 and #reqs == 1) then bad[#bad + 1] = ("%s %s: size %d -> %d, repeat sent %d"):format(e[1], (vim.inspect(e[2]):gsub("%s+", " ")), size, after, #reqs) end
+  end
+  -- not these: didOpen, progress begin, report
+  press_full({ "Shape" }, { "A" })
+  vim.api.nvim_exec_autocmds("LspNotify", { data = { method = "textDocument/didOpen" }, modeline = false })
+  vim.api.nvim_exec_autocmds("LspProgress", { data = { params = { value = { kind = "begin", title = "Building workspace" } } }, modeline = false })
+  vim.api.nvim_exec_autocmds("LspProgress", { data = { params = { value = { kind = "end", title = "Validate documents" } } }, modeline = false })
+  local kept = H.cache_size()
+  if kept ~= 2 then bad[#bad + 1] = "didOpen/progress begin emptied the cache (" .. kept .. ")" end
+  rep("cache_invalidate", #bad == 0, #bad == 0 and "didChange, didSave, didChangeWatchedFiles, progress end each empty the cache; didOpen, progress begin and the end of Validate documents do not" or table.concat(bad, "; "))
+
+  -- cache_inflight: an event between request and answer -> the answer is shown but not stored
+  H.invalidate()
+  local g = press()
+  answers[1](items({ "Shape" }))
+  vim.api.nvim_exec_autocmds("LspNotify", { data = { method = "textDocument/didChange" }, modeline = false })
+  answers[2](items({ "A" }))
+  local stored = H.cache_size()
+  rep("cache_inflight", stored == 0, "entries after an answer that crossed an invalidation: " .. stored .. " (want 0; the prepare answer arrived before the event and was dropped by it)")
+
+  -- cache_error: an LSP error is not cached (the retry asks again)
+  H.invalidate()
+  press()
+  answers[1](items({ "Shape" }))
+  answers[2](nil, { message = "boom" })
+  local size_err = H.cache_size()
+  press()
+  rep("cache_error", size_err == 1 and #reqs == 1 and reqs[1] == "typeHierarchy/subtypes", ("entries after an error %d (only the prepare), retry sent %s"):format(size_err, vim.inspect(reqs)))
+
+  -- cache_lru: bounded, least recently used out first
+  H.invalidate()
+  local max = H.CACHE_MAX
+  H.CACHE_MAX = 4 -- 2 prepare + 2 level-1 entries
+  for i, n in ipairs({ "One", "Two", "Three" }) do
+    pos = { line = i, character = 0 }
+    press() -- no invalidate: the entries of the three presses pile up
+    answers[1](items({ n })); answers[2](items({ "X" .. n }))
+  end
+  local size_lru = H.cache_size()
+  pos = { line = 3, character = 0 }
+  press()
+  local newest_hit = #reqs == 0
+  pos = { line = 1, character = 0 }
+  press()
+  local oldest_miss = #reqs >= 1
+  H.CACHE_MAX = max
+  pos = { line = 0, character = 0 }
+  rep("cache_lru", size_lru == 4 and newest_hit and oldest_miss, ("size %d (want 4), newest repeat sent nothing=%s, oldest asked again=%s"):format(size_lru, tostring(newest_hit), tostring(oldest_miss)))
+
+  vim.notify = orig_notify
+  vim.lsp.get_clients, vim.lsp.util.make_position_params = orig_get, orig_pos
+  H.invalidate()
 end
 
 if not unit_only then
@@ -244,7 +367,36 @@ if not unit_only then
     local jl
     if c and c.rows[1] then H.jump(c.rows[1], client.offset_encoding); jl = vim.api.nvim_buf_get_name(0):match("[^/]+$") .. ":" .. vim.api.nvim_win_get_cursor(0)[1] end
     rep("live_calls", c ~= nil and table.concat(cn, ",") == "Main#go@5,Report#run@11" and jl == "Main.java:5", ("rows=%s jump=%s"):format(table.concat(cn, ","), tostring(jl)))
+
+    -- live_cache: the repeat press of the same key sends nothing (rows at once, same rows); an edit (didChange) empties the cache
+    -- and the next press asks jdt.ls again.
+    vim.cmd("edit " .. vim.fn.fnameescape(root .. "/src/main/java/demo/shapes/Shape.java"))
+    local sent, orig_req = 0, client.request
+    client.request = function(self, method, ...)
+      if method:find("^typeHierarchy/") or method:find("prepareTypeHierarchy", 1, true) then sent = sent + 1 end
+      return orig_req(self, method, ...)
+    end
+    H.invalidate("test")
+    local c1, ms1 = collect("subtypes", 3, 20)
+    local s1, n1 = sent, H.cache_size()
+    sent = 0
+    local c2, ms2 = collect("subtypes", 3, 20)
+    local s2, why2 = sent, H.last_reason
+    local function nm(g) local t = {}; for _, r in ipairs(g and g.rows or {}) do t[#t + 1] = r.name end return table.concat(t, ",") end
+    local same = c1 and c2 and nm(c1) == nm(c2) and nm(c1) == "Circle,Square,Zeta"
+    vim.api.nvim_buf_set_lines(0, 4, 4, false, { "// edited" })
+    local cleared = vim.wait(5000, function() return H.cache_size() == 0 end, 50)
+    local why3 = H.last_reason
+    sent = 0
+    local c3, ms3 = collect("subtypes", 3, 20)
+    local s3 = sent
+    vim.cmd("silent! undo")
+    client.request = orig_req
+    rep("live_cache", same and s1 == 2 and n1 == 2 and s2 == 0 and cleared and s3 == 2 and c3 ~= nil and nm(c3) == "Circle,Square,Zeta",
+      ("first press: %d requests, %d entries, %.0f ms; repeat: %d requests, %.0f ms, same rows=%s (last invalidation: %s); after an edit cache emptied=%s (%s), next press: %d requests, %.0f ms"):format(
+        s1, n1, ms1, s2, ms2, tostring(same), tostring(why2), tostring(cleared), tostring(why3), s3, ms3))
   end
+
   if client then
     -- live_outgoing_library (regression for the E5108 crash): outgoing calls of Out#hi hold JDK methods (jdt:// targets). The REAL
     -- picker opens and the selection moves over every row; no error may be raised (v:errmsg, :messages), every row's preview ran.
@@ -277,6 +429,39 @@ if not unit_only then
     pcall(function() require("telescope.actions").close(picker.prompt_bufnr) end)
     rep("live_outgoing_library", picker ~= nil and n >= 2 and libs >= 1 and not bad,
       ("rows=%d library rows=%d errmsg=%q errs=%s messages=%q"):format(n, libs, vim.v.errmsg, vim.inspect(errs), msgs:sub(1, 200)))
+
+    -- live_enter_library: <CR> on a library (jdt://) row opens the class in the current window with its content (jdt.ls
+    -- decompiled or JDK source) and the cursor on the method's line; no error.
+    do
+      vim.cmd("edit " .. vim.fn.fnameescape(root .. "/src/main/java/demo/app/Out.java"))
+      vim.api.nvim_win_set_cursor(0, { 4, 16 })
+      vim.v.errmsg = ""
+      H.run("outgoing")
+      local pk
+      vim.wait(30000, function()
+        pk = state.get_current_picker(vim.api.nvim_get_current_buf())
+        return pk ~= nil and pk.manager ~= nil and pk.manager:num_results() > 0
+      end, 50)
+      local want_line, picked
+      if pk then
+        for _ = 1, pk.manager:num_results() do
+          local e = pk:get_selection()
+          if e and type(e.path) == "string" and e.path:sub(1, 6) == "jdt://" then picked = e; want_line = e.lnum; break end
+          vim.api.nvim_feedkeys(vim.keycode("<C-n>"), "x", false)
+          vim.wait(100)
+        end
+      end
+      local t0 = vim.uv.hrtime()
+      if picked then vim.api.nvim_feedkeys(vim.keycode("<CR>"), "x", false) end
+      local landed = vim.wait(30000, function() return vim.api.nvim_buf_get_name(0):sub(1, 6) == "jdt://" and vim.api.nvim_buf_line_count(0) > 5 end, 100)
+      local ms = (vim.uv.hrtime() - t0) / 1e6
+      local lb = vim.api.nvim_get_current_buf()
+      local cur = vim.api.nvim_win_get_cursor(0)[1]
+      local picker_closed = state.get_current_picker(vim.api.nvim_get_current_buf()) == nil
+      rep("live_enter_library", picked ~= nil and landed and cur == want_line and picker_closed and (vim.v.errmsg == "" or vim.v.errmsg:find("java_spotbugs_post", 1, true)) and not vim.bo[lb].modifiable,
+        ("picked %s; landed=%s in %.0f ms: %s, %d lines, cursor %d (want %s), picker closed=%s, errmsg=%q"):format(picked and picked.text or "none", tostring(landed),
+          ms, vim.api.nvim_buf_get_name(0):sub(1, 60), vim.api.nvim_buf_line_count(0), cur, tostring(want_line), tostring(picker_closed), vim.v.errmsg))
+    end
   end
   vim.lsp.start = orig_start
 end

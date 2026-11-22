@@ -144,6 +144,55 @@ end
 
 local state = { gen = 0, pending = {} } -- pending: { {client, id}, ... } of the run in flight
 
+-- Level-1 cache. The slow request is the one per prepared item (subtypes build a workspace type hierarchy in jdt.ls: 68 to
+-- 1300 ms), so its rows are kept per item (method + uri + name + selection range), and the prepare answer per cursor
+-- position (buffer, changedtick, line/col, client). A repeat press then sends nothing and opens at once. LRU of CACHE_MAX
+-- entries. Everything is dropped when the workspace may have changed: any didChange / didSave / didChangeWatchedFiles the
+-- client sends, the end of a jdt.ls build / import / refresh progress, a client attaching or detaching. A request that was
+-- in flight across such an event is not stored (epoch).
+M.CACHE_MAX = 64
+local cache, order, epoch = {}, {}, 0
+local hooked = false
+
+function M.invalidate(reason) cache, order, epoch = {}, {}, epoch + 1; M.last_reason = reason end
+function M.cache_size() return #order end
+
+local function cache_get(key)
+  local v = cache[key]
+  if v ~= nil then
+    for i, k in ipairs(order) do if k == key then table.remove(order, i); break end end
+    order[#order + 1] = key
+  end
+  return v
+end
+local function cache_put(key, v)
+  if cache[key] == nil then order[#order + 1] = key end
+  cache[key] = v
+  while #order > M.CACHE_MAX do cache[table.remove(order, 1)] = nil end
+end
+
+local function item_key(def, item)
+  return vim.json.encode({ def.method, item.uri, item.name, item.selectionRange or item.range })
+end
+
+local INVALIDATING = { ["textDocument/didChange"] = true, ["textDocument/didSave"] = true, ["workspace/didChangeWatchedFiles"] = true }
+local function ensure_hooks()
+  if hooked then return end
+  hooked = true
+  local g = vim.api.nvim_create_augroup("nv4j_hierarchy_cache", { clear = true })
+  vim.api.nvim_create_autocmd("LspNotify", { group = g, callback = function(a)
+    if INVALIDATING[a.data and a.data.method] then M.invalidate(a.data.method) end
+  end })
+  vim.api.nvim_create_autocmd("LspProgress", { group = g, callback = function(a)
+    local v = a.data and a.data.params and a.data.params.value
+    -- Only jdt.ls's build / import / refresh jobs: "Validate documents" and "Publish Diagnostics" end after every edit and
+    -- every buffer switch (measured), and an edit has told us already through didChange.
+    local t = v and v.kind == "end" and (v.title or v.message or "")
+    if t and (t:find("Build") or t:find("Updat") or t:find("Import") or t:find("Initializ") or t:find("Refresh")) then M.invalidate("progress end: " .. t) end
+  end })
+  vim.api.nvim_create_autocmd({ "LspAttach", "LspDetach" }, { group = g, callback = function(a) M.invalidate(a.event) end })
+end
+
 local function cancel_pending()
   if state.stop then state.stop(); state.stop = nil end
   for _, p in ipairs(state.pending) do pcall(function() p.client:cancel_request(p.id) end) end
@@ -181,9 +230,11 @@ function M.run(kind, hooks)
   local win = vim.api.nvim_get_current_win()
   local clients = vim.lsp.get_clients({ bufnr = buf, method = def.prepare })
   if #clients == 0 then return warn(("no language server attached to this buffer supports %s"):format(def.prepare)) end
+  ensure_hooks()
   cancel_pending()
   state.gen = state.gen + 1
   local gen = state.gen
+  local epoch0 = epoch
   local root = vim.uv.cwd()
   local rows, left, done, names, enc = {}, 0, false, {}, nil
   local timer
@@ -214,39 +265,60 @@ function M.run(kind, hooks)
   end))
 
   left = #clients -- prepare requests; each prepared item adds one more below
-  for _, client in ipairs(clients) do
-    local params = vim.lsp.util.make_position_params(win, client.offset_encoding)
-    local ok, id = client:request(def.prepare, params, function(err, items)
-      if not alive() then return end
-      if err then warn(def.prepare .. ": " .. tostring(err.message or err)); return step() end
-      if not items or #items == 0 then return step() end
-      enc = enc or client.offset_encoding
-      names[#names + 1] = def.type and items[1].name or (items[1].name:gsub("%(.*$", ""))
-      left = left + #items
-      for _, item in ipairs(items) do
+  local function on_items(client, items)
+    if not items or #items == 0 then return step() end
+    enc = enc or client.offset_encoding
+    names[#names + 1] = def.type and items[1].name or (items[1].name:gsub("%(.*$", ""))
+    left = left + #items
+    for _, item in ipairs(items) do
+      local ikey = item_key(def, item)
+      local hit = cache_get(ikey)
+      if hit then
+        for _, r in ipairs(hit) do rows[#rows + 1] = r end
+        step()
+      else
         local ok2, id2 = client:request(def.method, { item = item }, function(err2, res)
           if not alive() then return end
+          local mine = {}
           if err2 then
             warn(def.method .. ": " .. tostring(err2.message or err2))
           else
             for _, r in ipairs(res or {}) do
               if def.type then
-                rows[#rows + 1] = M.row(r, { root = root })
+                mine[#mine + 1] = M.row(r, { root = root })
               else
                 local target = r[def.field]
                 if target then
-                  rows[#rows + 1] = M.row(target, { calls = true, root = root, ranges = r.fromRanges, sites_in_item = kind == "incoming" })
+                  mine[#mine + 1] = M.row(target, { calls = true, root = root, ranges = r.fromRanges, sites_in_item = kind == "incoming" })
                 end
               end
             end
+            if epoch == epoch0 then cache_put(ikey, mine) end
           end
+          for _, r in ipairs(mine) do rows[#rows + 1] = r end
           step()
         end, buf)
         if ok2 then track(client, id2) else step() end
       end
-      step() -- this prepare request is answered
-    end, buf)
-    if ok then track(client, id) else step() end
+    end
+    step() -- this prepare answer is handled
+  end
+  local tick = vim.api.nvim_buf_get_changedtick(buf)
+  for _, client in ipairs(clients) do
+    local params = vim.lsp.util.make_position_params(win, client.offset_encoding)
+    local pkey = vim.json.encode({ def.prepare, buf, tick, params.position, client.id })
+    local phit = cache_get(pkey)
+    if phit then
+      on_items(client, phit)
+    else
+      local ok, id = client:request(def.prepare, params, function(err, items)
+        if not alive() then return end
+        if err then warn(def.prepare .. ": " .. tostring(err.message or err)); return step() end
+        if epoch == epoch0 and items then cache_put(pkey, items) end
+        on_items(client, items)
+      end, buf)
+      if ok then track(client, id) else step() end
+    end
   end
   return function() if alive() then done = true; cancel_pending() end end
 end
