@@ -122,9 +122,10 @@ do
   for i, m in ipairs(meta) do if m.kind == "test" then first_test = i; break end end
   local detail = false
   for i, m in ipairs(meta) do if m.kind == "detail" or m.kind == "frame" then detail = true end end
-  rep("render_collapsed", lines[2] == "1 passed, 1 failed, 1 skipped in 250 ms" and #rows == 3 and lines[first_test]:find("PriceCalculatorFailingTest.bad", 1, true)
-    and lines[first_test]:find("✗", 1, true) and lines[first_test]:find("12 ms", 1, true) and not detail
-    and lines[first_test + 1]:find("PriceCalculatorTest.ok", 1, true),
+  rep("render_collapsed", lines[2] == "1 passed, 1 failed, 1 skipped in 250 ms" and #rows == 3 and lines[first_test]:find("bad", 1, true)
+    and lines[first_test - 1]:find("PriceCalculatorFailingTest", 1, true) and lines[first_test]:find("✗", 1, true)
+    and lines[first_test]:find("12 ms", 1, true) and not detail
+    and lines[first_test + 1]:find("PriceCalculatorTest", 1, true) and lines[first_test + 2]:find("ok", 1, true),
     table.concat(vim.list_slice(lines, 1, 8), " / "))
 end
 
@@ -169,6 +170,191 @@ do
     and a.state == "skipped" and a.aborted == true and p.runtime_ms == 123 and p.done,
     ("slow: %s %.0f ms output %s; orphans %d; boom: %s error=%s; assume: %s aborted=%s; runtime %s"):format(s.state, s.ms or -1,
       s.output and table.concat(s.output, "|") or "none", #p.orphan, b.state, tostring(b.is_error), a.state, tostring(a.aborted), tostring(p.runtime_ms)))
+end
+
+-- tree_classes
+do
+  local m = { tests = {
+    t("a1", "passed", 1, { class = "demo.B", method = "a1" }), t("a2", "passed", 1, { class = "demo.B", method = "a2" }),
+    t("b1", "passed", 1, { class = "demo.A", method = "b1" }), t("b2", "failed", 1, { class = "demo.A", method = "b2" }),
+  } }
+  local lines, meta = tr.render(m, {})
+  local classes, tests_rows = {}, 0
+  for i, mm in ipairs(meta) do
+    if mm.kind == "class" then classes[#classes + 1] = i end
+    if mm.kind == "test" then tests_rows = tests_rows + 1 end
+  end
+  local folded_lines, folded_meta = tr.render(m, {}, { ["c:demo.A"] = true })
+  local ft = 0
+  for _, mm in ipairs(folded_meta) do if mm.kind == "test" then ft = ft + 1 end end
+  rep("tree_classes", #classes == 2 and tests_rows == 4 and lines[classes[1]]:find("^▾ ✗ demo.A   %(1 passed, 1 failed%)") ~= nil
+    and lines[classes[2]]:find("^▾ ✓ demo.B   %(2 passed%)") ~= nil and lines[classes[1] + 1]:find("^  ▸ ✗ b2") ~= nil
+    and lines[classes[1] + 2]:find("^  ▸ ✓ b1") ~= nil and meta[classes[1]].id == "c:demo.A"
+    and ft == 2 and folded_lines[classes[1]]:find("^▸ ✗ demo.A") ~= nil,
+    ("class rows %d; %s | %s; failing class first, its failed test first; folding demo.A leaves %d test rows"):format(#classes,
+      lines[classes[1]] or "-", lines[classes[2]] or "-", ft))
+end
+
+-- tree_params: a parameterized method is a group row (counts) with its invocations under it, a plain method is not
+do
+  local C = "demo.P"
+  local m = { tests = {
+    t("one", "passed", 1, { class = C, method = "plain" }),
+    t("p1", "passed", 1, { class = C, method = "param", invocation = true, display = "[1] a" }),
+    t("p2", "failed", 1, { class = C, method = "param", invocation = true, display = "[2] b" }),
+    t("p3", "passed", 1, { class = C, method = "param", invocation = true, display = "[3] c" }),
+    t("q1", "passed", 1, { class = C, method = "single", invocation = true, display = "[1] only" }),
+  } }
+  local lines, meta = tr.render(m, {})
+  local rows = {}
+  for i, mm in ipairs(meta) do if mm.kind == "method" or mm.kind == "test" then rows[#rows + 1] = i end end
+  local mrows = vim.tbl_filter(function(i) return meta[i].kind == "method" end, rows)
+  local fl, fm = tr.render(m, {}, { ["m:demo.P#param"] = true })
+  local ft = 0
+  for _, mm in ipairs(fm) do if mm.kind == "test" then ft = ft + 1 end end
+  local nm = #mrows
+  mrows[1], mrows[2] = mrows[1] or 1, mrows[2] or 1 -- a missing group row fails the case below, it does not crash the check
+  rep("tree_params", nm == 2 and lines[mrows[1]]:find("^  ▾ ✗ param   %(2 passed, 1 failed%)") ~= nil
+    and lines[mrows[1] + 1]:find("^    ▸ ✗ %[2%] b") ~= nil and lines[mrows[1] + 2]:find("^    ▸ ✓ %[1%] a") ~= nil
+    and lines[mrows[2]]:find("^  ▾ ✓ single") ~= nil and lines[mrows[2] + 1]:find("^    ▸ ✓ %[1%] only") ~= nil
+    and meta[mrows[1]].method == "param" and #meta[mrows[1]].tests == 3 and ft == 2 and lines[mrows[1]]:find("^  ▸") ~= nil == false,
+    ("method rows %d: %s | %s; folding param leaves %d test rows (the plain test and single's invocation)"):format(#mrows, lines[mrows[1]] or "-",
+      lines[mrows[1] + 1] or "-", ft))
+end
+
+-- states_pending: running and not run are states of their own (marks, counts, summary), never counted as results
+do
+  local m = { tests = { t("a", "passed", 2), t("b", "running"), t("c", "notrun"), t("d", "notrun") } }
+  local lines = tr.render(m, {})
+  local c = tr.counts(m)
+  rep("states_pending", c.running == 1 and c.notrun == 2 and c.passed == 1 and c.failed == 0
+    and tr.summary(m) == "1 passed, 0 failed, 0 skipped, 1 running, 2 not run in 2 ms"
+    and lines[5]:find("^▶ demo.A   %(1 passed, 1 running, 2 not run%)") == nil and lines[5]:find("^▾ ▶ demo.A   %(1 passed, 1 running, 2 not run%)") ~= nil
+    and lines[7]:find("^  ▸ ▶ b   running") ~= nil and lines[8]:find("^  ▸ · c   not run") ~= nil
+    and tr.summary({ tests = { t("a", "passed") }, ms = 5 }):find("running") == nil,
+    lines[2] .. " | " .. (lines[5] or "-") .. " | " .. (lines[7] or "-") .. " | " .. (lines[8] or "-"))
+end
+
+-- seed_tsttree: the tree is known from %TSTTREE before any test reports; a started test is running; a run that ends with tests
+-- that never finished shows them as not run; none of these are counted as results
+do
+  local tests = require("nv4j.tests")
+  local p = tests._new_parser()
+  p.feed("%TESTC  4 v2\n%TSTTREE1,demo.X,true,4,false,-1,X,,\n%TSTTREE2,one(demo.X),false,1,false,1,one(),,\n")
+  p.feed("%TSTTREE3,two(demo.X),false,1,false,1,two(),,\n%TSTTREE4,par(demo.X),true,2,false,1,par(),,\n")
+  p.feed("%TSTTREE5,par(int)[1](demo.X),false,1,true,4,[1] 1,,\n")
+  local r0 = tests._collect({ p }, { files = {}, roots = {}, methods = {}, classes = {} }, true)
+  local seeded_ok = #r0.tests == 0 and #r0.notrun == 3 and r0.passed == 0 and r0.notrun[1].state == "notrun" and r0.notrun[1].class == "demo.X"
+    and r0.notrun[1].method == "one" and r0.notrun[3].invocation == true and r0.notrun[3].method == "par"
+  p.feed("%TESTS  2,one(demo.X)\n")
+  local r1 = tests._collect({ p }, { files = {}, roots = {}, methods = {}, classes = {} }, true)
+  local running_ok = #r1.notrun == 3 and r1.notrun[1].state == "running" and r1.notrun[1].method == "one" and r1.notrun[2].state == "notrun"
+  p.feed("%TESTE  2,one(demo.X)\n%TESTS  3,two(demo.X)\n")
+  local r2 = tests._collect({ p }, { files = {}, roots = {}, methods = {}, classes = {} }, false) -- the run ended: two never finished
+  local ended_ok = r2.passed == 1 and #r2.tests == 1 and #r2.notrun == 2 and r2.notrun[1].state == "notrun" and r2.notrun[2].state == "notrun"
+  rep("seed_tsttree", seeded_ok and running_ok and ended_ok,
+    ("seeded: %d results, %d not run (first %s); one started: %d pending, first %s; ended with two unfinished: passed %d, not run %d (%s)"):format(
+      #r0.tests, #r0.notrun, r0.notrun[1] and r0.notrun[1].state or "-", #r1.notrun, r1.notrun[1] and r1.notrun[1].state or "-", r2.passed,
+      #r2.notrun, r2.notrun[1] and r2.notrun[1].state or "-"))
+end
+
+-- ui helpers for the view cases: a live source whose model is a function of a counter
+local ui = require("nv4j.testresultsui")
+local function open_view(root)
+  vim.cmd("only")
+  tr.clear()
+  ui._state.expanded, ui._state.folded, ui._state.last_draw, ui._state.root = {}, {}, nil, nil
+  ui.min_ms = 100
+  return root
+end
+local function close_view() if ui._state.win and vim.api.nvim_win_is_valid(ui._state.win) then ui.close() end end
+
+-- throttle: 200 events in about a second redraw at most ~10 times, the model is built per redraw (not per event), nothing is built
+-- while the view is closed, the last event is drawn
+do
+  open_view("/thr")
+  local builds, n = 0, 0
+  local function model() builds = builds + 1; return { label = "n=" .. n, tests = { t("a", "running"), t("b", "notrun") } } end
+  tr.set_live_source("/thr", model)
+  for _ = 1, 50 do n = n + 1; ui.request() end
+  local closed_builds = builds
+  ui.open()
+  local d0, b0 = ui._draws, builds
+  local t0 = vim.uv.now()
+  for _ = 1, 200 do
+    n = n + 1
+    ui.request()
+    vim.wait(5)
+  end
+  local ms = vim.uv.now() - t0
+  vim.wait(250) -- the trailing redraw
+  local drawn = ui._draws - d0
+  local last = (vim.api.nvim_buf_get_lines(ui._state.buf, 0, 1, false)[1] or "")
+  rep("throttle", closed_builds == 0 and drawn >= 4 and drawn <= (ms / 100) + 3 and builds - b0 == drawn and last:find("n=" .. n, 1, true) ~= nil,
+    ("view closed: %d builds for 50 events; open: 200 events in %d ms = %d redraws, %d builds; last drawn: %s"):format(closed_builds, ms, drawn,
+      builds - b0, last))
+  close_view()
+  tr.clear()
+end
+
+-- cursor_first_failure: the cursor goes to the first failed test once, only if the user has not moved it
+do
+  open_view("/cur")
+  local state = { failed = false, second = false }
+  local function model()
+    local x = { t("a", "passed", 1, { class = "demo.C", method = "a" }), t("b", "running", nil, { class = "demo.C", method = "b" }),
+      t("c", "notrun", nil, { class = "demo.C", method = "c" }) }
+    if state.failed then x[2] = t("b", "failed", 3, { class = "demo.C", method = "b" }) end
+    if state.second then x[#x + 1] = t("z", "failed", 3, { class = "demo.Z", method = "z" }) end
+    return { label = "cur", tests = x }
+  end
+  tr.set_live_source("/cur", model)
+  ui.open()
+  local function cur_text() return vim.api.nvim_buf_get_lines(0, vim.api.nvim_win_get_cursor(0)[1] - 1, vim.api.nvim_win_get_cursor(0)[1], false)[1] end
+  local at_open = cur_text()
+  state.failed = true
+  ui.flush()
+  local at_fail = cur_text()
+  state.second = true -- a second failing class sorts first: the cursor stays on the first failure it was placed on
+  ui.flush()
+  local at_second = cur_text()
+  close_view()
+  -- the user moved the cursor: a failure arriving later does not take it
+  open_view("/cur2")
+  state.failed, state.second = false, false
+  tr.set_live_source("/cur2", model)
+  ui.open()
+  vim.api.nvim_win_set_cursor(0, { 8, 0 }) -- the "c" row, moved by the user
+  state.failed = true
+  ui.flush()
+  local moved = cur_text()
+  rep("cursor_first_failure", at_open:find("demo.C", 1, true) ~= nil and at_fail:find("✗ b", 1, true) ~= nil and at_second:find("✗ b", 1, true) ~= nil
+    and moved:find("· c", 1, true) ~= nil,
+    ("open (no failure): '%s'; failure arrives: '%s'; a second failure: '%s'; user moved to c, failure arrives: '%s'"):format(at_open, at_fail,
+      at_second, moved))
+  close_view()
+  tr.clear()
+end
+
+-- rerun_class_level: a class-level failure (setup error, no leaf) is rerun as its class; R lists it once and not the failed methods
+-- of that class; once the class ran again its stale class-level entry is gone
+do
+  local S, T = "demo.S", "demo.T"
+  local function class_level(c) local x = t(c, "failed", nil, { class = c, name = c }); x.method = nil; return x end
+  local old = { tests = { class_level(S), t("s#m", "failed", 1, { class = S, method = "m" }),
+    t("t#x", "failed", 1, { class = T, method = "x" }), t("t#y", "passed", 1, { class = T, method = "y" }) } }
+  local set = tr.rerun_set(old)
+  local keys = {}
+  for _, x in ipairs(set) do keys[#keys + 1] = x.key end
+  table.sort(keys)
+  local after = tr.merge(old, { tests = { t("s#a", "passed", 1, { class = S, method = "a" }) } }, {})
+  local still = tr.merge(old, { tests = { class_level(S) } }, {})
+  local ak = {}
+  for _, x in ipairs(after.tests) do ak[#ak + 1] = x.key end
+  local sk = 0
+  for _, x in ipairs(still.tests) do if x.key == "demo.S" then sk = sk + 1 end end
+  rep("rerun_class_level", table.concat(keys, ",") == "demo.S,t#x" and table.concat(ak, ",") == "s#m,t#x,t#y,s#a" and sk == 1 and #still.tests == 4,
+    ("R reruns %s; after the class ran again: %s; class error again: %d entry"):format(table.concat(keys, ","), table.concat(ak, ","), sk))
 end
 
 -- store
