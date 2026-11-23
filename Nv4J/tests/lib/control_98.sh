@@ -20,6 +20,12 @@
 #   noclosecancel closing the loading picker keeps the request -> live_loading_close (full)
 #   notimeout 15 s timer never fires              -> timeout_slow (pure), live_timeout (full)
 #   nokeyclient item cache key without the client -> several_stub (pure), live_two_clients (full)
+#   nopf      prefetch does nothing               -> prefetch_stub, live_prefetch (full)
+#   noword    prefetch for any word               -> prefetch_gates
+#   noslot    several prefetches in flight        -> prefetch_gates
+#   nobusy    prefetch while jdt.ls is busy       -> prefetch_gates
+#   nopfepoch prefetch answer stored across invalidation -> prefetch_epoch
+#   noaucmd   the CursorHold autocmd never calls it -> live_prefetch (full; config/keymaps.lua)
 #   oneclient only the first client is asked      -> several_stub
 set -u
 HERE="$(cd "$(dirname "$0")/.." && pwd)"; SRC="$HERE/../nvim/lua"
@@ -43,16 +49,22 @@ spec() { case "$1" in
   notimeout) echo 'nv4j/hierarchy.lua|s/timer:start\(M\.TIMEOUT_MS/timer:start(1e9/|timeout_slow live_timeout' ;;
   nokeyclient) echo 'nv4j/hierarchy.lua|s/client and client\.id or 0/0/|several_stub live_two_clients' ;;
   oneclient) echo 'nv4j/hierarchy.lua|s/for _, client in ipairs\(clients\) do\n    local params/for _, client in ipairs({ clients[1] }) do\n    local params/|several_stub' ;;
+  nopf) echo 'nv4j/hierarchy.lua|s/if vim\.g\.nv4j_hierarchy_prefetch == false or vim\.fn\.mode\(\) ~= "n" then return end/if true then return end/|prefetch_stub live_prefetch' ;;
+  noword) echo 'nv4j/hierarchy.lua|s/if not vim\.fn\.expand\("<cword>"\):match\("\^%u"\) then return end//|prefetch_gates' ;;
+  noslot) echo 'nv4j/hierarchy.lua|s/if pf_since and \(vim\.uv\.hrtime\(\) - pf_since\) \/ 1e6 < M\.PREFETCH_EXPIRE_MS then return end//|prefetch_gates' ;;
+  nobusy) echo 'nv4j/hierarchy.lua|s/if busy:find\("Build"\) or/if false and busy:find("Build") or/|prefetch_gates' ;;
+  nopfepoch) echo 'nv4j/hierarchy.lua|s/if not err and epoch == epoch0 then\n            local c0/if not err then\n            local c0/|prefetch_epoch' ;;
+  noaucmd) echo 'config/keymaps.lua|s/if vim\.bo\[a\.buf\]\.filetype == "java" then require/if false then require/|live_prefetch' ;;
   badprog) echo 'nv4j/hierarchy.lua|s/if t and \(t:find\("Build"\)[^\n]*then M/if t then M/|cache_invalidate' ;;
 esac; }
-P=("$@"); [ ${#P[@]} -gt 0 ] || P=(sortrev firstsite nosel nopkg stale keys nilpath live nocache noinval noepoch nolru badprog noload nocancel noclosecancel notimeout nokeyclient oneclient); rc=0
+P=("$@"); [ ${#P[@]} -gt 0 ] || P=(sortrev firstsite nosel nopkg stale keys nilpath live nocache noinval noepoch nolru badprog noload nocancel noclosecancel notimeout nokeyclient oneclient nopf noword noslot nobusy nopfepoch noaucmd); rc=0
 for p in "${P[@]}"; do
   IFS='|' read -r file expr case <<<"$(spec "$p")"
   F="$SRC/$file"; BAK="$(mktemp /tmp/nv4j/ctl98.XXXXXX)"; cp "$F" "$BAK"
   perl -0pi -e "$expr" "$F"
   if cmp -s "$BAK" "$F"; then echo "CONTROL $p: patch changed nothing"; rm -f "$BAK"; rc=1; continue; fi
   log=/tmp/nv4j/logs/control-98-$p.log; rm -f "$log"
-  case "$p" in live|nilpath|noload|noclosecancel|notimeout|nokeyclient) full=1 ;; *) full=0 ;; esac
+  case "$p" in live|nilpath|noload|noclosecancel|notimeout|nokeyclient|nopf|noaucmd) full=1 ;; *) full=0 ;; esac
   if [ $full = 1 ]; then NV4J_LOG="$log" "$HERE/lib/run1.sh" 98_hierarchy >/dev/null 2>&1
   else NV4J_98_UNIT=1 NV4J_LOG="$log" "$HERE/lib/run1.sh" 98_hierarchy >/dev/null 2>&1; fi
   cp "$BAK" "$F"

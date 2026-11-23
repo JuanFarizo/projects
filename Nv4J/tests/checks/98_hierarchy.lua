@@ -418,6 +418,85 @@ do
   H.invalidate()
 end
 
+-- prefetch (CursorHold, stub client): a type name under the cursor fills the level-1 cache quietly; the next press sends nothing.
+-- Gates: lowercase word, insert mode, jdt.ls busy, switched off, one in flight, a run in flight; an invalidation in between.
+do
+  local fake = { offset_encoding = "utf-16", name = "stub", id = 21, reqs = {}, answers = {} }
+  function fake:cancel_request() end
+  function fake:request(method, params, cb)
+    self.reqs[#self.reqs + 1] = method
+    local n = #self.reqs
+    self.answers[n] = function(res, err) cb(err, res) end
+    return true, n
+  end
+  local orig_get, orig_pos, orig_mode, orig_status = vim.lsp.get_clients, vim.lsp.util.make_position_params, vim.fn.mode, vim.lsp.status
+  vim.lsp.get_clients = function() return { fake } end
+  vim.lsp.util.make_position_params = function() return { textDocument = { uri = "file:///x" }, position = { line = 0, character = 0 } } end
+  local function items(names) local t = {}; for _, n in ipairs(names) do t[#t + 1] = { name = n, kind = 5, detail = "p", uri = U(n .. ".java"), range = rng(0, 0, 0, 1), selectionRange = rng(0, 0, 0, 1) } end return t end
+  local b = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_set_current_buf(b)
+  vim.api.nvim_buf_set_lines(b, 0, -1, false, { "Shape shape" })
+  local function fresh() fake.reqs, fake.answers = {}, {}; H.invalidate("pf") end
+  local function fa(i, ...) if fake.answers[i] then fake.answers[i](...) end end -- a gate that failed to hold leaves other requests
+  local function at(col) vim.api.nvim_win_set_cursor(0, { 1, col }) end
+
+  -- prefetch_stub
+  fresh(); at(1)
+  local s0 = H.stats.prefetch_requests
+  H.prefetch()
+  local after_call = #fake.reqs
+  fa(1, items({ "Shape" }))
+  local after_prepare = vim.deepcopy(fake.reqs)
+  fa(2, items({ "Zed", "alpha" }))
+  local size = H.cache_size()
+  local got
+  fake.reqs, fake.answers = {}, {}
+  H.run("subtypes", { on_rows = function(rows) got = rows end })
+  local sent_by_press = #fake.reqs
+  H.prefetch() -- again at the same position: the cache answers, nothing is sent
+  local sent_by_repeat = #fake.reqs
+  rep("prefetch_stub", after_call == 1 and #after_prepare == 2 and after_prepare[2] == "typeHierarchy/subtypes" and size == 2 and sent_by_press == 0
+    and got and #got == 2 and got[1].name == "alpha" and sent_by_repeat == 0 and H.stats.prefetch_requests - s0 == 2,
+    ("prefetch sent %d then %s, cache %d, press after it sent %d requests (rows %d), repeat prefetch sent %d, stats requests +%d"):format(
+      after_call, vim.inspect(after_prepare), size, sent_by_press, got and #got or -1, sent_by_repeat, H.stats.prefetch_requests - s0))
+
+  -- prefetch_gates: each gate sends nothing
+  local bad = {}
+  local function gate(name, f)
+    fresh(); at(1)
+    f()
+    H.prefetch()
+    if #fake.reqs ~= 0 then bad[#bad + 1] = name .. " sent " .. #fake.reqs end
+  end
+  gate("lowercase word", function() at(7) end)
+  gate("insert mode", function() vim.fn.mode = function() return "i" end end); vim.fn.mode = orig_mode
+  gate("jdt.ls busy", function() vim.lsp.status = function() return "jdtls: 45% Building workspace" end end); vim.lsp.status = orig_status
+  gate("switched off", function() vim.g.nv4j_hierarchy_prefetch = false end); vim.g.nv4j_hierarchy_prefetch = nil
+  fresh(); at(1)
+  H.prefetch(); H.prefetch() -- the first one is still waiting for its answer
+  if #fake.reqs ~= 1 then bad[#bad + 1] = "second call while one in flight sent " .. (#fake.reqs - 1) end
+  fa(1, items({ "Shape" })); fa(2, items({ "A" })) -- frees the slot
+  fresh(); at(1)
+  H.run("subtypes", { on_rows = function() end })
+  local n_run = #fake.reqs
+  H.prefetch()
+  if #fake.reqs ~= n_run then bad[#bad + 1] = "prefetch during a run sent " .. (#fake.reqs - n_run) end
+  fa(1, items({ "Shape" })); fa(2, items({ "A" }))
+  rep("prefetch_gates", #bad == 0, #bad == 0 and "lowercase word, insert mode, jdt.ls busy, switched off, one in flight, a run in flight: nothing sent" or table.concat(bad, "; "))
+
+  -- prefetch_epoch: an edit (invalidation) between the request and its answer: not stored
+  fresh(); at(1)
+  vim.wait(1)
+  H.prefetch()
+  fa(1, items({ "Shape" }))
+  vim.api.nvim_exec_autocmds("LspNotify", { data = { method = "textDocument/didChange" }, modeline = false })
+  fa(2, items({ "A" }))
+  rep("prefetch_epoch", H.cache_size() == 0, "entries after an answer that crossed an invalidation: " .. H.cache_size())
+
+  vim.lsp.get_clients, vim.lsp.util.make_position_params, vim.fn.mode, vim.lsp.status = orig_get, orig_pos, orig_mode, orig_status
+  H.invalidate("pf end")
+end
+
 if not unit_only then
   local root = "/tmp/nv4j/d98-" .. vim.fn.getpid()
   vim.fn.delete(root, "rf")
@@ -731,6 +810,40 @@ if not unit_only then
       if fake then pcall(function() fake:stop(true) end) end
       rep("live_two_clients", n_clients == 2 and tw ~= nil and nm(tw.rows) == "Circle,Square,Zeta,ZFake" and prep_c == 1 and sub_c == 1,
         ("clients supporting prepare %d, rows %s, fake server asked prepare x%d subtypes x%d"):format(n_clients, tw and nm(tw.rows) or "nil", prep_c, sub_c))
+
+      -- live_prefetch: the CursorHold autocmd (the config's own) on `Shape` fills the cache with the real jdt.ls answers; the next
+      -- <leader>cS press then sends nothing and its rows come at once; cursor on a lowercase word sends nothing
+      vim.cmd("edit " .. vim.fn.fnameescape(Shape))
+      H.invalidate("live_prefetch")
+      H.LOADING_MS = 1e9
+      local sent_pf, o_req2 = {}, client.request
+      client.request = function(self, method, ...)
+        if method:find("^typeHierarchy/") or method:find("prepareTypeHierarchy", 1, true) then sent_pf[#sent_pf + 1] = method end
+        return o_req2(self, method, ...)
+      end
+      local dbg_status = vim.lsp.status()
+      local hooks_found = #vim.api.nvim_get_autocmds({ group = "nv4j_hierarchy_prefetch", event = "CursorHold" })
+      vim.api.nvim_win_set_cursor(0, { 1, 2 }) -- "package": lowercase, no prefetch
+      vim.api.nvim_exec_autocmds("CursorHold", { buffer = 0, modeline = false })
+      local sent_lower = #sent_pf
+      vim.api.nvim_win_set_cursor(0, { 3, 20 })
+      local s0 = H.stats.prefetch_ms
+      -- jdt.ls may still report a build / refresh job (the gate waits for it): fire CursorHold again like an idle user until it goes
+      local filled, tries = false, 0
+      while not filled and tries < 100 do
+        if #sent_pf == 0 then vim.api.nvim_exec_autocmds("CursorHold", { buffer = 0, modeline = false }) end
+        filled = vim.wait(200, function() return H.cache_size() == 2 end, 10)
+        tries = tries + 1
+      end
+      local sent_by_prefetch = #sent_pf
+      sent_pf = {}
+      local t_press = vim.uv.hrtime()
+      local pg = collect("subtypes", 3, 20)
+      local ms_press = (vim.uv.hrtime() - t_press) / 1e6
+      client.request = o_req2
+      rep("live_prefetch", hooks_found == 1 and sent_lower == 0 and filled and sent_by_prefetch == 2 and #sent_pf == 0 and pg ~= nil and nm(pg.rows) == "Circle,Square,Zeta",
+        ("CursorHold autocmds %d; lowercase word sent %d; type name: %d requests, cache filled=%s (main-thread cost of the prefetch %.2f ms; lsp status %q mode %s cword %s); press after it: %d requests, rows %s in %.1f ms"):format(
+          hooks_found, sent_lower, sent_by_prefetch, tostring(filled), H.stats.prefetch_ms - s0, dbg_status, vim.fn.mode(), vim.fn.expand("<cword>"), #sent_pf, pg and nm(pg.rows) or "nil", ms_press))
       H.invalidate("end")
     end
   end

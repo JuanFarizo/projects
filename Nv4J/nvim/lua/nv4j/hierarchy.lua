@@ -196,6 +196,22 @@ local function ensure_hooks()
   vim.api.nvim_create_autocmd({ "LspAttach", "LspDetach" }, { group = g, callback = function(a) M.invalidate(a.event) end })
 end
 
+-- LSP answer of a hierarchy request -> display rows (type items, or the callers / callees of a call item).
+local function build_rows(def, kind, res, root)
+  local mine = {}
+  for _, r in ipairs(res or {}) do
+    if def.type then
+      mine[#mine + 1] = M.row(r, { root = root })
+    else
+      local target = r[def.field]
+      if target then
+        mine[#mine + 1] = M.row(target, { calls = true, root = root, ranges = r.fromRanges, sites_in_item = kind == "incoming" })
+      end
+    end
+  end
+  return mine
+end
+
 local function cancel_pending()
   if state.stop then state.stop(); state.stop = nil end
   for _, p in ipairs(state.pending) do pcall(function() p.client:cancel_request(p.id) end) end
@@ -321,16 +337,7 @@ function M.run(kind, hooks)
           if err2 then
             warn(def.method .. ": " .. tostring(err2.message or err2))
           else
-            for _, r in ipairs(res or {}) do
-              if def.type then
-                mine[#mine + 1] = M.row(r, { root = root })
-              else
-                local target = r[def.field]
-                if target then
-                  mine[#mine + 1] = M.row(target, { calls = true, root = root, ranges = r.fromRanges, sites_in_item = kind == "incoming" })
-                end
-              end
-            end
+            mine = build_rows(def, kind, res, root)
             if epoch == epoch0 then cache_put(ikey, mine) end
           end
           for _, r in ipairs(mine) do rows[#rows + 1] = r end
@@ -372,6 +379,78 @@ function M.run(kind, hooks)
     end))
   end
   return function() if alive() then done = true; stop_timers(); close_ui(); cancel_pending() end end
+end
+
+-- ── prefetch (CursorHold) ────────────────────────────────────────────────────────────────────
+
+-- Subtypes are the slow request (a workspace hierarchy in jdt.ls: 80 to 280 ms on 1000 classes, 4 s the first time). When the
+-- cursor rests on a type name (CapitalisedWord) in normal mode, ask prepare + subtypes quietly and keep the rows in the level-1
+-- cache, so the next <leader>cS opens at once. Bounded: one prefetch at a time (a lost answer frees the slot after
+-- PREFETCH_EXPIRE_MS), once per position and buffer state (the cache answers a repeat), never while a hierarchy run is in
+-- flight, in insert mode, or while jdt.ls reports a build / import (the status line has it). `vim.g.nv4j_hierarchy_prefetch = false`
+-- turns it off. Measured with jdt.ls (check 98 and the 1000-class bench in the spec): jdt.ls answers completion and hover as fast
+-- during a subtypes request as without one (29 vs 31 ms, 2 vs 3 ms).
+M.PREFETCH_EXPIRE_MS = 20000
+M.stats = { prefetch = 0, prefetch_requests = 0, prefetch_ms = 0 }
+local pf_since
+
+function M.prefetch()
+  if vim.g.nv4j_hierarchy_prefetch == false or vim.fn.mode() ~= "n" then return end
+  if pf_since and (vim.uv.hrtime() - pf_since) / 1e6 < M.PREFETCH_EXPIRE_MS then return end
+  if #state.pending > 0 then return end
+  if not vim.fn.expand("<cword>"):match("^%u") then return end
+  local okb, busy = pcall(vim.lsp.status)
+  busy = okb and busy or ""
+  if busy:find("Build") or busy:find("Import") or busy:find("Refresh") or busy:find("Initializ") or busy:find("Starting") then return end
+  local def = M.KINDS.subtypes
+  local buf, win = vim.api.nvim_get_current_buf(), vim.api.nvim_get_current_win()
+  local clients = vim.lsp.get_clients({ bufnr = buf, method = def.prepare })
+  if #clients == 0 then return end
+  local t0 = vim.uv.hrtime()
+  ensure_hooks()
+  local epoch0, root, tick = epoch, vim.uv.cwd(), vim.api.nvim_buf_get_changedtick(buf)
+  local left = 0
+  local function step()
+    left = left - 1
+    if left <= 0 then pf_since = nil end
+  end
+  local function ask(client, items)
+    for _, item in ipairs(items or {}) do
+      local ikey = item_key(def, item, client)
+      if cache[ikey] == nil then
+        left = left + 1
+        local ok = client:request(def.method, { item = item }, function(err, res)
+          if not err and epoch == epoch0 then
+            local c0 = vim.uv.hrtime()
+            cache_put(ikey, build_rows(def, "subtypes", res, root))
+            M.stats.prefetch_ms = M.stats.prefetch_ms + (vim.uv.hrtime() - c0) / 1e6
+          end
+          step()
+        end, buf)
+        if ok then M.stats.prefetch_requests = M.stats.prefetch_requests + 1 else step() end
+      end
+    end
+  end
+  pf_since = vim.uv.hrtime()
+  for _, client in ipairs(clients) do
+    local params = vim.lsp.util.make_position_params(win, client.offset_encoding)
+    local pkey = vim.json.encode({ def.prepare, buf, tick, params.position, client.id })
+    local phit = cache_get(pkey)
+    if phit then
+      ask(client, phit)
+    else
+      left = left + 1
+      local ok = client:request(def.prepare, params, function(err, items)
+        if not err and items and epoch == epoch0 then cache_put(pkey, items) end
+        if not err and epoch == epoch0 then ask(client, items) end
+        step()
+      end, buf)
+      if ok then M.stats.prefetch_requests = M.stats.prefetch_requests + 1 else step() end
+    end
+  end
+  if left <= 0 then pf_since = nil end
+  M.stats.prefetch = M.stats.prefetch + 1
+  M.stats.prefetch_ms = M.stats.prefetch_ms + (vim.uv.hrtime() - t0) / 1e6
 end
 
 return M

@@ -396,6 +396,14 @@ map("n", "<leader>ci", function() require("nv4j.hierarchy").run("incoming") end,
 -- <leader>co is Organize Imports (LazyVim's jdtls extra, buffer-local in Java buffers); outgoing
 -- calls live on <leader>cO only, so each key means one thing.
 map("n", "<leader>cO", function() require("nv4j.hierarchy").run("outgoing") end, { desc = "Outgoing calls" })
+-- Idle on a type name in a Java buffer: fetch its subtypes quietly into the hierarchy cache (the module loads on the first
+-- such CursorHold, not at startup). Bounded and switchable: vim.g.nv4j_hierarchy_prefetch = false. Spec: hierarchy.md.
+vim.api.nvim_create_autocmd("CursorHold", {
+  group = vim.api.nvim_create_augroup("nv4j_hierarchy_prefetch", { clear = true }),
+  callback = function(a)
+    if vim.bo[a.buf].filetype == "java" then require("nv4j.hierarchy").prefetch() end
+  end,
+})
 
 -- ── Diagnostics / error navigation (VS Code F8 style; LazyVim core already
 -- binds ]d/[d next/prev diagnostic and ]e/[e next/prev error) ──────────────
