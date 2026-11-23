@@ -15,6 +15,12 @@
 #   noepoch   in-flight answer stored anyway      -> cache_inflight
 #   nolru     cache never evicts                  -> cache_lru
 #   badprog   every progress end empties it       -> cache_invalidate (Validate documents case)
+#   noload    loading picker never opens          -> loading_slow (pure), live_loading (full)
+#   nocancel  cancel function does not cancel     -> loading_cancel
+#   noclosecancel closing the loading picker keeps the request -> live_loading_close (full)
+#   notimeout 15 s timer never fires              -> timeout_slow (pure), live_timeout (full)
+#   nokeyclient item cache key without the client -> several_stub (pure), live_two_clients (full)
+#   oneclient only the first client is asked      -> several_stub
 set -u
 HERE="$(cd "$(dirname "$0")/.." && pwd)"; SRC="$HERE/../nvim/lua"
 mkdir -p /tmp/nv4j/logs
@@ -31,16 +37,23 @@ spec() { case "$1" in
   noinval) echo 'nv4j/hierarchy.lua|s/\["textDocument\/didChange"\] = true, //|cache_invalidate' ;;
   noepoch) echo 'nv4j/hierarchy.lua|s/if epoch == epoch0 then cache_put\(ikey, mine\) end/cache_put(ikey, mine)/|cache_inflight' ;;
   nolru) echo 'nv4j/hierarchy.lua|s/while #order > M\.CACHE_MAX do/while false do/|cache_lru' ;;
+  noload) echo 'nv4j/hierarchy.lua|s/ltimer:start\(M\.LOADING_MS/ltimer:start(1e9/|loading_slow live_loading' ;;
+  nocancel) echo 'nv4j/hierarchy.lua|s/close_ui\(\); cancel_pending\(\) end end$/close_ui() end end/m|loading_cancel' ;;
+  noclosecancel) echo 'nv4j/hierarchy.lua|s/ui = nil; if alive\(\) then done = true; stop_timers\(\); cancel_pending\(\) end end/ui = nil; if alive() then done = true; stop_timers() end end/|live_loading_close' ;;
+  notimeout) echo 'nv4j/hierarchy.lua|s/timer:start\(M\.TIMEOUT_MS/timer:start(1e9/|timeout_slow live_timeout' ;;
+  nokeyclient) echo 'nv4j/hierarchy.lua|s/client and client\.id or 0/0/|several_stub live_two_clients' ;;
+  oneclient) echo 'nv4j/hierarchy.lua|s/for _, client in ipairs\(clients\) do\n    local params/for _, client in ipairs({ clients[1] }) do\n    local params/|several_stub' ;;
   badprog) echo 'nv4j/hierarchy.lua|s/if t and \(t:find\("Build"\)[^\n]*then M/if t then M/|cache_invalidate' ;;
 esac; }
-P=("$@"); [ ${#P[@]} -gt 0 ] || P=(sortrev firstsite nosel nopkg stale keys nilpath live nocache noinval noepoch nolru badprog); rc=0
+P=("$@"); [ ${#P[@]} -gt 0 ] || P=(sortrev firstsite nosel nopkg stale keys nilpath live nocache noinval noepoch nolru badprog noload nocancel noclosecancel notimeout nokeyclient oneclient); rc=0
 for p in "${P[@]}"; do
   IFS='|' read -r file expr case <<<"$(spec "$p")"
   F="$SRC/$file"; BAK="$(mktemp /tmp/nv4j/ctl98.XXXXXX)"; cp "$F" "$BAK"
   perl -0pi -e "$expr" "$F"
   if cmp -s "$BAK" "$F"; then echo "CONTROL $p: patch changed nothing"; rm -f "$BAK"; rc=1; continue; fi
   log=/tmp/nv4j/logs/control-98-$p.log; rm -f "$log"
-  if [ "$p" = live ] || [ "$p" = nilpath ]; then NV4J_LOG="$log" "$HERE/lib/run1.sh" 98_hierarchy >/dev/null 2>&1
+  case "$p" in live|nilpath|noload|noclosecancel|notimeout|nokeyclient) full=1 ;; *) full=0 ;; esac
+  if [ $full = 1 ]; then NV4J_LOG="$log" "$HERE/lib/run1.sh" 98_hierarchy >/dev/null 2>&1
   else NV4J_98_UNIT=1 NV4J_LOG="$log" "$HERE/lib/run1.sh" 98_hierarchy >/dev/null 2>&1; fi
   cp "$BAK" "$F"
   v=OK; for c in $case; do grep -q "^FAIL 98_hierarchy\.$c " "$log" || { v="DID NOT FAIL $c"; rc=1; }; done

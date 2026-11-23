@@ -8,6 +8,9 @@
 local M = {}
 
 M.TIMEOUT_MS = 15000
+-- The picker opens with a `loading ...` row when the answer is not there after this many ms (a fast answer opens it directly,
+-- no flicker); the rows replace the row when they arrive, closing the picker cancels the request.
+M.LOADING_MS = 120
 
 -- kind -> { prepare method, hierarchy method, title, empty message }
 M.KINDS = {
@@ -171,8 +174,8 @@ local function cache_put(key, v)
   while #order > M.CACHE_MAX do cache[table.remove(order, 1)] = nil end
 end
 
-local function item_key(def, item)
-  return vim.json.encode({ def.method, item.uri, item.name, item.selectionRange or item.range })
+local function item_key(def, item, client)
+  return vim.json.encode({ def.method, client and client.id or 0, item.uri, item.name, item.selectionRange or item.range })
 end
 
 local INVALIDATING = { ["textDocument/didChange"] = true, ["textDocument/didSave"] = true, ["workspace/didChangeWatchedFiles"] = true }
@@ -201,11 +204,12 @@ end
 
 local function warn(msg) vim.notify("nv4j: " .. msg, vim.log.levels.WARN) end
 
---- Rows -> Telescope picker. `title` is the prompt title; `encoding` the offset encoding for the jump.
+--- Rows -> Telescope picker. `title` is the prompt title; `encoding` the offset encoding for the jump. Returns the picker.
+--- `<CR>` on the placeholder row of a still-loading picker does nothing.
 function M.show(rows, title, encoding)
   local conf = require("telescope.config").values
   local actions, state_a = require("telescope.actions"), require("telescope.actions.state")
-  require("telescope.pickers").new({}, {
+  local picker = require("telescope.pickers").new({}, {
     prompt_title = title,
     finder = require("telescope.finders").new_table({ results = rows, entry_maker = M.entry_maker }),
     sorter = conf.generic_sorter({}),
@@ -213,12 +217,33 @@ function M.show(rows, title, encoding)
     attach_mappings = function(prompt_bufnr)
       actions.select_default:replace(function()
         local cur = state_a.get_selected_entry()
+        if cur and cur.value.loading then return end
         actions.close(prompt_bufnr)
         if cur then M.jump(cur.value, encoding) end
       end)
       return true
     end,
-  }):find()
+  })
+  picker:find()
+  return picker
+end
+
+--- Placeholder row of the picker opened before the answer is there (a row table the entry maker accepts, no jump target).
+local function loading_row() return { name = "loading ...", pkg = "", path = "", kind = 0, sites = 0, loading = true, target = {} } end
+
+--- Replaces the content (rows + title) of a picker opened by M.show; false when it is gone.
+function M.fill(picker, rows, title)
+  if not picker or not picker.prompt_bufnr or not vim.api.nvim_buf_is_valid(picker.prompt_bufnr) then return false end
+  pcall(function() picker.layout.prompt.border:change_title(title) end)
+  picker:refresh(require("telescope.finders").new_table({ results = rows, entry_maker = M.entry_maker }), { reset_prompt = false })
+  return true
+end
+
+--- Closes a picker opened by M.show (no error when it is gone).
+function M.close(picker)
+  if picker and picker.prompt_bufnr and vim.api.nvim_buf_is_valid(picker.prompt_bufnr) then
+    pcall(require("telescope.actions").close, picker.prompt_bufnr)
+  end
 end
 
 --- Starts one hierarchy view for the symbol under the cursor. `kind`: subtypes | supertypes | incoming | outgoing.
@@ -237,31 +262,44 @@ function M.run(kind, hooks)
   local epoch0 = epoch
   local root = vim.uv.cwd()
   local rows, left, done, names, enc = {}, 0, false, {}, nil
-  local timer
+  local timer, ltimer, ui
   local function alive() return gen == state.gen and not done end
+  local function stop_timers()
+    for _, t in ipairs({ timer, ltimer }) do
+      if t and not t:is_closing() then t:stop(); t:close() end
+    end
+  end
+  local function close_ui() local u = ui; ui = nil; if u then M.close(u) end end
   local function finish()
     if not alive() then return end
     done = true
     state.stop = nil
-    if not timer:is_closing() then timer:stop(); timer:close() end
+    stop_timers()
     state.pending = {}
     local what = names[1] or "this symbol"
-    if #rows == 0 then return vim.notify((def.empty):format(what), vim.log.levels.INFO) end
+    if #rows == 0 then close_ui(); return vim.notify((def.empty):format(what), vim.log.levels.INFO) end
     M.sort(rows)
     local title = (def.title):format(what) .. ("  (%d)"):format(#rows)
     if hooks and hooks.on_rows then return hooks.on_rows(rows, title, enc) end
+    if ui then
+      local u = ui
+      ui = nil
+      if M.fill(u, rows, title) then return end
+    end
     M.show(rows, title, enc)
   end
   local function step() left = left - 1; if left <= 0 then finish() end end
   local function track(client, id) if id then state.pending[#state.pending + 1] = { client = client, id = id } end end
 
-  timer = vim.uv.new_timer()
-  state.stop = function() if not timer:is_closing() then timer:stop(); timer:close() end end
+  timer, ltimer = vim.uv.new_timer(), vim.uv.new_timer()
+  state.stop = function() stop_timers(); close_ui() end
   timer:start(M.TIMEOUT_MS, 0, vim.schedule_wrap(function()
     if not alive() then return end
     done = true
+    stop_timers()
+    close_ui()
     cancel_pending()
-    warn(("no answer to %s within %d s"):format(def.method, math.floor(M.TIMEOUT_MS / 1000)))
+    warn(("no answer to %s within %.4g s"):format(def.method, M.TIMEOUT_MS / 1000))
   end))
 
   left = #clients -- prepare requests; each prepared item adds one more below
@@ -271,7 +309,7 @@ function M.run(kind, hooks)
     names[#names + 1] = def.type and items[1].name or (items[1].name:gsub("%(.*$", ""))
     left = left + #items
     for _, item in ipairs(items) do
-      local ikey = item_key(def, item)
+      local ikey = item_key(def, item, client)
       local hit = cache_get(ikey)
       if hit then
         for _, r in ipairs(hit) do rows[#rows + 1] = r end
@@ -320,7 +358,20 @@ function M.run(kind, hooks)
       if ok then track(client, id) else step() end
     end
   end
-  return function() if alive() then done = true; cancel_pending() end end
+  -- Slow answer: open the picker with a placeholder row; finish() fills it. Closing it by hand cancels the request.
+  if alive() then
+    ltimer:start(M.LOADING_MS, 0, vim.schedule_wrap(function()
+      if not alive() or ui then return end
+      local title = (def.title):format(names[1] or "this symbol") .. "  (loading ...)"
+      if hooks and hooks.on_loading then return hooks.on_loading(title) end
+      local picker = M.show({ loading_row() }, title, enc)
+      ui = picker
+      vim.api.nvim_create_autocmd("BufWipeout", { buffer = picker.prompt_bufnr, once = true, callback = function()
+        if ui == picker then ui = nil; if alive() then done = true; stop_timers(); cancel_pending() end end
+      end })
+    end))
+  end
+  return function() if alive() then done = true; stop_timers(); close_ui(); cancel_pending() end end
 end
 
 return M
