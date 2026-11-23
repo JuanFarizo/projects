@@ -8,6 +8,7 @@
 -- (NOT OFFERED is a finding, not a failure). Only UI prompts are stubbed (vim.fn.input / inputlist / ui.input / ui.select).
 -- NV4J_CA_PROBE=1 writes titles + results of every case to /tmp/nv4j/ca91_probe.txt instead of asserting.
 vim.o.confirm = false
+vim.g.nv4j_extract_names = false -- the name picker (check 120) would answer the stubbed vim.ui.select with item 1 and rename; this check pins jdt.ls's own names
 local lsp = require("lsp")
 local E = require("edit")
 local S = vim.diagnostic.severity

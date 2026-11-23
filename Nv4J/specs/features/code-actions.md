@@ -99,3 +99,22 @@ Question: which of text block, class to record, extract interface and the extrac
 ## Multi-select picker (2026-11-21)
 
 nvim-jdtls's `jdtls.ui.pick_many` (override, delegate, toString, hashCode/equals, constructors) was a `vim.fn.input` loop: the user typed numbers. `nv4j/codegen.lua` now replaces it with a loop of `vim.ui.select` (the user's picker): one line per item with `[ ]`/`[x]`, choosing a line toggles it and the list returns, "Done (n selected)" (first line) or Esc finishes. It still blocks and returns the chosen items (nvim-jdtls uses the return value; `vim.wait` until the UI answers, so snacks' asynchronous picker works). `isField` items still start selected. Check `110_pick_many` (10 cases, pure) with controls `tests/lib/control_110.sh` (`noselect`, `oldinput`, `nopre`: each makes its cases FAIL). Check 91 `delegate_methods` and `override_methods` still pass: their stub of `vim.ui.select` replays the same number answers on the checkbox list (`ask.many`); control `NV4J_CA_CONTROL=noinput` still fails both. Unverified: the look and feel in a real snacks picker (no extra terminal was opened).
+
+## Name suggestions after extract (2026-11-23, check `120_extract_names`, `nv4j/extract.lua`)
+
+Finding first: jdt.ls does NOT send alternative names. `java/getRefactorEdit` answers `{ edit, command = java.action.rename { offset, length } }` (the offset of the new name, no linked-mode groups, no list); Introduce Parameter answers `codeAction/resolve` with ONE edit (`int i) {...return i`) and no rename command at all. nvim-jdtls only moves the cursor to the offset. jdt.ls already picks some good names itself (`name` for `p.getName()`, `HELLO_WORLD` for `"hello world"`, `arrayList` for `new ArrayList<String>()`), and `i` / `INT` for number literals and arithmetic.
+
+What Nv4J adds: after the edit, when the new thing is a local variable, constant or parameter, `vim.ui.select` lists up to 5 names built from the expression and the type (`M.suggest`), best first, jdt.ls's own name among them (never dropped), then "Rename...". Choosing one runs the LSP rename on the cursor (the cursor is already on the new name); Esc keeps jdt.ls's name; "Rename..." opens the usual rename prompt. When the only candidate is jdt.ls's name (`2 * 3` -> `INT`, `42` -> `i`) nothing is shown. Hooks: `java.action.rename` of nvim-jdtls (variable, constant: keys `<leader>cxv`, `<leader>cxc` and the `<leader>ca` entries) and the `codeAction/resolve` answer of "Introduce Parameter...". Switch off: `vim.g.nv4j_extract_names = false` (check 91 sets it, its `ui.select` stub would answer item 1). Fields and methods get no picker.
+
+Rules (IntelliJ `JavaNameSuggestionUtil` / Eclipse `StubUtility.getVariableNameSuggestions`, simplified): `x.getFooBar()` / `isFoo()` / `hasFoo()` / `findFoo()` -> `fooBar` / `foo`; other call -> its name; `new Foo<..>()` -> `foo`; a field path -> its last name; string literal -> its words (`HELLO_WORLD` for constants, `helloWorld` otherwise; escapes `\r\n` are not words); type: `List<Foo>` / `Foo[]` -> `foos`, `Foo<..>` -> `foo`, `Map` -> `map`, primitive -> `i l d f b c s` (not for constants). A name already used in the file is skipped (shadowing).
+
+| Expression (type) | Offered (jdt.ls's own name is one of them) |
+|---|---|
+| `p.getName()` (String), variable | `name`, `string` |
+| `new ArrayList<String>()`, variable | `arrayList`, `strings` |
+| `"hello world"`, constant | `HELLO_WORLD`, `STRING` |
+| `Integer.parseInt("5")`, parameter | `parseInt`, `i` |
+| `2 * 3`, constant | no picker (`INT`) |
+| `42`, parameter | no picker (`i`) |
+
+Check `120_extract_names`: 9 pure cases of `M.suggest`, then 8 live cases on one jdt.ls (`/tmp/nv4j/en120`): the key path (`require("nv4j.extract").run(kind, true)`, what `<leader>cxv` / `<leader>cxc` call, marks set from Lua) and "Introduce Parameter" through `vim.lsp.buf.code_action`; `vim.ui.select` is stubbed (records the items, answers a name or Esc); asserted are the exact items and the exact file text after the rename. Controls `tests/lib/control_120.sh`: `off`, `noparam`, `nogetter`, `noconst` each make their cases FAIL. tmux is not installed on this machine, so no key was pressed (the `<leader>cx*` maps are the ones proven by check 100); unverified: the look of the select in a real snacks picker.
