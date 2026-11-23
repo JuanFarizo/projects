@@ -3,9 +3,15 @@ return {
   opts = {
     window = {
       width = 35,
-      mappings = { e = "nv4j_toggle_auto_expand" },
+      mappings = { e = "nv4j_toggle_auto_expand", O = "nv4j_organize_imports" },
     },
     commands = {
+      -- `O`: organize imports in the folder under the cursor (a file: its folder); nv4j/organize.lua says how many files changed.
+      nv4j_organize_imports = function(state)
+        local node = state.tree and state.tree:get_node()
+        if not node or not node.path then return end
+        require("nv4j.organize").run(node.type == "directory" and node.path or vim.fs.dirname(node.path))
+      end,
       -- `e`: neo-tree's toggle_auto_expand_width, but it comes back to the width the window had BEFORE it was switched on.
       -- Neo-tree's own "width before" is overwritten by every render while auto-expand is on (ui/renderer.lua, last_user_width
       -- = current width), so opening folders step by step 35 -> 40 -> 47 -> 54 -> 69 and pressing `e` again gave 54, not 35.

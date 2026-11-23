@@ -387,6 +387,11 @@ map("n", "<C-Down>", goto_definition, { desc = "Go to definition" })
 map("n", "<C-Up>", goto_references, { desc = "Find references (usages)" })
 map("n", "<F12>", goto_definition, { desc = "Go to definition" })
 
+-- ── Organize imports for a folder or the whole project (nv4j/organize.lua, specs/features/organize-imports-dir.md) ──
+-- <leader>cI: the project of this file (in neo-tree: the folder under the cursor); jdt.ls organizes every Java file under it and
+-- a notification says how many files changed. <leader>co stays the single-file action.
+map("n", "<leader>cI", function() require("nv4j.organize").here() end, { desc = "Organize imports in folder/project" })
+
 -- ── Type/call hierarchy (IntelliJ-style, jdt.ls's typeHierarchyProvider/callHierarchyProvider). Neovim 0.12's builtin
 -- vim.lsp.buf.typehierarchy/incoming_calls/outgoing_calls end in the quickfix list (path first, name last); nv4j.hierarchy
 -- shows the same results in a Telescope picker (name first, package/path dimmed, preview, <CR> jumps). Spec: specs/features/hierarchy.md
