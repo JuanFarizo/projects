@@ -175,9 +175,47 @@ local function proximity(cur, pkg)
   return (pkg == want or vim.startswith(pkg, want .. ".")) and 1 or 2
 end
 
+-- Smart `new` (IntelliJ's smart completion offers `new DeclaredType(...)` after `Type x = `; JDT only scores the
+-- exact declared class, and for `= n` it puts the static favourite `nonNull` before the `new` keyword):
+-- `Type x = <prefix>` : the `new` keyword gets NEW_BOOST while the typed prefix is a prefix of "new";
+-- `Type x = new <p>`  : the constructors of the declared type, and for an interface the usual JDK implementation
+--                       (IMPLEMENTATIONS: List -> ArrayList, Map -> HashMap...), get NEW_BOOST.
+-- A blink score offset: it only reorders what the typed prefix already matches.
+local NEW_BOOST = 20
+local NEW_KEYWORD_REL = 3 * 16 -- three JDT relevance steps (sortText = 999999999 - relevance * 16): past the static favourites, not past a local of the expected type
+local IMPLEMENTATIONS = {
+  List = "ArrayList", Collection = "ArrayList", Iterable = "ArrayList", Set = "HashSet", Map = "HashMap",
+  Queue = "ArrayDeque", Deque = "ArrayDeque", SortedMap = "TreeMap", NavigableMap = "TreeMap",
+  SortedSet = "TreeSet", NavigableSet = "TreeSet", ConcurrentMap = "ConcurrentHashMap",
+  BlockingQueue = "LinkedBlockingQueue", CharSequence = "StringBuilder",
+}
+local NOT_A_TYPE = { ["return"] = true, var = true, ["else"] = true, ["throw"] = true, case = true }
+--- Declared type of `Type x = ` / `Type<A, B> x = ` that ends `before` (the line before the keyword), and
+--- whether `new ` is already typed. nil when the line is not a declaration with an initializer.
+function M.declared_type(before)
+  local head = before:match("^(.-)%s*=%s*new%s+$")
+  local has_new = head ~= nil
+  head = head or before:match("^(.-)%s*=%s*$")
+  if not head or head:find("[=!<>+%-*/%%&|^]$") then return nil end
+  local t = head:gsub("%b<>", ""):match("([%a_][%w_]*)%s+[%a_][%w_]*$")
+  if not t or NOT_A_TYPE[t] then return nil end
+  return t, has_new
+end
+
+local function smart_new(it, typ, has_new, typed)
+  if not has_new then
+    return it.kind == Kind.Keyword and it.label == "new" and ("new"):sub(1, #typed) == typed
+  end
+  if it.kind ~= Kind.Constructor then return false end
+  local pkg = it.labelDetails and it.labelDetails.description or it.detail or ""
+  return it.label == typ or (IMPLEMENTATIONS[typ] == it.label and pkg:find("^java%.") ~= nil)
+end
+
 function M.transform_lsp(ctx, items)
   if not is_java(ctx) then return items end
   boost_project_keys(ctx, items)
+  local typ, has_new = M.declared_type(ctx.line:sub(1, ctx.bounds.start_col - 1))
+  local typed = ctx.line:sub(ctx.bounds.start_col, ctx.bounds.start_col + ctx.bounds.length - 1)
   local before = M.char_before_keyword(ctx)
   local bare = before ~= "." -- not qualified by a receiver or package
   local counts = items[1] and items[1].client_id and project_counts(items[1].client_id)
@@ -197,6 +235,13 @@ function M.transform_lsp(ctx, items)
       if TYPE_KINDS[it.kind] then -- tie breakers, types only (java_sort)
         it.nv4j_len = #it.label
         it.nv4j_near = proximity(cur_pkg, it.labelDetails and it.labelDetails.description)
+      end
+      if typ and not vim.g.nv4j_no_smart_new and smart_new(it, typ, has_new, typed) then
+        if has_new then
+          it.score_offset = (it.score_offset or 0) + NEW_BOOST
+        elseif it.nv4j_rel then
+          it.nv4j_rel = it.nv4j_rel + NEW_KEYWORD_REL
+        end
       end
       if uses and (before == "@" or (MEMBER_KINDS[it.kind] and not OBJECT_METHODS[it.label])) then
         it.nv4j_uses = uses[it.label]
