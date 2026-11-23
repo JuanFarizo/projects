@@ -1,5 +1,5 @@
 -- Project usage counts for Java completion ranking: how often each member name is used after a
--- `.` and each annotation after `@` in the project's own .java sources (import/package lines
+-- `.`, each annotation after `@` and each capitalised name (types) in the project's own .java sources (import/package lines
 -- excluded). Adapted from IntelliJ's PreferMostUsedWeigher (java-impl, compile-time occurrence
 -- count of a member in the project); this is a name-level text count, not resolved references.
 -- Built with ripgrep in the background, rebuilt (debounced) after a .java file is written.
@@ -18,7 +18,7 @@ local by_root = {} -- root -> { member = {name=n}, anno = {name=n}, busy, dirty,
 -- status goes to stderr ("RG1 n", "RG2 n"; 0 = found, 1 = nothing found, 2+ = error) because a
 -- POSIX sh pipeline only reports the last command's status.
 local SCRIPT = [[{ { rg --no-filename --no-line-number --no-messages -g '*.java' -v '^\s*(import|package)\s' -- "$1"; ]]
-  .. [[echo "RG1 $?" >&2; } | rg --only-matching --no-line-number '[.@][A-Za-z_][A-Za-z0-9_]*'; echo "RG2 $?" >&2; } ]]
+  .. [[echo "RG1 $?" >&2; } | rg --only-matching --no-line-number '[.@][A-Za-z_][A-Za-z0-9_]*|\b[A-Z][A-Za-z0-9_]*\b'; echo "RG2 $?" >&2; } ]]
   .. [[| sort | uniq -c]]
 
 local function entry_for(root)
@@ -63,15 +63,16 @@ function M.build(root)
     local rg2 = tonumber((res.stderr or ""):match("RG2 (%d+)"))
     local good = not timed_out and res.code == 0 and res.signal == 0
       and rg1 ~= nil and rg1 <= 1 and rg2 ~= nil and rg2 <= 1
-    local member, anno = {}, {}
+    local member, anno, typ = {}, {}, {}
     if good then
-      for n, sigil, name in (res.stdout or ""):gmatch("(%d+) ([.@])([%w_]+)") do
-        local t = sigil == "@" and anno or member
+      for n, sigil, name in (res.stdout or ""):gmatch("(%d+) ([.@]?)([%w_]+)") do
+        local t = sigil == "@" and anno or sigil == "." and member or typ
         t[name] = (t[name] or 0) + tonumber(n)
+        if sigil == "@" then typ[name] = (typ[name] or 0) + tonumber(n) end -- an annotation is a type too
       end
     end
     vim.schedule(function()
-      if good then entry.member, entry.anno = member, anno end -- else keep the previous counts
+      if good then entry.member, entry.anno, entry.type = member, anno, typ end -- else keep the previous counts
       entry.busy, entry.last_ok = false, good
       M.runs = M.runs + 1
       if entry.dirty then

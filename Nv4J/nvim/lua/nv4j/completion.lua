@@ -221,6 +221,8 @@ function M.transform_lsp(ctx, items)
   local counts = items[1] and items[1].client_id and project_counts(items[1].client_id)
   local uses = counts and (before == "." and counts.member or before == "@" and counts.anno) or nil
   local cur_pkg = current_package(ctx.bufnr)
+  -- Types: how often the project's sources name this type (after proximity, before length).
+  local tuses = counts and bare and not vim.g.nv4j_no_type_usage and counts.type or nil
   local out = {}
   for i, it in ipairs(items) do
     local keep = true
@@ -235,6 +237,7 @@ function M.transform_lsp(ctx, items)
       if TYPE_KINDS[it.kind] then -- tie breakers, types only (java_sort)
         it.nv4j_len = #it.label
         it.nv4j_near = proximity(cur_pkg, it.labelDetails and it.labelDetails.description)
+        it.nv4j_tuses = tuses and tuses[it.label]
       end
       if typ and not vim.g.nv4j_no_smart_new and smart_new(it, typ, has_new, typed) then
         if has_new then
@@ -282,6 +285,8 @@ function M.java_sort(a, b)
     if ga ~= gb then return ga < gb end
     local na, nb = a.nv4j_near or 2, b.nv4j_near or 2
     if na ~= nb then return na < nb end
+    local ta, tb = a.nv4j_tuses or 0, b.nv4j_tuses or 0
+    if ta ~= tb then return ta > tb end
     local la, lb = a.nv4j_len or math.huge, b.nv4j_len or math.huge
     if la ~= lb then return la < lb end
     if a.nv4j_idx ~= b.nv4j_idx then return a.nv4j_idx < b.nv4j_idx end
@@ -329,6 +334,8 @@ function M.java_sort_empty(a, b)
   if ga ~= gb then return ga < gb end
   local na, nb = a.nv4j_near or 2, b.nv4j_near or 2
   if na ~= nb then return na < nb end
+  local ta, tb = a.nv4j_tuses or 0, b.nv4j_tuses or 0
+  if ta ~= tb then return ta > tb end
   local la, lb = a.nv4j_len or math.huge, b.nv4j_len or math.huge
   if la ~= lb then return la < lb end
   local ia, ib = a.nv4j_idx or math.huge, b.nv4j_idx or math.huge

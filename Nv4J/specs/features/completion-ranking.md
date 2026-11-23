@@ -199,3 +199,26 @@ Check 17 (16 cases): 8 `declared_type` parse cases plus 8 exact ranks. Control `
 Limits: (1) `List<String> l = new ` with nothing typed after `new` still has no `ArrayList`: jdt.ls answers only the types in scope and does not search the index for an empty prefix, so there is nothing to rank; IntelliJ shows the inheritors. A synthesized `ArrayList<>()` item would need its own import edit; not built. Typing one letter fixes it. (2) Only the JDK implementation table; for a project interface the implementations are not known client-side (jdt.ls gives no subtype boost to unimported types). (3) `x = new ` for an already declared variable, `return new `, method arguments: the type is not known from the text, nothing is boosted.
 
 Measurement note: run with `XDG_CONFIG_HOME` pointing at a folder whose `nv4j` link is this checkout. The folder name must be unique: another agent re-pointed a shared scratchpad `xdg` link under this run, so a first set of numbers came from another worktree; they were redone, and a symbol that exists only here (`declared_type` in the loaded module, check 17 `declared_type` cases) is the proof.
+
+## Type and static member usage (REFERENCE-MAP row 23, `PreferMostUsedWeigher`)
+
+`nvim/lua/nv4j/usage.lua` counted only `.member` and `@Annotation` names. The same rg run now also counts every capitalised name in the non-import lines (`type` bucket; an `@Name` counts for both buckets, so an annotation used as `@Valid` is a used type). `completion.lua` gives each type item (class, interface, enum, struct, and the constructor items of `new `) `nv4j_tuses` and sorts it after relevance, member usage, generics and proximity, before name length (`java_sort` and `java_sort_empty`): it only breaks ties between types of equal jdt.ls relevance and equal proximity. `vim.g.nv4j_no_type_usage = true` switches it off (measurement and control).
+
+Measured with a probe on the demo fixture (App.java, prefix typed at the end of a new line, rank of the type with its package in blink's shown list), same run before (type counts off) and after:
+
+| Prefix | Type | Before | After |
+|--------|------|--------|-------|
+| `Op` | java.util.Optional | 39 | 1 |
+| `Opt` | java.util.Optional | 22 | 1 |
+| `Resp` | org.springframework.http.ResponseEntity | 11 | 1 |
+| `Ele` | java.lang.annotation.ElementType | 8 | 1 |
+| `Ret` | java.lang.annotation.RetentionPolicy | 11 | 1 |
+| `Val` | jakarta.validation.Valid | 10 | 1 (with the annotation counts; 10 without) |
+| `Req` | RequestBody | 13 | 1 (same) |
+| `Sec` | SecurityFilterChain | 44 | 4 |
+| `Lo`, `Sy`, `Str`, `Lis`, `Tar`, `Shape` | Long, System, String, List, Target, Shape | 1 | 1 (no change) |
+| `Res`, `Pa`, `Con` | ResponseEntity, PathVariable, Configuration | not in the 200 shown | same: the cut happens inside jdt.ls, a client re-rank cannot bring them back (Task C) |
+
+New cases in check 13 (`tuses_Op`, `tuses_Resp`, `tuses_Ret`, `tuses_Val`, each rank <= 3): `DONE 13_completion_tiebreak 12 0`; control `NV4J_TUSES_CONTROL=1` (type counts off) `12 -> 8 0 / 4 FAIL`: `Optional` 39, `ResponseEntity` 11, `RetentionPolicy` 11, `Valid` 10. Check 12 `type_counts` (new): `A` 1, `@Service` counted as a type 1, import line not counted. Checks 10 `17 0`, 11 `26 0`, 14 `7 0`, 15 `4 0`, 16 `5 0`, 17 `16 0`; check 12 still has its two failures `no_rg_fallback` and `loose_root_skipped` (identical on the main repo before this work, see experiment 6b).
+
+Static members: not changed. `Collectors.`, `Objects.`, `ResponseEntity.` already use the member counts through the `.` position (`toList` after `Collectors.`); static favourites in a bare position (`toList`, `post`, `anyString` after `= `) share the member names with every instance method, so counting them there would rank `save` or `get` by unrelated uses; reasoning only, not measured, not built.

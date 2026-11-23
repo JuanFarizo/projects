@@ -33,13 +33,21 @@ local cases = {
   -- generic: apply(C) returns a method type variable; it goes after every plain method of the same tier.
   { name = "generic_last_http", tag = "generic", file = "SecurityConfig.java", after = "public SecurityFilterChain filterChain", line = "        http.",
     expect = label_is("apply"), what = "apply (C apply(C))", after_label = "userDetailsService" },
+  -- tuses: a type the project's own sources name (IntelliJ PreferMostUsed, counted by nv4j.usage) before unused types of
+  -- the same relevance. NV4J_TUSES_CONTROL=1 switches the type counts off: these cases then FAIL.
+  { name = "tuses_Op", tag = "tuses", file = "App.java", after = after_main, line = "        Op", expect = label_pkg("Optional", "java.util"), what = "java.util.Optional", max = 3 },
+  { name = "tuses_Resp", tag = "tuses", file = "App.java", after = after_main, line = "        Resp", expect = label_pkg("ResponseEntity", "org.springframework.http"), what = "ResponseEntity", max = 3 },
+  { name = "tuses_Ret", tag = "tuses", file = "App.java", after = after_main, line = "        Ret", expect = label_pkg("RetentionPolicy", "java.lang.annotation"), what = "RetentionPolicy", max = 3 },
+  { name = "tuses_Val", tag = "tuses", file = "App.java", after = after_main, line = "        Val", expect = label_pkg("Valid", "jakarta.validation"), what = "jakarta.validation.Valid (used as @Valid)", max = 3 },
 }
+if vim.env.NV4J_TUSES_CONTROL == "1" then vim.g.nv4j_no_type_usage = true end
 
 local fuzzy = C.blink()
 lsp.report("13_completion_tiebreak.blink_loaded", fuzzy ~= nil and fuzzy.implementation_type == "rust",
   fuzzy and fuzzy.implementation_type or "blink.cmp not loaded")
 
 for _, cs in ipairs(cases) do
+  if cs.tag == "tuses" then vim.wait(15000, function() return require("nv4j.usage").runs > 0 end, 50) end
   local tag = "13_completion_tiebreak." .. cs.name
   local buf = C.open_ready(lsp, src .. cs.file, 120000)
   if not buf then
