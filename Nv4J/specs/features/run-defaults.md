@@ -20,6 +20,18 @@ One default per project, in the `.nv4j` file that is already the project marker 
 
 `:Nv4jMark` writes an empty `.nv4j` in the current working directory (the folder Neovim was opened at, not the current file's folder). Refuses `$HOME` and above; does not overwrite.
 
+## Variables (2026-11-23)
+
+Strings that come from the file (`vm_args` items, `env` values) are expanded when `apply()` reads them. Syntax decided from IntelliJ: `JavaParametersUtil.configureConfiguration` (lines 60-79) runs the VM parameters through `ProgramParametersUtil.expandPath` (macros `$PROJECT_DIR$`, `$MODULE_DIR$`, ...) and then replaces every `$KEY$` with the value of that key in the run's env. Nv4J takes that form and adds the shell form:
+
+- `$NAME$` and `${NAME}`, NAME = `[A-Za-z_][A-Za-z0-9_]*`.
+- Built in: `PROJECT_DIR` and `MODULE_DIR` (both the project root), `USER_HOME` (`$HOME`).
+- Otherwise: in `vm_args` the run's env table first (the file's `env` plus the caller's), then the process environment; in `env` values the process environment (no env-to-env references, so no cycles).
+- Unknown names stay literal and warn once per file and name (title Nv4J). Text that is not a name (`${spring.profiles.active}`, `$$`, `$5`) is left alone without a warning, so Spring placeholders pass through.
+- Values passed by the caller in Lua `opts` are not expanded (they win and are used as given).
+
+Check `112_run_vars` (8 cases, pure), controls `tests/lib/control_112.sh` (6 patches).
+
 ## Why this and not named configs
 
 The user runs almost always with the same default. A picker of named configs is a second store and more ways to break. `rp` covers the exception.
