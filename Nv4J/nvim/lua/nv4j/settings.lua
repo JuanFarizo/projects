@@ -68,6 +68,28 @@ function M.set(root, key, value, create)
   return path, nil
 end
 
+--- Expand `$NAME$` (IntelliJ's macro and env-usage form, JavaParametersUtil / ProgramParametersUtil) and `${NAME}` in one string
+--- from the `.nv4j` file. NAME is `[A-Za-z_][A-Za-z0-9_]*`: `$PROJECT_DIR$`, `$MODULE_DIR$` (the project root) and `$USER_HOME$` are
+--- built in; any other name is looked up in `scope` (the run's env table, vm_args only) and then in the process environment.
+--- Unknown names stay literal and warn once per file and name. Anything else (`${spring.x}`, `$$`) is left alone.
+local function expand(str, root, scope, path)
+  local builtin = { PROJECT_DIR = root, MODULE_DIR = root, USER_HOME = vim.env.HOME }
+  local function sub(name, whole)
+    local v = builtin[name] or (scope and scope[name]) or vim.env[name]
+    if type(v) == "string" then return v end
+    local key = path .. "\0" .. name
+    if not warned[key] then
+      warned[key] = true
+      vim.notify(("%s: unknown variable %s in a run default; left as written."):format(path, whole),
+        vim.log.levels.WARN, TITLE)
+    end
+    return whole
+  end
+  str = str:gsub("%$([%a_][%w_]*)%$", function(n) return sub(n, "$" .. n .. "$") end)
+  return (str:gsub("%${([%a_][%w_]*)}", function(n) return sub(n, "${" .. n .. "}") end))
+end
+M.expand = expand
+
 --- Fill omitted run fields from `.nv4j`. `opts` keys win. Never writes the file.
 ---@param opts { profile: string|nil, env: table|nil, vm_args: string[]|nil }|nil
 ---@return { profile: string|nil, env: table, vm_args: string[]|nil }
@@ -78,17 +100,18 @@ function M.apply(opts, root)
   if (not opts.profile or opts.profile == "") and type(run.profile) == "string" and run.profile ~= "" then
     opts.profile = run.profile
   end
+  local path = marker_path(root) or ".nv4j"
   local file_env = {}
   if type(run.env) == "table" then
     for k, v in pairs(run.env) do
-      if type(k) == "string" and type(v) == "string" then file_env[k] = v end
+      if type(k) == "string" and type(v) == "string" then file_env[k] = expand(v, root, nil, path) end
     end
   end
   opts.env = vim.tbl_extend("force", file_env, opts.env or {})
   if opts.vm_args == nil and type(run.vm_args) == "table" then
     local vm = {}
     for _, a in ipairs(run.vm_args) do
-      if type(a) == "string" and a ~= "" then vm[#vm + 1] = a end
+      if type(a) == "string" and a ~= "" then vm[#vm + 1] = expand(a, root, opts.env, path) end
     end
     if #vm > 0 then opts.vm_args = vm end
   end

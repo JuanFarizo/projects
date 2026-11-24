@@ -85,6 +85,8 @@ What Neovim really receives (measured in a private tmux server and in a bare pty
 |-----|------|-------|-------|
 | `<leader>ca` | Code actions: quick fix, generate getters, constructors, `toString`, `equals`/`hashCode`, extract (normal and visual) | Java buffer | LazyVim |
 | `<leader>co` | Organize imports (also removes unused ones) | Java buffer | LazyVim java extra |
+| `<leader>cI` | Organize imports in the whole project (the project of this file), or, with the cursor in neo-tree, in the folder under the cursor. Says how many files changed; saves the ones that had no unsaved edits | global | `config/keymaps.lua`, `nv4j/organize.lua` |
+| neo-tree `O` | Same, for the folder under the cursor (a file: its folder) | neo-tree | `plugins/neo-tree.lua`, `nv4j/organize.lua` |
 | `<leader>cA` | Source actions | Java buffer | LazyVim |
 | `<leader>cxv` / `<leader>cxc` | Extract variable / constant (normal and visual) | Java buffer | LazyVim java extra |
 | `<leader>cxm` | Extract method (visual) | Java buffer | LazyVim java extra |

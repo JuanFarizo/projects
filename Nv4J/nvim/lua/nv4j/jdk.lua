@@ -12,16 +12,43 @@ end
 
 local function real(p) return vim.uv.fs_realpath(p) or p end
 
---- Directories whose children are JDKs, in priority order. NV4J_JDK_ROOT (":"-separated, tests
---- only) replaces the whole list.
+local function envdir(name)
+  local v = vim.env[name]
+  if v and v ~= "" then return v end
+end
+
+local function home() return envdir("HOME") or vim.fn.expand("~") end
+
+--- SDKMAN's java directory, as IntelliJ's JavaHomeFinderBasic.findSdkManCandidatesDir does: $SDKMAN_CANDIDATES_DIR, else
+--- $SDKMAN_DIR/candidates, else ~/.sdkman/candidates (+ "/java"). The first one that is set wins.
+function M.sdkman_java_dir()
+  local c = envdir("SDKMAN_CANDIDATES_DIR")
+  if c then return c .. "/java" end
+  local d = envdir("SDKMAN_DIR")
+  return (d or (home() .. "/.sdkman")) .. "/candidates/java"
+end
+
+--- Directories whose children are JDKs, in priority order (for dedupe by real path the first spelling wins):
+--- SDKMAN, macOS JavaVirtualMachines, mise, asdf, jabba, Gradle toolchains, /usr/lib/jvm. Environment variables first,
+--- then the usual home locations (JavaHomeFinderBasic). Only strings are built here, nothing touches the disk until discover().
+--- NV4J_JDK_ROOT (":"-separated, tests only) replaces the whole list.
 function M.roots()
   local env = vim.env.NV4J_JDK_ROOT
   if env and env ~= "" then return vim.split(env, ":", { plain = true, trimempty = true }) end
-  local sdk = (vim.env.SDKMAN_DIR and vim.env.SDKMAN_DIR ~= "") and vim.env.SDKMAN_DIR or vim.fn.expand("~/.sdkman")
+  local h = home()
+  local mise = envdir("MISE_DATA_DIR") and (envdir("MISE_DATA_DIR") .. "/installs")
+    or envdir("XDG_DATA_HOME") and (envdir("XDG_DATA_HOME") .. "/mise/installs")
+    or (h .. "/.local/share/mise/installs")
+  local asdf = envdir("ASDF_DATA_DIR") and (envdir("ASDF_DATA_DIR") .. "/installs") or (h .. "/.asdf/installs")
   return {
-    sdk .. "/candidates/java",
-    vim.fn.expand("~/Library/Java/JavaVirtualMachines"),
+    M.sdkman_java_dir(),
+    h .. "/Library/Java/JavaVirtualMachines",
     "/Library/Java/JavaVirtualMachines",
+    mise .. "/java",
+    asdf .. "/java",
+    h .. "/.jabba/jdk",
+    h .. "/.gradle/jdks",
+    "/usr/lib/jvm",
   }
 end
 
@@ -48,11 +75,14 @@ local function describe(home)
   local major, key = parse_version(ver)
   if not major then return nil end
   local ea = ver:lower():find("ea") ~= nil or vim.fs.basename(home):lower():find("[%-_.]ea") ~= nil
-  return { home = home, real = real(home), major = major, version = ver, key = key, ea = ea }
+  -- A home without bin/javac is a JRE (Debian/Ubuntu `openjdk-NN-jre-headless` in /usr/lib/jvm): usable to run, sorted after full JDKs.
+  return { home = home, real = real(home), major = major, version = ver, key = key, ea = ea,
+    jre = not vim.uv.fs_stat(home .. "/bin/javac") }
 end
 
 local function newer(a, b)
   if a.ea ~= b.ea then return not a.ea end -- early-access builds sort last
+  if a.jre ~= b.jre then return not a.jre end -- JRE-only homes (no javac) next
   for i = 1, math.max(#a.key, #b.key) do
     local x, y = a.key[i] or 0, b.key[i] or 0
     if x ~= y then return x > y end
@@ -66,10 +96,20 @@ function M.discover()
   for _, root in ipairs(M.roots()) do
     for name, kind in vim.fs.dir(root) do
       if name ~= "current" and (kind == "directory" or kind == "link") then
-        local d = describe(root .. "/" .. name) or describe(root .. "/" .. name .. "/Contents/Home")
-        if d and not seen[d.real] then
-          seen[d.real] = true
-          out[#out + 1] = d
+        local dir = root .. "/" .. name
+        local found = { describe(dir) or describe(dir .. "/Contents/Home") }
+        if not found[1] then -- one level deeper (Gradle toolchains unpack as <name>/<jdk-home>)
+          for sub, k in vim.fs.dir(dir) do
+            if k == "directory" or k == "link" then
+              found[#found + 1] = describe(dir .. "/" .. sub) or describe(dir .. "/" .. sub .. "/Contents/Home") or nil
+            end
+          end
+        end
+        for _, d in ipairs(found) do
+          if not seen[d.real] then
+            seen[d.real] = true
+            out[#out + 1] = d
+          end
         end
       end
     end
@@ -89,8 +129,7 @@ end
 
 local function sdkman_current_real()
   if vim.env.NV4J_JDK_ROOT and vim.env.NV4J_JDK_ROOT ~= "" then return nil end
-  local sdk = (vim.env.SDKMAN_DIR and vim.env.SDKMAN_DIR ~= "") and vim.env.SDKMAN_DIR or vim.fn.expand("~/.sdkman")
-  return vim.uv.fs_realpath(sdk .. "/candidates/java/current")
+  return vim.uv.fs_realpath(M.sdkman_java_dir() .. "/current")
 end
 
 --- Minimum Java that jdt.ls itself needs (NOT the project's JDK, which is chosen separately). Measured against
