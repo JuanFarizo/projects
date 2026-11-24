@@ -85,7 +85,10 @@ lsp.report("12_usage_index.debounced", usage.runs - n == 1, ("runs after 5 sched
 usage.DEBOUNCE_MS = debounce
 
 -- 5. no rg on PATH: build/watch are no-ops, transform still works without counts
-vim.env.PATH = "/usr/bin:/bin"
+-- PATH with no rg at all: a fixed "/usr/bin:/bin" still finds a distro-installed ripgrep (/usr/bin/rg)
+local nobin = base .. "/emptybin"
+vim.fn.mkdir(nobin, "p")
+vim.env.PATH = nobin
 local absent = vim.fn.executable("rg") == 0
 local root2 = base .. "/proj2"
 vim.fn.mkdir(root2, "p")
