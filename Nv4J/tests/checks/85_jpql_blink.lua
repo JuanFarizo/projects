@@ -103,6 +103,14 @@ do
   lsp.report(P .. "noise_dropped", inq == "someField,equals", inq)
   local outq = filt("    // SELECT b FROM Booking b WHERE b.", 0)
   lsp.report(P .. "noise_outside_kept", outq == "countBy,someField,equals", outq)
+  -- the buffer wiped before a late answer reaches the transform: items come back unchanged, no error
+  local gone = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_delete(gone, { force = true })
+  local okc, outc = pcall(function()
+    return sources.get_provider_by_id("lsp"):transform_items({ bufnr = gone, cursor = { 1, 0 }, line = "", bounds = { line_number = 1, start_col = 1, length = 0 } },
+      { { label = "equals", kind = 2, client_name = "jdtls" } })
+  end)
+  lsp.report(P .. "noise_closed_buffer", okc and #outc == 1 and outc[1].label == "equals", okc and ("items=" .. #outc) or tostring(outc))
 end
 
 vim.api.nvim_buf_set_lines(buf, 0, -1, false, base)

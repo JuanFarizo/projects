@@ -94,7 +94,8 @@ return {
       local prev = lsp_p.transform_items
       lsp_p.transform_items = function(ctx, items)
         if prev then items = prev(ctx, items) end
-        if vim.bo[ctx.bufnr].filetype ~= "java" then return items end
+        -- a late answer (resolve/completion) can arrive after the buffer was wiped: nothing to filter then
+        if not vim.api.nvim_buf_is_valid(ctx.bufnr) or vim.bo[ctx.bufnr].filetype ~= "java" then return items end
         local function drop(i) return i.kind == 2 and (i.client_name or ""):find("spring", 1, true) ~= nil end
         if not vim.iter(items):any(drop) then return items end
         local ok, q = pcall(require("nv4j.jpqlcomplete").query_at, ctx.bufnr, ctx.cursor[1] - 1, ctx.cursor[2])
