@@ -15,7 +15,7 @@
 --                 with @Profile), customerRepository.
 --  key          : <leader>sp is mapped (desc "Spring symbols"), and LazyVim's <leader>ss (Goto Symbol) is untouched.
 --  picker       : <leader>sp in a Java buffer opens a Telescope picker with the beans and request mappings
---                 (17 entries on the fixture: 12 beans + 5 mappings), <= 1 s.
+--                 (on the fixture: 5 mappings + 10 beans = 15 on Spring LS 2.5; 2.2.0 lists 2 more, the plain records `circle` and `square` of Modern.java, which are no beans, so 17: specs/features/spring-language-server.md "Picker count"), <= 1 s.
 --  picker_jump  : typing `/hello` in that picker and <CR> opens GreetingController.java at the @GetMapping("/hello")
 --                 line.
 --  no_client    : <leader>sp in a buffer of a non-Boot project warns ("no Spring Boot language server") and opens
@@ -29,6 +29,7 @@ local E = require("edit")
 local P = "52_spring_nav."
 local NAME = "spring-boot"
 local HOVER_MS, PICKER_MS = 500, 1000
+local MIN_ENTRIES = 15 -- 5 request mappings + 10 real beans (2.2.0 also lists the records Circle and Square: 17)
 local PORT_HOVER_LIMIT_MS = 1000 -- server.port's first yml hover is 200-520 ms server side (trial c5): a regression limit
 
 local fx = vim.env.NV4J_FIXTURE
@@ -159,13 +160,13 @@ local ok_all, err = pcall(function()
   local picker = pb and require("telescope.actions.state").get_current_picker(pb)
   local n = 0
   if picker then
-    vim.wait(PICKER_MS * 3, function() n = picker.manager and picker.manager:num_results() or 0; return n >= 17 end, 5)
+    vim.wait(PICKER_MS * 3, function() n = picker.manager and picker.manager:num_results() or 0; return n >= MIN_ENTRIES end, 5)
   end
   local pms = E.now() - tp
   E.log("spring_picker", pms, 1)
-  lsp.report(P .. "picker", picker ~= nil and n >= 17 and pms <= PICKER_MS,
-    not pok and ("error: " .. tostring(perr)) or ("%s, %d entries (want >= 17), %.0f ms (budget %d)"):format(
-      picker and ("picker '" .. tostring(picker.prompt_title) .. "'") or "NO picker", n, pms, PICKER_MS))
+  lsp.report(P .. "picker", picker ~= nil and n >= MIN_ENTRIES and pms <= PICKER_MS,
+    not pok and ("error: " .. tostring(perr)) or ("%s, %d entries (want >= %d), %.0f ms (budget %d)"):format(
+      picker and ("picker '" .. tostring(picker.prompt_title) .. "'") or "NO picker", n, MIN_ENTRIES, pms, PICKER_MS))
   if picker then
     picker:set_prompt("/hello")
     vim.wait(2000, function() return picker.manager:num_results() >= 1 and picker.manager:num_results() < n end, 10)
