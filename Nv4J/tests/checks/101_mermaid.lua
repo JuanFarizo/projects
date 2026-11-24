@@ -49,3 +49,5 @@ do
   local flag = vim.b[b].nv4j_mermaid_hide
   rep("toggle_safe", ok and ((n == nil and flag == nil) or (type(n) == "number" and flag == true)), "ok=" .. tostring(ok) .. " ret=" .. tostring(n) .. " hide=" .. tostring(flag))
 end
+
+lsp.finish()

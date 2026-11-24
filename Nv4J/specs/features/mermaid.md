@@ -44,7 +44,7 @@ Verified with real key presses in a private tmux with kitty detection forced (`S
 - `:Nv4JMermaid install` end to end: download, SHA-256, unpack, shim, PATH.
 - snacks `Snacks.image.convert` on a `.mmd` file, through the shim, produced a valid 13.6 KB PNG (same size as calling mmdr directly).
 - snacks attaches to a markdown buffer once enabled and finds the mermaid block (`doc.find` returned 1 image).
-- Check `101_mermaid` (5 cases; the shim control, `-e png` changed to `-e svg`, fails `shim_args`).
+- Check `101_mermaid` (5 cases; the shim control, `-e png` changed to `-e svg`, fails `shim_args`). The check is pure (no tmux, no kitty): it lacked the final `lsp.finish()`, so run.sh reported "did not finish" (no DONE line) although all 5 cases passed; fixed. The tmux + `SNACKS_KITTY=1` key test was a manual verification, not part of the check.
 
 ## NOT verified
 

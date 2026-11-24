@@ -15,10 +15,20 @@ local function stat(p) return vim.uv.fs_stat(p) end
 
 local function tools()
   h.start("Nv4J: tools on PATH")
-  for _, t in ipairs({ "java", "mvn", "rg", "fd", "git" }) do
+  local hint = {
+    java = "install a JDK (e.g. `sdk install java`)",
+    mvn = "install Maven (`sdk install maven`, `apt install maven` or `brew install maven`)",
+    rg = "install ripgrep (`apt install ripgrep` or `brew install ripgrep`)",
+    git = "install git (`apt install git` or `brew install git`)",
+  }
+  for _, t in ipairs({ "java", "mvn", "rg", "git" }) do
     local p = vim.fn.exepath(t)
-    if p ~= "" then h.ok(("%s: %s"):format(t, p)) else h.error(t .. " not found on PATH") end
+    if p ~= "" then h.ok(("%s: %s"):format(t, p)) else h.error(("%s not found on PATH: %s"):format(t, hint[t])) end
   end
+  -- fd is optional: nothing in Nv4J calls it. snacks' file picker prefers `fd` (Debian/Ubuntu name: `fdfind`) and falls back to `rg`/`find`.
+  local fd = vim.fn.exepath("fd")
+  if fd == "" then fd = vim.fn.exepath("fdfind") end
+  h.info(fd ~= "" and ("fd (optional): " .. fd) or "fd (optional): not found, file pickers use rg (faster listing: `apt install fd-find` or `brew install fd`)")
   local fzf = vim.fn.exepath("fzf")
   h.info(fzf ~= "" and ("fzf (optional): " .. fzf) or "fzf (optional): not found")
 end
