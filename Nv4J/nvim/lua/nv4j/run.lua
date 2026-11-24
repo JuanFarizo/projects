@@ -498,7 +498,12 @@ local function is_boot_main(file)
   return text ~= nil and text:find("@SpringBootApplication", 1, true) ~= nil
 end
 
---- Launch configs (nvim-jdtls's, as for <leader>dc) of the @SpringBootApplication main classes.
+--- Launch configs (the shape of nvim-jdtls's fetch_main_configs, as for <leader>dc) of the
+--- @SpringBootApplication main classes. fetch_main_configs runs a second resolveMainClass and then 3
+--- requests (java executable, preview setting, classpath) for EVERY main class of the workspace; here the one
+--- resolveMainClass is reused and only the Boot mains are resolved, with the two requests the launch needs
+--- (preview setting, classpath). The java executable is not asked: the launch takes the project JDK from
+--- nv4j.jdk. Timings: specs/features/run-speed.md.
 local function boot_configs(client, cb)
   local bufnr = vim.lsp.get_buffers_by_client_id(client.id)[1]
   if not bufnr then return cb(nil, "no buffer attached to jdt.ls") end
@@ -509,20 +514,43 @@ local function boot_configs(client, cb)
     cb(c, e)
   end
   vim.defer_fn(function() finish(nil, "jdt.ls did not answer within 60 s") end, 60000)
-  client:request("workspace/executeCommand", { command = "vscode.java.resolveMainClass" }, function(err, mains)
+  local function exec(command, args, handler)
+    client:request("workspace/executeCommand", { command = command, arguments = args }, handler, bufnr)
+  end
+  exec("vscode.java.resolveMainClass", nil, function(err, mains)
     if err then return finish(nil, "resolveMainClass: " .. tostring(err.message)) end
     local boot = {}
     for _, m in ipairs(mains or {}) do
-      if is_boot_main(m.filePath) then boot[m.mainClass] = true end
+      if is_boot_main(m.filePath) then boot[#boot + 1] = m end
     end
-    if vim.tbl_isempty(boot) then return finish({}) end
-    vim.api.nvim_buf_call(bufnr, function()
-      require("jdtls.dap").fetch_main_configs({}, function(configs)
-        finish(vim.tbl_filter(function(c) return boot[c.mainClass] end, configs or {}))
+    if #boot == 0 then return finish({}) end
+    local configs, remaining = {}, #boot
+    local function one_done()
+      remaining = remaining - 1
+      if remaining == 0 then finish(configs) end
+    end
+    for _, m in ipairs(boot) do
+      local preview_args = { vim.json.encode({ className = m.mainClass, projectName = m.projectName, inheritedOptions = true,
+        expectedOptions = { ["org.eclipse.jdt.core.compiler.problem.enablePreviewFeatures"] = "enabled" } }) }
+      exec("vscode.java.checkProjectSettings", preview_args, function(perr, preview)
+        exec("vscode.java.resolveClasspath", { m.mainClass, m.projectName }, function(cerr, paths)
+          if cerr or type(paths) ~= "table" then return one_done() end -- as nvim-jdtls: a main class without classpath is dropped
+          configs[#configs + 1] = {
+            cwd = client.config.root_dir, type = "java", name = "Launch " .. (m.projectName or "") .. ": " .. m.mainClass,
+            projectName = m.projectName, mainClass = m.mainClass, modulePaths = paths[1], classPaths = paths[2],
+            request = "launch", console = "integratedTerminal",
+            vmArgs = (not perr and preview) and "--enable-preview" or nil,
+          }
+          one_done()
+        end)
       end)
-    end)
-  end, bufnr)
+    end
+  end)
 end
+
+M._boot_configs = boot_configs -- read by tests/checks/41_run.lua
+-- Not cached on purpose: the classpath is asked of jdt.ls at every launch, so a pom/gradle change jdt.ls re-imported is
+-- picked up at once. A cache would save about 10 ms of the ~35 ms left (run-speed.md); case config_fresh guards this.
 
 local function java_home(root)
   local rts, default = require("nv4j.jdk").runtimes(root)
