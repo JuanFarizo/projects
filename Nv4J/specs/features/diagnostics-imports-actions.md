@@ -208,3 +208,12 @@ Completion unchanged: `cold_first` 52/51/53 ms, `@` p95 38/39/41 ms, `@` rank 4 
 3. Organize on save is off (IntelliJ default); say if you want it on.
 4. Decided (fix round 1): `<leader>co` = Organize Imports, `<leader>cO` = outgoing calls only; organize on save off.
 5. Cosmetic gaps: blank line between every import group, `Objects.hash(name, Integer.valueOf(age))`, toString without quotes around strings, numbered `input()` field picker.
+
+## Linux follow-up (2026-11-24): four checks red after the session merges
+
+| Check | Cause | Kind | Change |
+|-------|-------|------|--------|
+| `21_server_jdk` | no JDK 23 here (JDK 24 only): `run.sh` took `/bin/java` for an empty `find_jdk 23` result, so nvim started with no `JAVA_HOME`, the case SKIPped and `run.sh` counted a SKIP-only check as "no PASS/FAIL" | check/harness | `run.sh` picks JDK 23, 24 or 22 (non-empty path) and accepts SKIP + DONE |
+| `30_diagnostics` `maven_malformed`, `maven_missing_artifact` | Neovim 0.12 does not advertise `didChangeWatchedFiles` on Linux (`protocol.lua`), so jdt.ls never hears of a pom.xml change; red at `4e462d6` too (never green on this Linux machine, probably written on macOS). Product bug: a user's save of pom.xml / build.gradle never reached jdt.ls | product + check | `nv4j.buildfile.notify_saved` sends the Changed event on save (only to clients without dynamic registration); the check saves through a buffer like a user; control: notify removed, both cases FAIL (`neg-30-notify-saved-removed.log`). External edits (git checkout) on Linux are still not seen |
+| `32_code_actions` generate cases | `nv4j.codegen.pick_many` (check 110) asks with `vim.ui.select` and waits up to 10 min; the check stubbed only `vim.fn.input`. `code_action` blocked inside, so the case's 10 s wait never ran; the later cases then ran on a stale buffer (`Invalid cursor line`). Product behaviour right | check | stub `vim.ui.select` (first item = Done / first line), `nv4j_extract_names=false`; `run.sh` kills a check after `NV4J_CHECK_TIMEOUT` (1500 s) |
+| `65_dotfiles_merge` `terminal_key` | asserted `<D-]>`/`<D-[>`; on Linux the keys are `<A-...>` since `6828514` | check | uses the same modifier rule as `config/keymaps.lua` |
