@@ -8,6 +8,9 @@
 local M = {}
 
 M.TIMEOUT_MS = 15000
+-- The picker opens with a `loading ...` row when the answer is not there after this many ms (a fast answer opens it directly,
+-- no flicker); the rows replace the row when they arrive, closing the picker cancels the request.
+M.LOADING_MS = 120
 
 -- kind -> { prepare method, hierarchy method, title, empty message }
 M.KINDS = {
@@ -171,8 +174,8 @@ local function cache_put(key, v)
   while #order > M.CACHE_MAX do cache[table.remove(order, 1)] = nil end
 end
 
-local function item_key(def, item)
-  return vim.json.encode({ def.method, item.uri, item.name, item.selectionRange or item.range })
+local function item_key(def, item, client)
+  return vim.json.encode({ def.method, client and client.id or 0, item.uri, item.name, item.selectionRange or item.range })
 end
 
 local INVALIDATING = { ["textDocument/didChange"] = true, ["textDocument/didSave"] = true, ["workspace/didChangeWatchedFiles"] = true }
@@ -193,6 +196,22 @@ local function ensure_hooks()
   vim.api.nvim_create_autocmd({ "LspAttach", "LspDetach" }, { group = g, callback = function(a) M.invalidate(a.event) end })
 end
 
+-- LSP answer of a hierarchy request -> display rows (type items, or the callers / callees of a call item).
+local function build_rows(def, kind, res, root)
+  local mine = {}
+  for _, r in ipairs(res or {}) do
+    if def.type then
+      mine[#mine + 1] = M.row(r, { root = root })
+    else
+      local target = r[def.field]
+      if target then
+        mine[#mine + 1] = M.row(target, { calls = true, root = root, ranges = r.fromRanges, sites_in_item = kind == "incoming" })
+      end
+    end
+  end
+  return mine
+end
+
 local function cancel_pending()
   if state.stop then state.stop(); state.stop = nil end
   for _, p in ipairs(state.pending) do pcall(function() p.client:cancel_request(p.id) end) end
@@ -201,11 +220,12 @@ end
 
 local function warn(msg) vim.notify("nv4j: " .. msg, vim.log.levels.WARN) end
 
---- Rows -> Telescope picker. `title` is the prompt title; `encoding` the offset encoding for the jump.
+--- Rows -> Telescope picker. `title` is the prompt title; `encoding` the offset encoding for the jump. Returns the picker.
+--- `<CR>` on the placeholder row of a still-loading picker does nothing.
 function M.show(rows, title, encoding)
   local conf = require("telescope.config").values
   local actions, state_a = require("telescope.actions"), require("telescope.actions.state")
-  require("telescope.pickers").new({}, {
+  local picker = require("telescope.pickers").new({}, {
     prompt_title = title,
     finder = require("telescope.finders").new_table({ results = rows, entry_maker = M.entry_maker }),
     sorter = conf.generic_sorter({}),
@@ -213,12 +233,33 @@ function M.show(rows, title, encoding)
     attach_mappings = function(prompt_bufnr)
       actions.select_default:replace(function()
         local cur = state_a.get_selected_entry()
+        if cur and cur.value.loading then return end
         actions.close(prompt_bufnr)
         if cur then M.jump(cur.value, encoding) end
       end)
       return true
     end,
-  }):find()
+  })
+  picker:find()
+  return picker
+end
+
+--- Placeholder row of the picker opened before the answer is there (a row table the entry maker accepts, no jump target).
+local function loading_row() return { name = "loading ...", pkg = "", path = "", kind = 0, sites = 0, loading = true, target = {} } end
+
+--- Replaces the content (rows + title) of a picker opened by M.show; false when it is gone.
+function M.fill(picker, rows, title)
+  if not picker or not picker.prompt_bufnr or not vim.api.nvim_buf_is_valid(picker.prompt_bufnr) then return false end
+  pcall(function() picker.layout.prompt.border:change_title(title) end)
+  picker:refresh(require("telescope.finders").new_table({ results = rows, entry_maker = M.entry_maker }), { reset_prompt = false })
+  return true
+end
+
+--- Closes a picker opened by M.show (no error when it is gone).
+function M.close(picker)
+  if picker and picker.prompt_bufnr and vim.api.nvim_buf_is_valid(picker.prompt_bufnr) then
+    pcall(require("telescope.actions").close, picker.prompt_bufnr)
+  end
 end
 
 --- Starts one hierarchy view for the symbol under the cursor. `kind`: subtypes | supertypes | incoming | outgoing.
@@ -237,31 +278,44 @@ function M.run(kind, hooks)
   local epoch0 = epoch
   local root = vim.uv.cwd()
   local rows, left, done, names, enc = {}, 0, false, {}, nil
-  local timer
+  local timer, ltimer, ui
   local function alive() return gen == state.gen and not done end
+  local function stop_timers()
+    for _, t in ipairs({ timer, ltimer }) do
+      if t and not t:is_closing() then t:stop(); t:close() end
+    end
+  end
+  local function close_ui() local u = ui; ui = nil; if u then M.close(u) end end
   local function finish()
     if not alive() then return end
     done = true
     state.stop = nil
-    if not timer:is_closing() then timer:stop(); timer:close() end
+    stop_timers()
     state.pending = {}
     local what = names[1] or "this symbol"
-    if #rows == 0 then return vim.notify((def.empty):format(what), vim.log.levels.INFO) end
+    if #rows == 0 then close_ui(); return vim.notify((def.empty):format(what), vim.log.levels.INFO) end
     M.sort(rows)
     local title = (def.title):format(what) .. ("  (%d)"):format(#rows)
     if hooks and hooks.on_rows then return hooks.on_rows(rows, title, enc) end
+    if ui then
+      local u = ui
+      ui = nil
+      if M.fill(u, rows, title) then return end
+    end
     M.show(rows, title, enc)
   end
   local function step() left = left - 1; if left <= 0 then finish() end end
   local function track(client, id) if id then state.pending[#state.pending + 1] = { client = client, id = id } end end
 
-  timer = vim.uv.new_timer()
-  state.stop = function() if not timer:is_closing() then timer:stop(); timer:close() end end
+  timer, ltimer = vim.uv.new_timer(), vim.uv.new_timer()
+  state.stop = function() stop_timers(); close_ui() end
   timer:start(M.TIMEOUT_MS, 0, vim.schedule_wrap(function()
     if not alive() then return end
     done = true
+    stop_timers()
+    close_ui()
     cancel_pending()
-    warn(("no answer to %s within %d s"):format(def.method, math.floor(M.TIMEOUT_MS / 1000)))
+    warn(("no answer to %s within %.4g s"):format(def.method, M.TIMEOUT_MS / 1000))
   end))
 
   left = #clients -- prepare requests; each prepared item adds one more below
@@ -271,7 +325,7 @@ function M.run(kind, hooks)
     names[#names + 1] = def.type and items[1].name or (items[1].name:gsub("%(.*$", ""))
     left = left + #items
     for _, item in ipairs(items) do
-      local ikey = item_key(def, item)
+      local ikey = item_key(def, item, client)
       local hit = cache_get(ikey)
       if hit then
         for _, r in ipairs(hit) do rows[#rows + 1] = r end
@@ -283,16 +337,7 @@ function M.run(kind, hooks)
           if err2 then
             warn(def.method .. ": " .. tostring(err2.message or err2))
           else
-            for _, r in ipairs(res or {}) do
-              if def.type then
-                mine[#mine + 1] = M.row(r, { root = root })
-              else
-                local target = r[def.field]
-                if target then
-                  mine[#mine + 1] = M.row(target, { calls = true, root = root, ranges = r.fromRanges, sites_in_item = kind == "incoming" })
-                end
-              end
-            end
+            mine = build_rows(def, kind, res, root)
             if epoch == epoch0 then cache_put(ikey, mine) end
           end
           for _, r in ipairs(mine) do rows[#rows + 1] = r end
@@ -320,7 +365,92 @@ function M.run(kind, hooks)
       if ok then track(client, id) else step() end
     end
   end
-  return function() if alive() then done = true; cancel_pending() end end
+  -- Slow answer: open the picker with a placeholder row; finish() fills it. Closing it by hand cancels the request.
+  if alive() then
+    ltimer:start(M.LOADING_MS, 0, vim.schedule_wrap(function()
+      if not alive() or ui then return end
+      local title = (def.title):format(names[1] or "this symbol") .. "  (loading ...)"
+      if hooks and hooks.on_loading then return hooks.on_loading(title) end
+      local picker = M.show({ loading_row() }, title, enc)
+      ui = picker
+      vim.api.nvim_create_autocmd("BufWipeout", { buffer = picker.prompt_bufnr, once = true, callback = function()
+        if ui == picker then ui = nil; if alive() then done = true; stop_timers(); cancel_pending() end end
+      end })
+    end))
+  end
+  return function() if alive() then done = true; stop_timers(); close_ui(); cancel_pending() end end
+end
+
+-- ── prefetch (CursorHold) ────────────────────────────────────────────────────────────────────
+
+-- Subtypes are the slow request (a workspace hierarchy in jdt.ls: 80 to 280 ms on 1000 classes, 4 s the first time). When the
+-- cursor rests on a type name (CapitalisedWord) in normal mode, ask prepare + subtypes quietly and keep the rows in the level-1
+-- cache, so the next <leader>cS opens at once. Bounded: one prefetch at a time (a lost answer frees the slot after
+-- PREFETCH_EXPIRE_MS), once per position and buffer state (the cache answers a repeat), never while a hierarchy run is in
+-- flight, in insert mode, or while jdt.ls reports a build / import (the status line has it). `vim.g.nv4j_hierarchy_prefetch = false`
+-- turns it off. Measured with jdt.ls (check 98 and the 1000-class bench in the spec): jdt.ls answers completion and hover as fast
+-- during a subtypes request as without one (29 vs 31 ms, 2 vs 3 ms).
+M.PREFETCH_EXPIRE_MS = 20000
+M.stats = { prefetch = 0, prefetch_requests = 0, prefetch_ms = 0 }
+local pf_since
+
+function M.prefetch()
+  if vim.g.nv4j_hierarchy_prefetch == false or vim.fn.mode() ~= "n" then return end
+  if pf_since and (vim.uv.hrtime() - pf_since) / 1e6 < M.PREFETCH_EXPIRE_MS then return end
+  if #state.pending > 0 then return end
+  if not vim.fn.expand("<cword>"):match("^%u") then return end
+  local okb, busy = pcall(vim.lsp.status)
+  busy = okb and busy or ""
+  if busy:find("Build") or busy:find("Import") or busy:find("Refresh") or busy:find("Initializ") or busy:find("Starting") then return end
+  local def = M.KINDS.subtypes
+  local buf, win = vim.api.nvim_get_current_buf(), vim.api.nvim_get_current_win()
+  local clients = vim.lsp.get_clients({ bufnr = buf, method = def.prepare })
+  if #clients == 0 then return end
+  local t0 = vim.uv.hrtime()
+  ensure_hooks()
+  local epoch0, root, tick = epoch, vim.uv.cwd(), vim.api.nvim_buf_get_changedtick(buf)
+  local left = 0
+  local function step()
+    left = left - 1
+    if left <= 0 then pf_since = nil end
+  end
+  local function ask(client, items)
+    for _, item in ipairs(items or {}) do
+      local ikey = item_key(def, item, client)
+      if cache[ikey] == nil then
+        left = left + 1
+        local ok = client:request(def.method, { item = item }, function(err, res)
+          if not err and epoch == epoch0 then
+            local c0 = vim.uv.hrtime()
+            cache_put(ikey, build_rows(def, "subtypes", res, root))
+            M.stats.prefetch_ms = M.stats.prefetch_ms + (vim.uv.hrtime() - c0) / 1e6
+          end
+          step()
+        end, buf)
+        if ok then M.stats.prefetch_requests = M.stats.prefetch_requests + 1 else step() end
+      end
+    end
+  end
+  pf_since = vim.uv.hrtime()
+  for _, client in ipairs(clients) do
+    local params = vim.lsp.util.make_position_params(win, client.offset_encoding)
+    local pkey = vim.json.encode({ def.prepare, buf, tick, params.position, client.id })
+    local phit = cache_get(pkey)
+    if phit then
+      ask(client, phit)
+    else
+      left = left + 1
+      local ok = client:request(def.prepare, params, function(err, items)
+        if not err and items and epoch == epoch0 then cache_put(pkey, items) end
+        if not err and epoch == epoch0 then ask(client, items) end
+        step()
+      end, buf)
+      if ok then M.stats.prefetch_requests = M.stats.prefetch_requests + 1 else step() end
+    end
+  end
+  if left <= 0 then pf_since = nil end
+  M.stats.prefetch = M.stats.prefetch + 1
+  M.stats.prefetch_ms = M.stats.prefetch_ms + (vim.uv.hrtime() - t0) / 1e6
 end
 
 return M

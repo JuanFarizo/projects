@@ -1,6 +1,6 @@
 # Type and call hierarchy picker
 
-`<leader>cS` subtypes, `<leader>cP` supertypes, `<leader>ci` incoming calls, `<leader>cO` outgoing calls (same keys as before). Code: `nvim/lua/nv4j/hierarchy.lua` (loaded on first key press, zero startup cost), keys in `nvim/lua/config/keymaps.lua`. Check: `tests/checks/98_hierarchy.lua` (23 cases, 5 live; controls `tests/lib/control_98.sh`, 13).
+`<leader>cS` subtypes, `<leader>cP` supertypes, `<leader>ci` incoming calls, `<leader>cO` outgoing calls (same keys as before). Code: `nvim/lua/nv4j/hierarchy.lua` (loaded on first key press, zero startup cost), keys in `nvim/lua/config/keymaps.lua`. Check: `tests/checks/98_hierarchy.lua` (37 cases, 13 live; controls `tests/lib/control_98.sh`, 25).
 
 ## Why
 
@@ -41,5 +41,37 @@ Live check 98 on a 6-file Maven project: subtypes of an interface = its 3 implem
 ## Not done / limits
 
 - No tree: one level at a time (select a row and press the key again on the target).
-- Not exercised live: several clients, multiple prepare results, the 15 s timeout (stub only), `<CR>` on a library row is now exercised (see above).
+- Exercised live now (2026-11-23): several clients (a second in-process server), the timeout, outgoing calls, `<CR>` on a library row. Not exercised: several prepare results from ONE server (jdt.ls sends one).
 - Library rows show no preview text (empty by design: no extra request).
+
+## Speed round (2026-11-23)
+
+Measured with a real jdt.ls 1.63 (private config dir whose `nv4j` is a symlink to this worktree's `nvim`, proved by `stdpath("config")` realpath). Biggest fixture: `tests/fixtures/demo` (Spring Boot, 20 Java files, Spring Data on the classpath): too small to show the cost, so a copy of it with 1000 more classes was measured too (40 packages x 25 classes: 321 implementors of an interface, 360 subclasses of an abstract class; copy in /tmp, not committed). Medians, ms, `warm` = 5 repeats after the first request:
+
+| request | demo (20 files) cold / warm | 1000-class copy cold / warm |
+|---|---|---|
+| prepare (type or method) | 3-29 / 2-8 | 4-30 / 3-6 |
+| supertypes | 31 / 10 (1 result) | 20 / 9 |
+| subtypes, 0-3 results | 15-27 / 11-18 | 28 / 22 (library type, 2 results) |
+| subtypes, 321 results | - | 470-780 / 277 (later runs 80) |
+| subtypes, 360 results | - | 186-209 / 61-105 |
+| incoming calls (7 callers) | 135 / 70 | 51 / 26 (0 callers) |
+| outgoing calls | 34 / 17 | 41 / 9 |
+| H.run end to end, cache empty | 9-82 | 10-241 |
+
+The first request after import can be much slower (4135 ms for the first typeHierarchy request of one session, 4815 ms in check 98 on the 6-file project): jdt.ls builds its index then. Sizes: only subtypes grow with the workspace (supertypes, calls do not).
+
+Tried one at a time:
+
+1. KEPT: picker with a loading row. When the answer is not there `M.LOADING_MS` = 120 ms after the key press, the picker opens at once with one `loading ...` row (title `Subtypes of X  (loading ...)`); the rows replace it in the same picker (`M.fill`, prompt text kept) when they arrive. A fast answer (cache hit, small workspace) opens the final picker directly, no flicker. Closing the picker cancels the requests (`BufWipeout` of the prompt buffer); `<CR>` on the placeholder does nothing; an empty answer, an error or the timeout closes it with the message. Live: picker visible after 109-115 ms for an answer delayed to 600 ms (rows in the same picker after 640 ms), instead of nothing for the whole wait.
+2. NOT KEPT (not built): prepare + supertypes + subtypes in parallel. The two hierarchy requests need the item the prepare answers (jdt.ls resolves it by the item's data), so they cannot start before it; prepare to several clients is already parallel. Sending supertypes and subtypes together once the item is there was measured on the 1000-class copy: subtypes 74 ms together vs 80 ms alone, supertypes 5 ms in both: nothing to gain, so no extra request.
+3. KEPT: prefetch of subtypes on `CursorHold` (`updatetime` 700 ms) when the word under the cursor starts with a capital letter, normal mode, Java buffer, no hierarchy run in flight, no prefetch in flight (slot freed by the answer or after 20 s), jdt.ls not reporting a Build / Import / Refresh / Initializ / Starting job, `vim.g.nv4j_hierarchy_prefetch ~= false`. It fills the level-1 cache (prepare answer + subtypes rows, same keys as a press, epoch-guarded), so the next `<leader>cS` is a cache hit. Cost measured: main thread 0.1 to 1.1 ms per prefetch (including building 360 rows in the callback), one prepare and one subtypes request per symbol and buffer state (the cache answers a repeat CursorHold), nothing while typing (CursorHold does not fire). jdt.ls: completion sent right after a subtypes request 31 ms vs 29 ms alone (max 55), hover 3 vs 2 ms, so a prefetch does not hold up completion. Result on the 1000-class copy: press after prefetch 0.6 ms (0.8 ms for 360 rows) instead of 108 to 290 ms. The module loads on the first CursorHold in a Java buffer (the autocmd is in `config/keymaps.lua`), not at startup.
+4. KEPT (behaviour checked, 15 s unchanged): no answer within `M.TIMEOUT_MS` = 15000 ms: one WARN `no answer to typeHierarchy/subtypes within 15 s`, the requests cancelled, the loading picker closed, a late answer ignored. Live with 500 ms: WARN after 501 ms, picker closed, `cancel_request` sent. The message now prints the seconds with `%.4g` (it said `0 s` for a short timeout).
+
+Bug found by the several-clients case and fixed: the level-1 cache key per item had no client, so a second server answering the same item (same uri, name, range) was served the first server's rows. The key now includes the client id (`nokeyclient` control).
+
+Exercised live now: outgoing calls (`live_outgoing`: `List#of,PrintStream#println,Shape#area`, jump = the callee's declaration `Shape.java:4`), several clients (`live_two_clients`: jdt.ls plus an in-process Lua server attached to the same buffer; rows merged and sorted; each asked once per request kind).
+
+New cases (all in 98, every one has a control): pure `loading_slow`, `loading_fast`, `loading_cancel`, `timeout_slow`, `several_stub`, `prefetch_stub`, `prefetch_gates`, `prefetch_epoch`; live `live_loading`, `live_loading_close`, `live_timeout`, `live_outgoing`, `live_two_clients`, `live_prefetch`. Controls: `noload`, `nocancel`, `noclosecancel`, `notimeout`, `nokeyclient`, `oneclient`, `nopf`, `noword`, `noslot`, `nobusy`, `nopfepoch`, `noaucmd`.
+
+Not done / limits of this round: no tree; the loading picker is not shown when jdt.ls answers in under 120 ms; the 1000-class numbers come from a synthetic copy (no real big project was available offline); a prefetch and a key press at the same moment send the same request twice (rare: needs the press within the subtypes time of the CursorHold).

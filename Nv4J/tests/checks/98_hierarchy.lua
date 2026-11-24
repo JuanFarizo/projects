@@ -47,6 +47,8 @@ do
 end
 
 local H = require("nv4j.hierarchy")
+local LOADING_MS = H.LOADING_MS
+H.LOADING_MS = 1e9 -- the stub cases leave runs unanswered: no real picker may open behind them (the loading cases set it back)
 local function rng(l1, c1, l2, c2) return { start = { line = l1, character = c1 }, ["end"] = { line = l2, character = c2 } } end
 local ROOT = "/tmp/nv4j/r98"
 local U = function(rel) return vim.uri_from_fname(ROOT .. "/" .. rel) end
@@ -300,6 +302,201 @@ do
   H.invalidate()
 end
 
+-- loading / cancel / timeout / several clients (stub clients, real timers). M.LOADING_MS: the picker opens with a placeholder
+-- row only when the answer is late; closing it or the 15 s timeout cancels the requests (no hang).
+do
+  local function mkclient(id, name)
+    local c = { offset_encoding = "utf-16", name = name or "stub", id = id, reqs = {}, answers = {}, cancelled = {} }
+    function c:cancel_request(rid) self.cancelled[#self.cancelled + 1] = rid end
+    function c:request(method, params, cb)
+      self.reqs[#self.reqs + 1] = method
+      local n = #self.reqs
+      self.answers[n] = function(res, err) cb(err, res) end
+      return true, n
+    end
+    return c
+  end
+  local function items(names, uri)
+    local t = {}
+    for _, n in ipairs(names) do t[#t + 1] = { name = n, kind = 5, detail = "p", uri = uri or U(n .. ".java"), range = rng(0, 0, 0, 1), selectionRange = rng(0, 0, 0, 1) } end
+    return t
+  end
+  local clients = {}
+  local orig_get, orig_pos = vim.lsp.get_clients, vim.lsp.util.make_position_params
+  vim.lsp.get_clients = function() return clients end
+  vim.lsp.util.make_position_params = function() return { textDocument = { uri = "file:///x" }, position = { line = 0, character = 0 } } end
+  vim.api.nvim_set_current_buf(vim.api.nvim_create_buf(false, true))
+  local notes, orig_notify = {}, vim.notify
+  vim.notify = function(m, l) notes[#notes + 1] = { m, l } end
+  local function names_of(rows) return table.concat(vim.tbl_map(function(r) return r.name end, rows or {}), ",") end
+
+  -- loading_slow: prepare answered, the subtypes answer is late -> on_loading once (title with the name), then the rows
+  local c = mkclient(1)
+  clients = { c }
+  H.invalidate()
+  H.LOADING_MS = 40
+  local loads, got = {}, nil
+  H.run("subtypes", { on_loading = function(t) loads[#loads + 1] = t end, on_rows = function(rows) got = rows end })
+  c.answers[1](items({ "Shape" }))
+  vim.wait(200, function() return #loads > 0 end, 5)
+  local at_loading = { n = #loads, rows = got }
+  c.answers[2](items({ "B", "A" }))
+  vim.wait(100, function() return got ~= nil end, 5)
+  rep("loading_slow", at_loading.n == 1 and at_loading.rows == nil and loads[1]:find("Subtypes of Shape", 1, true) and loads[1]:find("loading", 1, true)
+    and got and names_of(got) == "A,B", ("on_loading calls %d, rows before answer %s, title %q, rows after %s"):format(at_loading.n, tostring(at_loading.rows), loads[1] or "", names_of(got)))
+
+  -- loading_fast: both answers at once -> the picker opens directly with the rows, no loading picker (no flicker)
+  H.invalidate()
+  H.LOADING_MS = 60
+  loads, got = {}, nil
+  c.reqs, c.answers = {}, {}
+  H.run("subtypes", { on_loading = function(t) loads[#loads + 1] = t end, on_rows = function(rows) got = rows end })
+  c.answers[1](items({ "Shape" }))
+  c.answers[2](items({ "A" }))
+  vim.wait(150)
+  rep("loading_fast", #loads == 0 and got and #got == 1, ("on_loading calls %d (want 0), rows %s"):format(#loads, names_of(got)))
+
+  -- loading_cancel: the cancel function (what closing the picker does) cancels the request in flight; a late answer shows nothing
+  H.invalidate()
+  H.LOADING_MS = 40
+  loads, got = {}, nil
+  c.reqs, c.answers, c.cancelled = {}, {}, {}
+  local cancel = H.run("subtypes", { on_loading = function(t) loads[#loads + 1] = t end, on_rows = function(rows) got = rows end })
+  c.answers[1](items({ "Shape" }))
+  local sub_answer = c.answers[2]
+  vim.wait(150, function() return #loads > 0 end, 5)
+  cancel()
+  sub_answer(items({ "Late" }))
+  vim.wait(100)
+  rep("loading_cancel", #loads == 1 and #c.cancelled >= 1 and got == nil, ("loading %d, cancel_request calls %d, rows shown after cancel %s"):format(#loads, #c.cancelled, tostring(got)))
+
+  -- timeout_slow: no answer within TIMEOUT_MS -> one WARN, requests cancelled, nothing shown, a late answer ignored (no hang)
+  H.invalidate()
+  H.LOADING_MS = 1e9
+  local t_old = H.TIMEOUT_MS
+  H.TIMEOUT_MS = 120
+  notes, got = {}, nil
+  c.reqs, c.answers, c.cancelled = {}, {}, {}
+  H.run("subtypes", { on_rows = function(rows) got = rows end })
+  c.answers[1](items({ "Shape" }))
+  local late = c.answers[2]
+  vim.wait(1000, function() return #notes > 0 end, 10)
+  late(items({ "Late" }))
+  vim.wait(60)
+  H.TIMEOUT_MS = t_old
+  rep("timeout_slow", #notes == 1 and notes[1][2] == vim.log.levels.WARN and notes[1][1]:find("no answer", 1, true) and #c.cancelled >= 1 and got == nil,
+    ("notes %s, cancel_request calls %d, rows %s"):format(vim.inspect(notes), #c.cancelled, tostring(got)))
+
+  -- several_stub: two clients (jdt.ls + another server): prepare to both, one request per prepared item, rows merged and
+  -- sorted; one client answering an error warns, the other's rows still show
+  local c1, c2 = mkclient(11, "one"), mkclient(12, "two")
+  local function ans(c, i, ...) if c.answers[i] then c.answers[i](...) end end -- a client that was not asked has no request to answer
+  clients = { c1, c2 }
+  H.invalidate()
+  notes, got = {}, nil
+  H.run("subtypes", { on_rows = function(rows) got = rows end })
+  ans(c1, 1, items({ "Shape" }))
+  ans(c1, 2, items({ "Zed", "Beta" }))
+  ans(c2, 1, items({ "Shape" })) -- same item (uri, name, range) from the second server: must not be answered from the first one's cache entry
+  ans(c2, 2, items({ "Alpha" }))
+  local ok_a = got and names_of(got) == "Alpha,Beta,Zed" and #c1.reqs == 2 and #c2.reqs == 2
+  local merged = names_of(got)
+  H.invalidate()
+  notes, got = {}, nil
+  c1.reqs, c1.answers, c2.reqs, c2.answers = {}, {}, {}, {}
+  H.run("subtypes", { on_rows = function(rows) got = rows end })
+  ans(c1, 1, items({ "Shape" }))
+  ans(c1, 2, nil, { message = "boom" })
+  ans(c2, 1, items({ "Shape" }))
+  ans(c2, 2, items({ "Alpha" }))
+  local ok_b = got and names_of(got) == "Alpha" and #notes == 1 and notes[1][2] == vim.log.levels.WARN and notes[1][1]:find("boom", 1, true)
+  rep("several_stub", ok_a and ok_b, ("merged %s; with one error rows %s notes %s"):format(merged, names_of(got), vim.inspect(notes)))
+
+  vim.notify = orig_notify
+  vim.lsp.get_clients, vim.lsp.util.make_position_params = orig_get, orig_pos
+  H.LOADING_MS = 1e9
+  H.invalidate()
+end
+
+-- prefetch (CursorHold, stub client): a type name under the cursor fills the level-1 cache quietly; the next press sends nothing.
+-- Gates: lowercase word, insert mode, jdt.ls busy, switched off, one in flight, a run in flight; an invalidation in between.
+do
+  local fake = { offset_encoding = "utf-16", name = "stub", id = 21, reqs = {}, answers = {} }
+  function fake:cancel_request() end
+  function fake:request(method, params, cb)
+    self.reqs[#self.reqs + 1] = method
+    local n = #self.reqs
+    self.answers[n] = function(res, err) cb(err, res) end
+    return true, n
+  end
+  local orig_get, orig_pos, orig_mode, orig_status = vim.lsp.get_clients, vim.lsp.util.make_position_params, vim.fn.mode, vim.lsp.status
+  vim.lsp.get_clients = function() return { fake } end
+  vim.lsp.util.make_position_params = function() return { textDocument = { uri = "file:///x" }, position = { line = 0, character = 0 } } end
+  local function items(names) local t = {}; for _, n in ipairs(names) do t[#t + 1] = { name = n, kind = 5, detail = "p", uri = U(n .. ".java"), range = rng(0, 0, 0, 1), selectionRange = rng(0, 0, 0, 1) } end return t end
+  local b = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_set_current_buf(b)
+  vim.api.nvim_buf_set_lines(b, 0, -1, false, { "Shape shape" })
+  local function fresh() fake.reqs, fake.answers = {}, {}; H.invalidate("pf") end
+  local function fa(i, ...) if fake.answers[i] then fake.answers[i](...) end end -- a gate that failed to hold leaves other requests
+  local function at(col) vim.api.nvim_win_set_cursor(0, { 1, col }) end
+
+  -- prefetch_stub
+  fresh(); at(1)
+  local s0 = H.stats.prefetch_requests
+  H.prefetch()
+  local after_call = #fake.reqs
+  fa(1, items({ "Shape" }))
+  local after_prepare = vim.deepcopy(fake.reqs)
+  fa(2, items({ "Zed", "alpha" }))
+  local size = H.cache_size()
+  local got
+  fake.reqs, fake.answers = {}, {}
+  H.run("subtypes", { on_rows = function(rows) got = rows end })
+  local sent_by_press = #fake.reqs
+  H.prefetch() -- again at the same position: the cache answers, nothing is sent
+  local sent_by_repeat = #fake.reqs
+  rep("prefetch_stub", after_call == 1 and #after_prepare == 2 and after_prepare[2] == "typeHierarchy/subtypes" and size == 2 and sent_by_press == 0
+    and got and #got == 2 and got[1].name == "alpha" and sent_by_repeat == 0 and H.stats.prefetch_requests - s0 == 2,
+    ("prefetch sent %d then %s, cache %d, press after it sent %d requests (rows %d), repeat prefetch sent %d, stats requests +%d"):format(
+      after_call, vim.inspect(after_prepare), size, sent_by_press, got and #got or -1, sent_by_repeat, H.stats.prefetch_requests - s0))
+
+  -- prefetch_gates: each gate sends nothing
+  local bad = {}
+  local function gate(name, f)
+    fresh(); at(1)
+    f()
+    H.prefetch()
+    if #fake.reqs ~= 0 then bad[#bad + 1] = name .. " sent " .. #fake.reqs end
+  end
+  gate("lowercase word", function() at(7) end)
+  gate("insert mode", function() vim.fn.mode = function() return "i" end end); vim.fn.mode = orig_mode
+  gate("jdt.ls busy", function() vim.lsp.status = function() return "jdtls: 45% Building workspace" end end); vim.lsp.status = orig_status
+  gate("switched off", function() vim.g.nv4j_hierarchy_prefetch = false end); vim.g.nv4j_hierarchy_prefetch = nil
+  fresh(); at(1)
+  H.prefetch(); H.prefetch() -- the first one is still waiting for its answer
+  if #fake.reqs ~= 1 then bad[#bad + 1] = "second call while one in flight sent " .. (#fake.reqs - 1) end
+  fa(1, items({ "Shape" })); fa(2, items({ "A" })) -- frees the slot
+  fresh(); at(1)
+  H.run("subtypes", { on_rows = function() end })
+  local n_run = #fake.reqs
+  H.prefetch()
+  if #fake.reqs ~= n_run then bad[#bad + 1] = "prefetch during a run sent " .. (#fake.reqs - n_run) end
+  fa(1, items({ "Shape" })); fa(2, items({ "A" }))
+  rep("prefetch_gates", #bad == 0, #bad == 0 and "lowercase word, insert mode, jdt.ls busy, switched off, one in flight, a run in flight: nothing sent" or table.concat(bad, "; "))
+
+  -- prefetch_epoch: an edit (invalidation) between the request and its answer: not stored
+  fresh(); at(1)
+  vim.wait(1)
+  H.prefetch()
+  fa(1, items({ "Shape" }))
+  vim.api.nvim_exec_autocmds("LspNotify", { data = { method = "textDocument/didChange" }, modeline = false })
+  fa(2, items({ "A" }))
+  rep("prefetch_epoch", H.cache_size() == 0, "entries after an answer that crossed an invalidation: " .. H.cache_size())
+
+  vim.lsp.get_clients, vim.lsp.util.make_position_params, vim.fn.mode, vim.lsp.status = orig_get, orig_pos, orig_mode, orig_status
+  H.invalidate("pf end")
+end
+
 if not unit_only then
   local root = "/tmp/nv4j/d98-" .. vim.fn.getpid()
   vim.fn.delete(root, "rf")
@@ -461,6 +658,193 @@ if not unit_only then
       rep("live_enter_library", picked ~= nil and landed and cur == want_line and picker_closed and (vim.v.errmsg == "" or vim.v.errmsg:find("java_spotbugs_post", 1, true)) and not vim.bo[lb].modifiable,
         ("picked %s; landed=%s in %.0f ms: %s, %d lines, cursor %d (want %s), picker closed=%s, errmsg=%q"):format(picked and picked.text or "none", tostring(landed),
           ms, vim.api.nvim_buf_get_name(0):sub(1, 60), vim.api.nvim_buf_line_count(0), cur, tostring(want_line), tostring(picker_closed), vim.v.errmsg))
+    end
+
+    -- ── speed round (2026-11-23): loading picker, close = cancel, timeout, outgoing calls, several clients (all live) ──
+    do
+      local state = require("telescope.actions.state")
+      local Shape = root .. "/src/main/java/demo/shapes/Shape.java"
+      vim.cmd("edit " .. vim.fn.fnameescape(Shape))
+      local function collect(kind, line, col)
+        vim.api.nvim_win_set_cursor(0, { line, col })
+        local got = nil
+        H.run(kind, { on_rows = function(rows, title) got = { rows = rows, title = title } end })
+        vim.wait(30000, function() return got ~= nil end, 50)
+        return got
+      end
+      local function current_picker() return state.get_current_picker(vim.api.nvim_get_current_buf()) end
+      local function nm(rows) local t = {}; for _, r in ipairs(rows or {}) do t[#t + 1] = r.name end return table.concat(t, ",") end
+      -- Delays (or swallows, `swallow`) the answer of one method and counts cancel_request calls.
+      local function slow(method, delay_ms, swallow)
+        local o_req, o_cancel = client.request, client.cancel_request
+        local st = { cancels = 0 }
+        client.request = function(self, m, params, cb, b)
+          if m ~= method then return o_req(self, m, params, cb, b) end
+          if swallow then return true, 987654 end
+          return o_req(self, m, params, function(e, r) vim.defer_fn(function() cb(e, r) end, delay_ms) end, b)
+        end
+        client.cancel_request = function(self, id) st.cancels = st.cancels + 1; return o_cancel(self, id) end
+        st.restore = function() client.request, client.cancel_request = o_req, o_cancel end
+        return st
+      end
+      local function wait_picker(min_rows, ms)
+        local p
+        vim.wait(ms or 5000, function()
+          p = current_picker()
+          return p ~= nil and p.manager ~= nil and p.manager:num_results() >= min_rows
+        end, 10)
+        return p
+      end
+
+      -- live_loading: the subtypes answer takes 600 ms (delayed); the picker is there after ~LOADING_MS with a `loading ...` row, <CR>
+      -- on it does nothing, then the 3 rows replace it in the same picker with the final title
+      H.invalidate("live_loading")
+      H.LOADING_MS = 100
+      local st = slow("typeHierarchy/subtypes", 600)
+      vim.api.nvim_win_set_cursor(0, { 3, 20 })
+      local t0 = vim.uv.hrtime()
+      H.run("subtypes")
+      local p = wait_picker(1, 2000)
+      local t_open = (vim.uv.hrtime() - t0) / 1e6
+      local first = p and p:get_selection()
+      local loading_row = first and first.value and first.value.loading == true
+      if p then vim.api.nvim_feedkeys(vim.keycode("<CR>"), "x", false) end
+      local still_open = current_picker() == p and p ~= nil
+      local p2 = wait_picker(3, 4000)
+      local t_full = (vim.uv.hrtime() - t0) / 1e6
+      local same_picker = p2 == p
+      local titles = p and p.prompt_title or ""
+      local sel = p and p:get_selection()
+      local n_rows = p and p.manager and p.manager:num_results() or 0
+      local body = {}
+      for i = 1, n_rows do local e = p.manager:get_entry(i); body[#body + 1] = e and e.value and e.value.name or "?" end
+      pcall(function() require("telescope.actions").close(p.prompt_bufnr) end)
+      st.restore()
+      rep("live_loading", p ~= nil and t_open < 450 and loading_row and still_open and same_picker and n_rows == 3 and t_full >= 600 and not (sel and sel.value.loading),
+        ("picker open after %.0f ms with a loading row=%s, <CR> on it kept it open=%s; rows after %.0f ms in the same picker=%s: %s (%d)"):format(t_open, tostring(loading_row), tostring(still_open), t_full, tostring(same_picker), table.concat(body, ","), n_rows))
+
+      -- live_loading_close: closing the loading picker cancels the request in flight; the late answer opens nothing
+      H.invalidate("live_loading_close")
+      st = slow("typeHierarchy/subtypes", 600)
+      vim.api.nvim_win_set_cursor(0, { 3, 20 })
+      H.run("subtypes")
+      p = wait_picker(1, 2000)
+      local was_open = p ~= nil
+      local c0 = st.cancels
+      if p then pcall(function() require("telescope.actions").close(p.prompt_bufnr) end) end
+      vim.wait(1000)
+      local reopened = current_picker() ~= nil
+      st.restore()
+      rep("live_loading_close", was_open and st.cancels > c0 and not reopened, ("loading picker was open=%s, cancel_request calls after closing it %d, picker after the late answer=%s"):format(tostring(was_open), st.cancels - c0, tostring(reopened)))
+
+      -- live_timeout: the server never answers subtypes; after TIMEOUT_MS: one WARN (no hang), the loading picker is closed, the request cancelled
+      H.invalidate("live_timeout")
+      local t_old = H.TIMEOUT_MS
+      H.TIMEOUT_MS = 500
+      st = slow("typeHierarchy/subtypes", 0, true)
+      local notes, o_notify = {}, vim.notify
+      vim.notify = function(m, l) notes[#notes + 1] = { m, l } end
+      vim.api.nvim_win_set_cursor(0, { 3, 20 })
+      t0 = vim.uv.hrtime()
+      H.run("subtypes")
+      p = wait_picker(1, 2000)
+      local loading_shown = p ~= nil
+      vim.wait(3000, function() return #notes > 0 end, 10)
+      local t_warn = (vim.uv.hrtime() - t0) / 1e6
+      vim.wait(200)
+      local closed = current_picker() == nil
+      vim.notify = o_notify
+      H.TIMEOUT_MS = t_old
+      st.restore()
+      rep("live_timeout", loading_shown and #notes == 1 and notes[1][2] == vim.log.levels.WARN and notes[1][1]:find("no answer", 1, true) and closed and st.cancels >= 1 and t_warn < 1500,
+        ("loading shown=%s, WARN after %.0f ms: %s, picker closed=%s, cancel_request calls %d"):format(tostring(loading_shown), t_warn, vim.inspect(notes), tostring(closed), st.cancels))
+      H.LOADING_MS = 1e9
+
+      -- live_outgoing: callees of Out#hi: Shape#area (the project), PrintStream#println and List#of (JDK), jump = the callee's declaration
+      vim.cmd("edit " .. vim.fn.fnameescape(root .. "/src/main/java/demo/app/Out.java"))
+      local o = collect("outgoing", 4, 16)
+      local on, jl2 = {}, nil
+      for _, r in ipairs(o and o.rows or {}) do
+        on[#on + 1] = r.name
+        if r.name == "Shape#area" then H.jump(r, client.offset_encoding); jl2 = vim.api.nvim_buf_get_name(0):match("[^/]+$") .. ":" .. vim.api.nvim_win_get_cursor(0)[1] end
+      end
+      rep("live_outgoing", o ~= nil and table.concat(on, ",") == "List#of,PrintStream#println,Shape#area" and jl2 == "Shape.java:4" and o.title:find("Callees of hi", 1, true),
+        ("rows=%s jump Shape#area=%s title=%s"):format(table.concat(on, ","), tostring(jl2), o and o.title or "nil"))
+
+      -- live_two_clients: a second server (in-process, Lua) attached to the same buffer answers prepareTypeHierarchy and subtypes too;
+      -- the rows of both are merged and sorted, each client asked once per request kind
+      vim.cmd("edit " .. vim.fn.fnameescape(Shape))
+      local fake_calls = {}
+      local shape_uri = vim.uri_from_fname(Shape)
+      local function fake_cmd(dispatchers)
+        local closing = false
+        return {
+          request = function(method, params, callback)
+            fake_calls[#fake_calls + 1] = method
+            vim.schedule(function()
+              if method == "initialize" then callback(nil, { capabilities = { typeHierarchyProvider = true } })
+              elseif method == "textDocument/prepareTypeHierarchy" then
+                callback(nil, { { name = "Shape", kind = 11, detail = "fake.pkg", uri = shape_uri, range = rng(2, 0, 2, 10), selectionRange = rng(2, 17, 2, 22) } })
+              elseif method == "typeHierarchy/subtypes" then
+                callback(nil, { { name = "ZFake", kind = 5, detail = "fake.pkg", uri = shape_uri, range = rng(0, 0, 0, 1), selectionRange = rng(0, 0, 0, 1) } })
+              else callback(nil, nil) end
+            end)
+            return true, #fake_calls
+          end,
+          notify = function() return true end,
+          is_closing = function() return closing end,
+          terminate = function() closing = true end,
+        }
+      end
+      local fid = vim.lsp.start({ name = "fake98", cmd = fake_cmd, root_dir = root }, { bufnr = vim.api.nvim_get_current_buf(), reuse_client = function() return false end })
+      local fake = fid and vim.lsp.get_client_by_id(fid)
+      vim.wait(3000, function() return fake and fake.initialized end, 20)
+      H.invalidate("live_two_clients")
+      vim.api.nvim_win_set_cursor(0, { 3, 20 })
+      local n_clients = #vim.lsp.get_clients({ bufnr = 0, method = "textDocument/prepareTypeHierarchy" })
+      local tw = collect("subtypes", 3, 20)
+      local prep_c, sub_c = 0, 0
+      for _, m in ipairs(fake_calls) do
+        if m == "textDocument/prepareTypeHierarchy" then prep_c = prep_c + 1 elseif m == "typeHierarchy/subtypes" then sub_c = sub_c + 1 end
+      end
+      if fake then pcall(function() fake:stop(true) end) end
+      rep("live_two_clients", n_clients == 2 and tw ~= nil and nm(tw.rows) == "Circle,Square,Zeta,ZFake" and prep_c == 1 and sub_c == 1,
+        ("clients supporting prepare %d, rows %s, fake server asked prepare x%d subtypes x%d"):format(n_clients, tw and nm(tw.rows) or "nil", prep_c, sub_c))
+
+      -- live_prefetch: the CursorHold autocmd (the config's own) on `Shape` fills the cache with the real jdt.ls answers; the next
+      -- <leader>cS press then sends nothing and its rows come at once; cursor on a lowercase word sends nothing
+      vim.cmd("edit " .. vim.fn.fnameescape(Shape))
+      H.invalidate("live_prefetch")
+      H.LOADING_MS = 1e9
+      local sent_pf, o_req2 = {}, client.request
+      client.request = function(self, method, ...)
+        if method:find("^typeHierarchy/") or method:find("prepareTypeHierarchy", 1, true) then sent_pf[#sent_pf + 1] = method end
+        return o_req2(self, method, ...)
+      end
+      local dbg_status = vim.lsp.status()
+      local hooks_found = #vim.api.nvim_get_autocmds({ group = "nv4j_hierarchy_prefetch", event = "CursorHold" })
+      vim.api.nvim_win_set_cursor(0, { 1, 2 }) -- "package": lowercase, no prefetch
+      vim.api.nvim_exec_autocmds("CursorHold", { buffer = 0, modeline = false })
+      local sent_lower = #sent_pf
+      vim.api.nvim_win_set_cursor(0, { 3, 20 })
+      local s0 = H.stats.prefetch_ms
+      -- jdt.ls may still report a build / refresh job (the gate waits for it): fire CursorHold again like an idle user until it goes
+      local filled, tries = false, 0
+      while not filled and tries < 100 do
+        if #sent_pf == 0 then vim.api.nvim_exec_autocmds("CursorHold", { buffer = 0, modeline = false }) end
+        filled = vim.wait(200, function() return H.cache_size() == 2 end, 10)
+        tries = tries + 1
+      end
+      local sent_by_prefetch = #sent_pf
+      sent_pf = {}
+      local t_press = vim.uv.hrtime()
+      local pg = collect("subtypes", 3, 20)
+      local ms_press = (vim.uv.hrtime() - t_press) / 1e6
+      client.request = o_req2
+      rep("live_prefetch", hooks_found == 1 and sent_lower == 0 and filled and sent_by_prefetch == 2 and #sent_pf == 0 and pg ~= nil and nm(pg.rows) == "Circle,Square,Zeta",
+        ("CursorHold autocmds %d; lowercase word sent %d; type name: %d requests, cache filled=%s (main-thread cost of the prefetch %.2f ms; lsp status %q mode %s cword %s); press after it: %d requests, rows %s in %.1f ms"):format(
+          hooks_found, sent_lower, sent_by_prefetch, tostring(filled), H.stats.prefetch_ms - s0, dbg_status, vim.fn.mode(), vim.fn.expand("<cword>"), #sent_pf, pg and nm(pg.rows) or "nil", ms_press))
+      H.invalidate("end")
     end
   end
   vim.lsp.start = orig_start
