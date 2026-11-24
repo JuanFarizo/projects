@@ -533,6 +533,14 @@ vim.api.nvim_create_user_command("Nv4JHealth", function() vim.cmd("checkhealth n
   desc = "Read-only Nv4J health report: tools, bundles, JDK, CFR jar, logs dir, Maven settings, project root",
 })
 
+-- ── :Nv4JSpringUpdate [version|latest|prerelease] [--check] [--verify]: Spring Boot LS from OpenVSX (nv4j/springupdate.lua
+-- loads only when run; no network and no module load at startup; vim.g.nv4j_spring_version = pinned version, "latest" or "prerelease") ──
+vim.api.nvim_create_user_command("Nv4JSpringUpdate", function(o) require("nv4j.springupdate").run_command(o.fargs) end, {
+  nargs = "*",
+  complete = function() return { "latest", "prerelease", "--check", "--verify" } end,
+  desc = "Install a Spring Boot language server version from OpenVSX in the background (latest = newest stable, prerelease = newest incl. pre-release, or an exact version); --check only looks up; --verify runs the Spring checks first",
+})
+
 -- ── :Nv4JMermaid install|remove|status: mermaid diagrams in markdown buffers via snacks.image + mmdr (nv4j/mermaid.lua).
 -- Nothing changes until `install`; setup() is one stat that puts <data>/mermaid on PATH when it exists. ──
 require("nv4j.mermaid").setup()

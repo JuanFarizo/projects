@@ -1,0 +1,11 @@
+{
+ "name": "vscode-spring-boot",
+ "namespace": "VMware",
+ "version": "2.5.2026111900",
+ "preRelease": true,
+ "timestamp": "2026-11-19T00:48:18.105593Z",
+ "versionAlias": [
+  "latest",
+  "pre-release"
+ ]
+}

@@ -47,6 +47,21 @@ local function mason_bundles()
     h.warn("Spring Boot LS not installed (vscode-spring-boot-tools): installed when you open a Spring Boot project")
   end
 
+  if okS and spring.enabled() then
+    -- Version, channel and the cached lookup only: no network from here (the lookup is :Nv4JSpringUpdate --check).
+    local inst = spring.installed_version()
+    local g = vim.g.nv4j_spring_version
+    h.info(("Spring LS version: %s%s; vim.g.nv4j_spring_version = %s"):format(inst and inst.version or "not installed",
+      inst and (inst.source == "managed" and " (Nv4J install, :Nv4JSpringUpdate)" or " (Mason package)") or "", g and ('"' .. tostring(g) .. '"') or "unset (keeps what is installed)"))
+    local c = require("nv4j.springupdate").cached() -- reads a small file; the network is only in :Nv4JSpringUpdate
+    if c and (c.stable or c.prerelease) then
+      h.info(("Spring LS newest (cached %s): stable %s, pre-release %s. Refresh: :Nv4JSpringUpdate --check"):format(
+        os.date("%Y-%m-%d", tonumber(c.checked) or 0), c.stable or "?", c.prerelease or "?"))
+    else
+      h.info("Spring LS newest: unknown, run :Nv4JSpringUpdate --check (the only network call)")
+    end
+  end
+
   local okJ, home = pcall(function() return require("nv4j.jdk").server_home() end)
   local jdk = require("nv4j.jdk")
   if okJ then
