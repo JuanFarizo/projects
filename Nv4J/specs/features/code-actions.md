@@ -12,6 +12,8 @@ Status: proven by `tests/checks/91_codeactions.lua` (2026-11-10, jdt.ls 1.63.0 f
 
 ## Pressed keys (check `100_extract_keys`, 2026-11-16)
 
+Without `tmux` the check reports one `100_extract_keys.tmux` line (PASS, detail "SKIP: tmux not installed") and finishes; the key cases run only where tmux exists (not installed on the author's Linux machine, 2026-11-23).
+
 One real nvim (`NVIM_APPNAME=nv4j`) in a private `tmux -L xc100-<pid>` with one jdt.ls on a tiny Maven project; keys sent with `tmux send-keys`, the BUFFER text read through the nvim socket, the screen through `capture-pane`. Proven by keypress: `<leader>cxc` (normal on `2` of `2 * 3`: a "Choices" picker lists `2` and `2 * 3`, Down + Enter; visual `v4l`; visual `vi"` inside a string; default package), `<leader>ca` menu + filter "to constant" and "lambda" + Enter, `<leader>cxv` (normal with picker, visual), `<leader>cxm` (visual lines), `<leader>ji`, `<leader>co`. Everything else in the table below is proven by the Lua path only.
 
 Findings from pressing the keys:
