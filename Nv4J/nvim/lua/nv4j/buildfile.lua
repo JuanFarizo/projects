@@ -103,12 +103,37 @@ function M.reimport(path)
   return asked
 end
 
+-- Neovim does not advertise workspace/didChangeWatchedFiles on Linux (and BSD): `protocol.lua` sets dynamicRegistration
+-- only on macOS and Windows ("all the current backends are too limited"), so jdt.ls never registers its file watchers
+-- and never hears that pom.xml / build.gradle changed (measured on Neovim 0.12.6, Linux: 30_diagnostics maven_malformed
+-- and maven_missing_artifact got no diagnostic for 30 s after a save). jdt.ls does react to the notification itself
+-- (probe: same pom, manual notify -> "Non-readable POM" error in under a second). On a save of a build file send the
+-- "Changed" event to the jdt.ls clients that did not get a watcher. Returns the clients notified.
+function M.notify_saved(path)
+  local notified = {}
+  path = vim.uv.fs_realpath(path) or path
+  for _, c in ipairs(vim.lsp.get_clients({ name = "jdtls" })) do
+    local dyn = vim.tbl_get(c.capabilities or {}, "workspace", "didChangeWatchedFiles", "dynamicRegistration")
+    local r = c.config and c.config.root_dir
+    r = r and (vim.uv.fs_realpath(r) or r)
+    if not dyn and r and (path == r or path:sub(1, #r + 1) == r .. "/") then
+      c:notify("workspace/didChangeWatchedFiles", { changes = { { uri = vim.uri_from_fname(path), type = 2 } } })
+      notified[#notified + 1] = c
+    end
+  end
+  return notified
+end
+
 function M.setup()
   local g = vim.api.nvim_create_augroup("nv4j_buildfile", { clear = true })
   vim.api.nvim_create_autocmd("BufWritePost", {
     group = g,
     pattern = { "*/build.gradle", "*/build.gradle.kts", "*/settings.gradle", "*/settings.gradle.kts", "*/pom.xml" },
-    callback = function(args) M.reimport(vim.api.nvim_buf_get_name(args.buf)) end,
+    callback = function(args)
+      local path = vim.api.nvim_buf_get_name(args.buf)
+      M.notify_saved(path)
+      M.reimport(path)
+    end,
   })
   vim.api.nvim_create_autocmd("DiagnosticChanged", {
     group = g,

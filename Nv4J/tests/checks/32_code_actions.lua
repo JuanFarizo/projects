@@ -29,6 +29,12 @@ local orig = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
 -- preselection) and cancels the rename prompt that follows an extract.
 vim.fn.input = function() return "" end
 vim.ui.input = function(_, on_confirm) on_confirm(nil) end
+-- vim.ui.select (nv4j.codegen pick_many, check 110: a checkbox list whose first line is "Done", fields preselected) answers
+-- with its first item at once: "Done" for the multi-picker = Enter in the old number prompt (keeps the preselection), the
+-- first item for any other list. Unstubbed, the generate cases waited for a UI that never answers: pick_many's own wait is
+-- 10 minutes, and the case's 10 s wait never ran because code_action blocked inside it.
+vim.ui.select = function(items, _, on_choice) on_choice(items[1], 1) end
+vim.g.nv4j_extract_names = false -- the name picker after an extract (check 120) would rename; this check pins jdt.ls's own names
 
 local function offered(case, line, col, pats, el, ec)
   local r = E.code_actions(client, buf, line, col, el, ec)
