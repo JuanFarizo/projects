@@ -104,14 +104,47 @@ local fixture = vim.env.NV4J_FIXTURE
 local buf1 = lsp.open(fixture .. "/src/main/java/demo/Modern.java")
 check_case("20_java25", nil, fixture, 25, buf1)
 
--- JVM jdtls itself runs on: first word of its process command line.
+-- JVM jdtls itself runs on: first word of the command line of a jdt.ls process that is a descendant of THIS nvim (pid ancestry).
+-- The user's own jdt.ls sessions share the data dir (nv4j.paths.jdtls_data) and may run on another java path (e.g. SDKMAN's
+-- `current/bin/java`): matching by data dir alone picked those up (root cause of a false server_jvm FAIL).
+-- Decoy: looks like another session's jdt.ls (same data dir, other java path) but is detached (parent = init), so not a descendant.
+-- Killed by its exact pid below; case server_jvm_ignores_foreign proves it was visible to `ps` and still not chosen.
+local decoy_file = "/tmp/nv4j/d20-decoy-" .. vim.fn.getpid() .. ".pid"
+local decoy_arg0 = "/tmp/nv4j/decoy20/bin/java -Declipse.application=x -jar org.eclipse.equinox.launcher_x.jar -data " .. require("nv4j.paths").jdtls_data .. "/decoy20"
+vim.fn.delete(decoy_file)
+vim.system({ "bash", "-c", [[(setsid bash -c 'echo $$ > "$2"; exec -a "$1" sleep 120' bash "$1" "$2" </dev/null >/dev/null 2>&1 &)]], "bash", decoy_arg0, decoy_file }):wait()
+vim.wait(3000, function() return vim.uv.fs_stat(decoy_file) ~= nil end, 50)
+local decoy_pid = tonumber(vim.trim(table.concat(vim.fn.readfile(decoy_file), "")))
 local jvm
-for _, l in ipairs(vim.fn.systemlist({ "ps", "-axo", "command=" })) do
-  local exe = l:match("^(%S+/bin/java) ")
-  if exe and l:find("org.eclipse.equinox.launcher", 1, true) and l:find(require("nv4j.paths").jdtls_data .. "/", 1, true) then
-    jvm = exe
-    break
+do
+  local parent, cmds = {}, {}
+  for _, l in ipairs(vim.fn.systemlist({ "ps", "-axo", "pid=,ppid=,command=" })) do
+    local pid, ppid, cmd = l:match("^%s*(%d+)%s+(%d+)%s+(.*)$")
+    if pid then parent[tonumber(pid)] = tonumber(ppid); cmds[tonumber(pid)] = cmd end
   end
+  local me = vim.fn.getpid()
+  local function mine(pid)
+    for _ = 1, 20 do
+      pid = parent[pid]
+      if not pid or pid <= 1 then return false end
+      if pid == me then return true end
+    end
+    return false
+  end
+  for pid, l in pairs(cmds) do
+    local exe = l:match("^(%S+/bin/java) ")
+    if exe and mine(pid) and l:find("org.eclipse.equinox.launcher", 1, true) and l:find(require("nv4j.paths").jdtls_data .. "/", 1, true) then
+      jvm = exe
+      break
+    end
+  end
+end
+do
+  local seen
+  for _, l in ipairs(vim.fn.systemlist({ "ps", "-axo", "command=" })) do if l:find("/tmp/nv4j/decoy20/bin/java", 1, true) then seen = true end end
+  lsp.report("20_java25.server_jvm_ignores_foreign", seen == true and jvm ~= nil and not jvm:find("decoy20", 1, true), "decoy visible=" .. tostring(seen) .. ", chosen " .. tostring(jvm))
+  if decoy_pid then vim.system({ "kill", tostring(decoy_pid) }):wait() end
+  vim.fn.delete(decoy_file)
 end
 local expect = require("nv4j.jdk").server_home()
 lsp.report("20_java25.server_jvm", jvm ~= nil and jvm == expect .. "/bin/java", "jdtls runs on " .. tostring(jvm) .. " (expected " .. expect .. ")")
