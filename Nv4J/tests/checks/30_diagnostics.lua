@@ -257,7 +257,12 @@ local ok_mvn, err_mvn = pcall(function()
   local function pom_case(case, lines, pred, note_pat)
     local n0 = #notes
     local t0 = E.now()
-    vim.fn.writefile(lines, dir .. "/pom.xml")
+    -- Saved from a buffer, as a user does: Neovim on Linux/BSD does not advertise file watching to jdt.ls, so a file
+    -- rewritten behind its back is never seen (that is also why the first version of this case timed out on Linux);
+    -- the save is what nv4j.buildfile turns into didChangeWatchedFiles.
+    vim.fn.bufload(pbuf)
+    vim.api.nvim_buf_set_lines(pbuf, 0, -1, false, lines)
+    vim.api.nvim_buf_call(pbuf, function() vim.cmd("silent write!") end)
     local ok, ms, d = E.wait_diags(pbuf, pred, 30000, t0)
     local noted
     if note_pat then
@@ -274,7 +279,9 @@ local ok_mvn, err_mvn = pcall(function()
   pom_case("malformed", { "<project><modelVersion>4.0.0</modelVersion><groupId>pc" }, function(d)
     return E.has(d, S.ERROR, "Non%-readable POM") ~= nil or E.has(d, S.ERROR, "Non%-parseable POM") ~= nil
   end, "POM")
-  pom_case("fixed", pom(), function(d) return #d == 0 end)
+  -- The pom is a loaded xml buffer now (saved like a user), so the XML server may add its own Hint ("No grammar
+  -- constraints"); what must be gone are jdt.ls's build errors and warnings.
+  pom_case("fixed", pom(), function(d) return E.count(d, S.ERROR) == 0 and E.count(d, S.WARN) == 0 end)
   -- interactive mode would leave an Information diagnostic asking for a reload
   local leftover = E.stays(pbuf, function(d) return E.has(d, nil, "may need reload") == nil end, 2000)
   lsp.report(P .. "maven_auto_update", leftover, leftover and "no 'may need reload' diagnostic" or E.fmt(vim.diagnostic.get(pbuf)))
