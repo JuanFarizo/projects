@@ -1,6 +1,6 @@
 # Health report: `:Nv4JHealth` / `:checkhealth nv4j`
 
-A read-only report of what Nv4J needs on this machine, for a new machine or when something does not start. `:Nv4JHealth` runs `:checkhealth nv4j` (Neovim's own convention: `lua/nv4j/health.lua`, `M.check()`). Code: `nvim/lua/nv4j/health.lua`, command in `nvim/lua/config/keymaps.lua`. Check: `tests/checks/96_health.lua` (12 cases; controls `tests/lib/control_96.sh`). No `<leader>` key.
+A read-only report of what Nv4J needs on this machine, for a new machine or when something does not start. `:Nv4JHealth` runs `:checkhealth nv4j` (Neovim's own convention: `lua/nv4j/health.lua`, `M.check()`). Code: `nvim/lua/nv4j/health.lua`, command in `nvim/lua/config/keymaps.lua`. Check: `tests/checks/96_health.lua` (14 cases; controls `tests/lib/control_96.sh`). No `<leader>` key.
 
 ## Cost
 
@@ -10,7 +10,8 @@ Zero at startup: the module is required only when the command or `:checkhealth` 
 
 | Section | Line | Level |
 |---------|------|-------|
-| Tools | `java`, `mvn`, `rg`, `fd`, `git` on `PATH` | ok / error |
+| Tools | `java`, `mvn`, `rg`, `git` on `PATH` | ok / error (the message says how to install it) |
+| | `fd` (or Debian's `fdfind`) | info (optional: nothing in Nv4J calls it; snacks' file picker prefers it and falls back to `rg`) |
 | | `fzf` | info (optional) |
 | Mason packages | jdt.ls (`mason/packages/jdtls` with its launcher jar), java-debug bundle, java-test bundle | ok / error |
 | | Spring Boot LS (`nv4j.spring`, same helpers as the config) | ok / warn when not installed yet (installed on the first Boot project) / info when `vim.g.nv4j_spring = false` |

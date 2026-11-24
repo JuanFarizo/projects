@@ -2,8 +2,9 @@
 -- (the CFR jar path, the logs dir and the ~/.m2/settings.xml path are stubbed to a temp tree /tmp/nv4j/d96-<pid>; PATH is
 -- emptied inside pcall and restored).
 --  zero_cost_startup : nv4j.health is not loaded when the config has started.
---  tools_ok / tools_missing : with the real PATH java, mvn, rg, fd, git are ok (an error otherwise, reported as the detail);
---                      with PATH emptied every one of the five is an ERROR and fzf is only info.
+--  tools_ok / tools_missing : with the real PATH java, mvn, rg, git are ok (an error otherwise, reported as the detail);
+--                      with PATH emptied every one of the four is an ERROR with an install hint; fd and fzf are only info (optional).
+--  fd_optional / fd_fdfind : fd absent = info "fd (optional)", never an error (this machine has no fd); an executable `fdfind` on PATH is found as fd.
 --  bundles           : jdt.ls, java-debug, java-test, Spring LS and the JDK of jdt.ls each get a line (ok/warn/error), no crash.
 --  cfr_absent        : jar missing = WARN naming :Nv4JInstallCfr, no error.
 --  cfr_sha_ok / cfr_sha_bad : a stub jar whose SHA-256 equals / differs from the pinned one = ok / error.
@@ -52,10 +53,10 @@ vim.fn.jobstart = function(...) if in_run then spawned = spawned + 1 end; return
 local real = run()
 do
   local missing = {}
-  for _, t in ipairs({ "java", "mvn", "rg", "fd", "git" }) do
+  for _, t in ipairs({ "java", "mvn", "rg", "git" }) do
     if not find(real, "ok", t .. ": ") then missing[#missing + 1] = t end
   end
-  rep("tools_ok", #missing == 0, #missing == 0 and "all five found" or ("not found on this machine: " .. table.concat(missing, ",")))
+  rep("tools_ok", #missing == 0, #missing == 0 and "all four required tools found" or ("not found on this machine: " .. table.concat(missing, ",")))
 end
 
 do
@@ -64,8 +65,21 @@ do
   local ok, out = pcall(run)
   vim.env.PATH = path
   local errs = ok and (count(out, "error", "java not found") + count(out, "error", "mvn not found") + count(out, "error", "rg not found")
-    + count(out, "error", "fd not found") + count(out, "error", "git not found")) or -1
-  rep("tools_missing", ok and errs == 5 and find(out, "info", "fzf (optional)") ~= nil, "errors " .. errs)
+    + count(out, "error", "git not found")) or -1
+  local hints = ok and count(out, "error", "not found on PATH: ") == 4
+  rep("tools_missing", ok and errs == 4 and hints and find(out, "info", "fzf (optional)") ~= nil, "errors " .. errs .. " with install hint: " .. tostring(hints))
+  rep("fd_optional", ok and count(out, "error", "fd") == 0 and find(out, "info", "fd (optional): not found") ~= nil, "fd absent must be info, not error")
+end
+do
+  local path = vim.env.PATH
+  local bin = TMP .. "/fdbin"
+  vim.fn.mkdir(bin, "p")
+  local f = assert(io.open(bin .. "/fdfind", "w")); f:write("#!/bin/sh\n"); f:close()
+  vim.uv.fs_chmod(bin .. "/fdfind", tonumber("755", 8))
+  vim.env.PATH = bin
+  local ok, out = pcall(run)
+  vim.env.PATH = path
+  rep("fd_fdfind", ok and find(out, "info", "fd (optional): " .. bin .. "/fdfind") ~= nil, "fdfind on PATH is found as fd")
 end
 
 do
