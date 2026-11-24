@@ -45,11 +45,12 @@ local function titles_at(lenses, row)
 end
 local function has(list, pat) for _, t in ipairs(list) do if t:find(pat, 1, true) then return true end end return false end
 local function lenses_with(pred, timeout_ms)
+  -- lsp.poll, not vim.wait(.., fn, ..): fn does a request_sync, and a vim.wait around a nested wait never times out (hung 20+ min)
   local got
-  vim.wait(timeout_ms or 30000, function()
+  lsp.poll(timeout_ms or 30000, 1500, function()
     got = req("textDocument/codeLens", { textDocument = { uri = uri } })
     return got and pred(got)
-  end, 1500)
+  end)
   return got
 end
 
@@ -85,7 +86,7 @@ local function actions(row)
   return a or {}
 end
 local ae, aq = actions(r_email), actions(r_query)
-lsp.report(P .. "add_query_offered", #ae == 1 and ae[1].title == "Add `@Query`" and #aq == 0, ("derived: %d (%s), @Query method: %d"):format(#ae, ae[1] and ae[1].title or "-", #aq))
+lsp.report(P .. "add_query_offered", #ae == 1 and ae[1].title == "Add `@Query`" and #vim.tbl_filter(function(a) return a.title == "Add `@Query`" end, aq) == 0, ("derived: %d (%s), @Query method: %d (%s; only an Add action counts, 2.5 also offers Convert query to text block)"):format(#ae, ae[1] and ae[1].title or "-", #aq, aq[1] and aq[1].title or "-"))
 
 local applied = false
 local orig_apply = c.handlers["workspace/applyEdit"] or vim.lsp.handlers["workspace/applyEdit"]

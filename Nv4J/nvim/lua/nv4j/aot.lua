@@ -49,6 +49,26 @@ local function relens()
   end
 end
 
+--- Tell the Spring LS that the build wrote metadata files. The server reads the AOT JSON through its own file-change events
+--- (VS Code's watcher sends them); Neovim's watcher misses files in a `target/spring-aot` folder that did not exist when the
+--- server registered its watchers, so the lens stayed "Show AOT-generated..." after a successful build (check 82 lens_query,
+--- 2026-11-24: 45 s of waiting did not change it, one `workspace/didChangeWatchedFiles` did). Sends type Created (1) for every
+--- JSON under the build output; returns the number of files reported.
+function M.notify_files(dir)
+  local files = {}
+  for _, root in ipairs({ dir .. "/target/spring-aot", dir .. "/build/generated/aotResources" }) do
+    if vim.uv.fs_stat(root) then
+      for _, f in ipairs(vim.fn.globpath(root, "**/*.json", false, true)) do files[#files + 1] = f end
+    end
+  end
+  if #files == 0 then return 0 end
+  local changes = vim.tbl_map(function(f) return { uri = vim.uri_from_fname(f), type = 1 } end, files)
+  for _, c in ipairs(vim.lsp.get_clients({ name = "spring-boot" })) do
+    pcall(c.notify, c, "workspace/didChangeWatchedFiles", { changes = changes })
+  end
+  return #files
+end
+
 --- Gradle only. Buildship lists `build/generated/aotResources` as a source folder only when the folder exists at import, and
 --- the Spring LS finds the metadata through that source folder: after the first build it has to re-sync the project
 --- (jdt.ls `java/projectConfigurationUpdate`, what nvim-jdtls update_project_config does). Verified 2026-11-21 against
@@ -102,6 +122,7 @@ function M.run(tool, args, on_done)
       running[build_file] = nil
       if r.code == 0 then
         notify(("AOT metadata for %s is ready"):format(name))
+        M.notify_files(cwd)
         relens()
         if tool == "gradle" and M.resync(build_file) then
           -- the re-sync takes a few seconds; the lenses are asked for again while it runs and after it
