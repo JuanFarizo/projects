@@ -19,6 +19,12 @@
 --     which fires FileType java on an unnamed scratch buffer, and LazyVim starts a jdt.ls for it
 --     (root "."). jdtls.start_or_attach is skipped for unnamed buffers.
 --  5. JUnit launcher version: see M.junit_launcher.
+--  6. setBreakpoints right after a jdt.ls start can fail with "Missing system library" (the project's JRE
+--     container is not resolved yet although the import reported ready; seen once in a full run, the
+--     breakpoint was then never set and the session ran past it). Such an error is retried: see
+--     M.retry_set_breakpoints.
+--  7. a second launch right after a terminate can fail with "jobstart requires unmodified buffer": see
+--     M.wipe_old_terminals.
 local M = {}
 
 function M.setup()
@@ -107,6 +113,48 @@ function M.refresh_and_build(root, done, what)
   if not client then return done() end
   refresh(client.config.root_dir)
   M.build(client, done, nil, what)
+end
+
+local RETRY_MS, RETRY_MAX = 750, 12
+
+--- nvim-dap listener (after.setBreakpoints), item 6: an error "Missing system library" re-sends the same
+--- request every RETRY_MS, at most RETRY_MAX times (the debuggee is still starting then: Spring Boot needs
+--- seconds to reach user code), and marks the breakpoints with the answer. `tries` is for tests.
+function M.retry_set_breakpoints(session, err, _, request, _, tries)
+  tries = tries or 0
+  if not err or not tostring(err.message or err):find("Missing system library", 1, true) then return end
+  if tries >= RETRY_MAX or not request or not request.arguments then return end
+  vim.defer_fn(function()
+    if session.closed then return end
+    local args = request.arguments
+    session:request("setBreakpoints", args, function(err2, resp)
+      if err2 then return M.retry_set_breakpoints(session, err2, nil, request, nil, tries + 1) end
+      local bufnr = vim.fn.bufnr(args.source and args.source.path or "")
+      if bufnr > 0 and resp then
+        for _, bp in pairs(resp.breakpoints or {}) do pcall(require("dap.breakpoints").set_state, bufnr, bp) end
+      end
+      M.set_breakpoints_retried = (M.set_breakpoints_retried or 0) + 1
+    end)
+  end, RETRY_MS)
+end
+
+--- Item 7: nvim-dap pools the terminal buffer of a finished debuggee and reuses it for the next launch
+--- after `modified = false`, but the terminal can still write its last lines (process exit) after that, and
+--- jobstart({term = true}) then fails ("requires unmodified buffer": the launch dies with a runInTerminal
+--- timeout; 3 of 8 runs of check 92 under CPU load). The terminals of earlier Java launches whose job
+--- has ended are wiped right before the next launch (their output stays readable until then), so the pool
+--- holds invalid buffers and nvim-dap makes a new one.
+M.terms = {}
+function M.wipe_old_terminals()
+  local keep = {}
+  for _, buf in ipairs(M.terms) do
+    if vim.api.nvim_buf_is_valid(buf) then
+      local job = vim.b[buf].terminal_job_id
+      if job and vim.fn.jobwait({ job }, 0)[1] == -1 then keep[#keep + 1] = buf -- still running
+      else pcall(vim.api.nvim_buf_delete, buf, { force = true }) end
+    end
+  end
+  M.terms = keep
 end
 
 local function terminal_job(session)
@@ -315,10 +363,16 @@ function M.on_attach(client)
   M._adapter = function(callback, config, parent)
     if config.request ~= "launch" then return adapter(callback, config, parent) end
     -- config.nv4j_what names the launch in the build messages (nv4j.tests: "test run"/"test debug")
-    M.refresh_and_build(config.cwd, function() adapter(callback, config, parent) end, config.nv4j_what)
+    M.refresh_and_build(config.cwd, function()
+      M.wipe_old_terminals()
+      adapter(callback, config, parent)
+    end, config.nv4j_what)
   end
   dap.adapters.java = M._adapter
   dap.listeners.on_config["nv4j_junit_launcher"] = M.junit_launcher
+  dap.listeners.after.setBreakpoints["nv4j_retry"] = function(session, err, resp, request)
+    if session.config.type == "java" then M.retry_set_breakpoints(session, err, resp, request) end
+  end
 
   -- Whenever a Java launch session closes (terminate, disconnect, adapter gone), its terminal job
   -- is stopped; a finished debuggee makes this a no-op. Only an explicit detach
@@ -328,6 +382,7 @@ function M.on_attach(client)
   dap.listeners.after.event_initialized["nv4j"] = function(session)
     if session.config.type ~= "java" or session.config.request ~= "launch" then return end
     local job = terminal_job(session)
+    if session.term_buf then M.terms[#M.terms + 1] = session.term_buf end
     session.on_close["nv4j_debuggee"] = function(s)
       job = job or terminal_job(s)
       if job and not s.nv4j_detached then pcall(vim.fn.jobstop, job) end
