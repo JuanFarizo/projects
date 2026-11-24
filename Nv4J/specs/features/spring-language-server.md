@@ -127,6 +127,48 @@ broken files with a 1.5 s wait so the server reconciles them first; `alive_after
 uses `vim.lsp.buf.definition` (all clients, what `gd` asks), the Spring client's `workspace/symbol`, and drives `<leader>sp`
 through its mapping, the Telescope picker, `set_prompt("/hello")` and `select_default`.
 
+## Updating the server
+
+Status: built 2026-11-23. Command `:Nv4JSpringUpdate`, code `nvim/lua/nv4j/springupdate.lua` (loaded only when the command runs), resolution in `nvim/lua/nv4j/spring.lua`, gate `tests/lib/verify_spring.sh`, check `tests/checks/111_spring_update.lua` (25 cases, 9 controls in `tests/lib/control_111.sh`).
+
+### Why Mason cannot do it (measured 2026-11-23, Mason 2.3.1, isolated `XDG_DATA_HOME`, the real Mason untouched)
+
+| Question | Result |
+|----------|--------|
+| (a) `:MasonInstall vscode-spring-boot-tools@2.4.0` | Installs exactly 2.4.0 (`get_installed_version()` = 2.4.0, link `language-server.jar` -> `...-2.4.0-SNAPSHOT-exec.jar`). Run through `pkg:install({version = "2.4.0"})`, the API the command uses. |
+| (b) later update | `:MasonUpdate` only refreshes the registries (`mason/api/command.lua`: `registry.update`); it never touches packages. The outdated check (Mason window `C`, `check_new_package_versions` in `mason/ui/instance.lua`) is `installed_version ~= registry latest_version`, so 2.4.0 is "outdated" against the registry's 2.2.0, and `U` (update all) runs `pkg:install()` with no version: **it moved 2.4.0 back to 2.2.0** (measured). So a Mason-installed newer version is not safe, and the registry never offers a newer one. |
+| (c) exact pre-release `@2.5.2026111900` | **Fails.** The registry link is `language-server.jar` -> `extension/language-server/spring-boot-language-server-{{version}}-SNAPSHOT-exec.jar`; the pre-release jar is `spring-boot-language-server-2.5.0-SNAPSHOT-exec.jar` (2.4.1 is `-2.4.1-SNAPSHOT-`, 2.2.0 `-2.2.0-SNAPSHOT-`), so Mason ends with `Link target ... 2.5.2026111900-SNAPSHOT-exec.jar does not exist`, **and the previously installed package is gone** (the failed install had already uninstalled it): no rollback. |
+
+Also found: the newest **stable** on OpenVSX is 2.4.1 (2026-10-15), not 2.4.0, and OpenVSX's own `latest` alias is the pre-release (`versionAlias: ["latest", "pre-release"]`). The 2.4.1 and 2.5.2026111900 vsix files have the same layout as 2.2.0 (`extension/language-server/*-exec.jar`, `extension/jars/*.jar`, `package.json` `contributes.javaExtensions` the same five jars), so Nv4J's version-independent paths work for them.
+
+### Design (from those results): Nv4J installs the server itself, Mason is left alone
+
+- Versions install side by side from OpenVSX into `~/.local/share/nv4j/spring-ls/<version>/` (the vsix unzipped; `extension/` inside) with `curl` and `unzip`; the SHA-256 OpenVSX publishes (`files.sha256`) is compared; the install is unpacked to `<version>.part`, checked (server jar and every `javaExtensions` bundle exist) and renamed. Nothing existing is ever modified: a failure (download, checksum, unzip, unusable package) deletes only its own partial files and prints one ERROR "... Nothing was changed.". That is the rollback: the old version and the `current` pointer are untouched.
+- The active version is the file `spring-ls/current`. `nv4j.spring` resolves, with only stat calls and one small file read, no network and no module load: env `NV4J_SPRING_LS_VERSION` (verify runs) > `vim.g.nv4j_spring_version` when it names an installed version > `current` > the Mason package (the old behaviour, still the default; nothing changes until the command runs). `ls_jar()` is the version-independent glob `language-server/*-exec.jar`; `jars()` reads that version's `package.json`. `NV4J_SPRING_HOME` moves the root (verify and checks).
+- Mason's `U` never touches these, and the Mason package stays as the fallback: `:Nv4JSpringUpdate mason` removes the pointer (the installs stay on disk).
+
+### `vim.g.nv4j_spring_version`
+
+`"2.4.1"` (a pinned version: if installed it is the one in use at start; if not, `:Nv4JSpringUpdate` with no argument installs it), `"latest"` (newest stable), `"prerelease"` (newest including pre-release). Unset (default) = keep what is installed. It is only read by the command (the default target), by `nv4j.spring` (a pinned installed version) and by `:Nv4JHealth`. **Nothing is ever updated at startup and there is no network at startup**: the check proves `nv4j.springupdate` is not loaded and no process is spawned by the version/jar lookups.
+
+### `:Nv4JSpringUpdate [version|latest|prerelease|mason] [--check] [--verify]`
+
+1. `curl` (background `vim.system`, `--connect-timeout 10 --max-time 30`; the 80 MB download `--max-time 600`; the editor never blocks) asks `https://open-vsx.org/api/VMware/vscode-spring-boot`. Real JSON shape (recorded in `tests/fixtures/spring-update/api.json`): top-level `version` (= the newest including pre-releases) and `preRelease` (bool, true for it), `versionAlias`, and `allVersions` = an object of version -> URL (only the newest **100**; the keys `latest` and `pre-release` are aliases, skipped). A single version (`.../2.4.1`) has `preRelease` too. So: `prerelease` = the top-level `version`; `latest` (stable) = the top-level one if its `preRelease` is false, else the newest version of `allVersions` that does not look like a timestamp pre-release (third part of 10 digits, `2.5.2026111900`) **and whose own `preRelease` flag is false** (one more GET; the flag decides, the name is only a filter); when the newest 100 hold no stable version it pages `versions?size=100&offset=N` (OpenVSX's maximum page is 100; real 207 versions in November 2026).
+2. Versions compare numerically per part (`2.4.0 < 2.4.1 < 2.5.2026111900 < 2.10.0`).
+3. It prints `Spring LS <installed> -> <new>` and the newest stable and pre-release (also written to `stdpath("state")/spring-ls-lookup.json`, the cache `:Nv4JHealth` reads), downloads, installs, writes `current` and tells the user to **restart Neovim**: the Spring LS and the jdt.ls bundles load once per session, there is no restart path for them (`spring.lua` starts the client once; jdt.ls takes its bundles at start). Back: `:Nv4JSpringUpdate <old>` (instant, no download) or `mason`.
+4. `--check`: lookup only, nothing installed or switched. An exact version needs no lookup.
+5. A pre-release is installed without verification unless `--verify`, with a WARN naming `--verify`.
+
+### Safety gate: `--verify` and `tests/lib/verify_spring.sh <version>`
+
+Optional, off by default (also for pre-releases: it costs 15 to 25 minutes, and the old version stays installed, so switching back is instant; a pre-release gets a warning that says so). `--verify` runs `tests/lib/verify_spring.sh <version>` in the background (it needs the Nv4J repo next to `nvim/`; without it the command refuses): it installs the version into `spring-ls/` **without switching**, runs `tests/run.sh` with `NV4J_SPRING_LS_VERSION=<version>` for checks `5[012]_*` (50, 51, 52) and `8[02]_*` (80, 82), requires `DONE <check> <n> 0` for each of the five and no SKIP, and exits 0 only then. On any failure it deletes the version it installed (rollback), prints the FAIL lines and the command does not switch; on success the command writes `current`. Each run.sh call is capped by `VERIFY_TIMEOUT` (default 1800 s). It can also be run by hand: `tests/lib/verify_spring.sh 2.5.2026111900` (exit code 0/1; `NV4J_SPRING_HOME=<dir>` to keep the install elsewhere, `NV4J_ALLOW_PARALLEL=1` next to other test runs).
+
+Real run, 2.5.2026111900 (2026-11-23, isolated `NV4J_SPRING_HOME`, the Spring checks otherwise against the normal Mason/jdt.ls setup): 50_spring_ls 29/0, 51_spring_completion 20/0, 80_jpql_live 7/0, **52_spring_nav 11/1**: `picker` found 15 entries (want >= 17) in 3086 ms (budget 1000 ms), reproduced alone a second time (15 entries, 3114 ms); the same check on the Mason 2.2.0 baseline: 12/0 (17 entries, 26 ms). So the `<leader>sp` Spring symbols picker is worse on this pre-release. 82_jpa4_spring printed `no_aot_lens` and `aot_command` PASS and then never finished (killed after 21 minutes); **the same happens on the Mason 2.2.0 baseline** (run twice, alone the second time, killed after about 20 minutes each; the cause was not investigated, so 82 is not a usable discriminator in this environment today and a gate run ends in the `VERIFY_TIMEOUT` or in a manual kill). The gate failed, deleted the install and reported the failures: the rollback path worked end to end. The whole run took 23 minutes (check 82 about 19 of them).
+
+### Mapping to the tests
+
+`111_spring_update` (pure, no network, installs only into `/tmp/nv4j/d111-<pid>`): `zero_startup`, `zero_startup_spring` (module not loaded, no process), `parse_order`, `api_versions`, `stable_choice` (flag decides, unknown flag asks, a pre-release flag skips), `channel`, `cmdlines`, `pin_resolution`, `install_flow` (order curl, checksum, sha256sum, unzip), `install_bad_sha`, `install_bad_zip`, `install_unusable`, `install_missing_bundle`, `install_download_fail` (each: nothing left, old kept, one ERROR), `failure_messages` (curl 6, 28, not JSON, 127), `cmd_latest`, `cmd_same`, `cmd_window`, `cmd_prerelease`, `cmd_exact`, `cmd_check` (+ the health lines with and without a cache), `cmd_verify_fail`, `cmd_verify_ok`, `verify_script_syntax`, `rollback_back`. Controls (`tests/lib/control_111.sh`): strcmp, noflag, notimeout, noclean, nosha, swallow, verifyoff, eager, noactive each make their named case(s) FAIL.
+
 ## Trial log
 
 | # | Change | Result | Kept |
