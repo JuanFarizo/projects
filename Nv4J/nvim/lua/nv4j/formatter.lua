@@ -26,6 +26,7 @@ M.GOOGLE = {
 M.INTELLIJ_NAME = "Nv4J-IntelliJ"
 M.INTELLIJ = {
   ["tabulation.char"] = "space",
+  ["indent_switchstatements_compare_to_switch"] = "true", -- case labels one level in from `switch` (IntelliJ and the Eclipse built-in; absent from a profile it was off)
   ["tabulation.size"] = "4",
   ["indentation.size"] = "4",
   ["lineSplit"] = "120",

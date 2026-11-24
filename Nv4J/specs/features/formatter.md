@@ -62,3 +62,6 @@ The first version was only exercised headless with `:Nv4JFormatter <arg>` and a 
 - The intellij profile is an approximation; no side-by-side with real IntelliJ output.
 - Two projects with different `.nv4j` values (one jdt.ls each) work by construction, not tested live.
 - The user's own `google` error text is unknown; the cause of that one is not found.
+
+## 2026-11-24 addendum: switch indentation
+A profile XML only carries the keys it lists; the intellij table lacked `indent_switchstatements_compare_to_switch`, so jdt.ls formatted `case` labels at the column of `switch` (found by check 91 switch_to_expression, add_missing_cases, add_default_case). The key is now `true` in `M.INTELLIJ`; check 97 `xml_switch_indent` (control: key removed, case fails) and the three 91 cases cover it.

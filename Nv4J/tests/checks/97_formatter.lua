@@ -50,6 +50,9 @@ do
   rep("xml", x:find('lineSplit" value="120"', 1, true) and x:find('tabulation.char" value="space"', 1, true)
     and x:find('tabulation.size" value="4"', 1, true) and x:find('name="Nv4J-IntelliJ"', 1, true) and not x:find("tab\"%s*/>"),
     "xml bytes: " .. #x)
+  -- A profile file without this key formats `case` at the same column as `switch` (91_codeactions switch cases, 1.63.0)
+  rep("xml_switch_indent", x:find('formatter.indent_switchstatements_compare_to_switch" value="true"', 1, true) ~= nil,
+    "case labels indented one level inside switch")
 end
 
 -- xml_written
