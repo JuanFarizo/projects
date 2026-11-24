@@ -45,11 +45,12 @@ local function titles_at(lenses, row)
 end
 local function has(list, pat) for _, t in ipairs(list) do if t:find(pat, 1, true) then return true end end return false end
 local function lenses_with(pred, timeout_ms)
+  -- lsp.poll, not vim.wait(.., fn, ..): fn does a request_sync, and a vim.wait around a nested wait never times out (hung 20+ min)
   local got
-  vim.wait(timeout_ms or 30000, function()
+  lsp.poll(timeout_ms or 30000, 1500, function()
     got = req("textDocument/codeLens", { textDocument = { uri = uri } })
     return got and pred(got)
-  end, 1500)
+  end)
   return got
 end
 

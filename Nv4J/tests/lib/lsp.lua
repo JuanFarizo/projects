@@ -113,6 +113,21 @@ function M.diagnostics(bufnr)
   return vim.diagnostic.get(bufnr)
 end
 
+--- Poll `fn` until it returns a truthy value or `timeout_ms` passes (a hard deadline on vim.uv.hrtime). Returns that value, else nil.
+--- Use this, NOT `vim.wait(ms, fn, interval)`, when `fn` sends a synchronous request (`request_sync`, a nested vim.wait):
+--- in Neovim 0.12 the outer vim.wait then never checks its deadline or interval and calls `fn` in a hot loop (about 3600 calls
+--- per second, forever). Check 82 hung that way for 20+ minutes (specs/features/jpa.md "Check 82 hang"). Between calls only a plain
+--- vim.wait(interval) sleeps (no predicate), so events keep flowing.
+function M.poll(timeout_ms, interval_ms, fn)
+  local deadline = vim.uv.hrtime() + timeout_ms * 1e6
+  while true do
+    local v = fn()
+    if v then return v end
+    if vim.uv.hrtime() + interval_ms * 1e6 > deadline then return nil end
+    vim.wait(interval_ms)
+  end
+end
+
 --- Print PASS|FAIL and append to the shared test log.
 local n_pass, n_fail = 0, 0
 function M.report(name, ok, detail)
