@@ -41,6 +41,9 @@
 --                   Gradle (org.springframework.boot plugin); a plain pom is not Boot.
 --  build_tool_cmd : the fallback command without jdt.ls: Maven first (mvnw spring-boot:run with
 --                   profiles and jvmArguments), Gradle second (gradlew bootRun, profile through env).
+--  config_same    : R._boot_configs (one resolveMainClass, Boot mains only) builds the same launch config as nvim-jdtls's
+--                   fetch_main_configs for demo.DemoApplication (control NV4J_41_CONTROL=tamper must FAIL).
+--  config_requests: it sends 1 resolveMainClass, 1 resolveClasspath (1 Boot main of 3) and no resolveJavaExecutable.
 --  keymaps        : <leader>rs, <leader>rS, <leader>rd, <leader>rp, <leader>rx and P1's <leader>rj exist
 --                   with a desc.
 vim.o.confirm = false
@@ -107,7 +110,7 @@ end
 local CASES = { "started", "started_notice", "java25", "env", "terminal", "port_in_use", "no_hung", "stop_no_orphan",
   "close", "profile", "tree_kill", "failed_alive", "force_tool", "debug_stop", "debug_profile", "debug_env", "debug_no_orphan",
   "leave_stops_debug", "dap_scan", "dap_run_error", "multi_module", "debug_client_lookup",
-  "detect", "client_lookup", "build_tool_cmd", "keymaps" }
+  "detect", "client_lookup", "build_tool_cmd", "config_same", "config_requests", "config_fresh", "keymaps" }
 local ok_mod, R = pcall(require, "nv4j.run")
 if not ok_mod then
   for _, c in ipairs(CASES) do lsp.report(P .. c, false, "nv4j.run not loadable: " .. tostring(R):gsub("\n.*", "")) end
@@ -473,6 +476,50 @@ local ok_all, err = pcall(function()
   lsp.report(P .. "build_tool_cmd", vim.deep_equal(mc, want_m) and vim.deep_equal(gc, want_g) and genv and genv.SPRING_PROFILES_ACTIVE == "dev",
     ("maven %s; gradle %s env %s"):format(vim.inspect(mc), vim.inspect(gc), vim.inspect(genv)):gsub("\n%s*", " "))
   vim.fn.delete(tmp, "rf")
+
+  -- 6b. launch config of the Boot main class (specs/features/run-speed.md): the config R._boot_configs builds (one
+  -- resolveMainClass, Boot mains only) is the one nvim-jdtls's fetch_main_configs gives for that main class, with fewer requests.
+  vim.api.nvim_set_current_buf(buf)
+  local sent = {}
+  local crequest = client.request
+  client.request = function(self, method, params, handler, bufnr)
+    if method == "workspace/executeCommand" then sent[#sent + 1] = (params.command or "?"):gsub("^vscode%.java%.", "") end
+    return crequest(self, method, params, handler, bufnr)
+  end
+  local fast
+  R._boot_configs(client, function(c, e) fast = c or { err = e } end)
+  wait_until(30000, function() return fast ~= nil end)
+  client.request = crequest
+  local counts = {}
+  for _, c in ipairs(sent) do counts[c] = (counts[c] or 0) + 1 end
+  local legacy
+  require("jdtls.dap").fetch_main_configs({}, function(c) legacy = c or {} end)
+  wait_until(30000, function() return legacy ~= nil end)
+  local want
+  for _, c in ipairs(legacy or {}) do if c.mainClass == "demo.DemoApplication" then want = c end end
+  local got = fast and fast[1]
+  if vim.env.NV4J_41_CONTROL == "tamper" and got then got = vim.deepcopy(got); got.classPaths[1] = got.classPaths[1] .. "x" end
+  local same, diff = got ~= nil and want ~= nil and #fast == 1, nil
+  for _, k in ipairs({ "cwd", "type", "name", "projectName", "mainClass", "modulePaths", "classPaths", "request", "console", "vmArgs" }) do
+    if same and not vim.deep_equal(got[k], want[k]) then same = false; diff = k end
+  end
+  lsp.report(P .. "config_same", same, same and ("1 Boot config equal to fetch_main_configs (%d classpath entries)"):format(#got.classPaths)
+    or ("fast %s, legacy %s, differs in %s"):format(vim.inspect(fast):gsub("%s+", " "):sub(1, 200), want and want.mainClass or "none", tostring(diff)))
+  lsp.report(P .. "config_requests", counts.resolveMainClass == 1 and counts.resolveClasspath == 1 and counts.resolveJavaExecutable == nil,
+    "requests: " .. vim.inspect(counts):gsub("%s+", " ") .. " (want 1 resolveMainClass, 1 resolveClasspath for the 1 Boot main of 3 mains, no resolveJavaExecutable)")
+  -- no cache: a second launch config asks jdt.ls for the classpath again (a pom change re-imported by jdt.ls is seen at once)
+  local sent2 = {}
+  client.request = function(self, method, params, handler, bufnr)
+    if method == "workspace/executeCommand" then sent2[#sent2 + 1] = (params.command or "?"):gsub("^vscode%.java%.", "") end
+    return crequest(self, method, params, handler, bufnr)
+  end
+  local again
+  R._boot_configs(client, function(c) again = c or {} end)
+  wait_until(30000, function() return again ~= nil end)
+  client.request = crequest
+  local n2 = 0
+  for _, c in ipairs(sent2) do if c == "resolveClasspath" then n2 = n2 + 1 end end
+  lsp.report(P .. "config_fresh", n2 == 1 and again[1] ~= nil, ("second config: %d resolveClasspath request(s) (want 1: not cached)"):format(n2))
 
   -- 7. keys
   pcall(require, "config.keymaps")
