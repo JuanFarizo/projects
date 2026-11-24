@@ -29,10 +29,14 @@ export NV4J_RUNNER=1
 # Spring LS index scan lines in spring-boot-ls.log (log level only, no behaviour change): check 50 two_boot_index quotes them when it fails.
 export NV4J_SPRING_INDEX_LOG=1
 
-if [ ! -L "$HOME/.config/nv4j" ] || [ ! -d "$HOME/.config/nv4j" ]; then
-  echo "FATAL: ~/.config/nv4j symlink missing or broken (expected -> $HERE/../nvim)" >&2
+# XDG_CONFIG_HOME (default ~/.config) decides which nvim/ the checks load: ~/.config/nv4j may point at ANOTHER
+# checkout (the main repo). A private XDG_CONFIG_HOME whose `nv4j` links to this checkout's nvim/ tests this one.
+NV4J_CFG="${XDG_CONFIG_HOME:-$HOME/.config}/nv4j"
+if [ ! -L "$NV4J_CFG" ] || [ ! -d "$NV4J_CFG" ]; then
+  echo "FATAL: $NV4J_CFG symlink missing or broken (expected -> $HERE/../nvim)" >&2
   exit 2
 fi
+echo "config: $NV4J_CFG -> $(readlink -f "$NV4J_CFG")$([ "$(readlink -f "$NV4J_CFG")" = "$(readlink -f "$HERE/../nvim")" ] || echo '  (NOT this checkout: you are testing another tree)')" | tee -a "$LOG"
 
 # Dirty-fixture guard: an aborted run can leave a check's edits in the fixture on disk. Fails with the
 # exact recovery command (only tests/fixtures/demo/src and its pom.xml are looked at), or restores them
@@ -115,9 +119,13 @@ SPRING_MISSING=0
 rc=0
 shopt -s nullglob
 CHECKS=()
-for f in "$HERE"/checks/${NV4J_CHECKS:-*}.lua "$HERE"/checks/${NV4J_CHECKS:-*}*.lua; do
-  [ -f "$f" ] || continue
-  case " ${CHECKS[*]:-} " in *" $f "*) ;; *) CHECKS+=("$f") ;; esac
+# NV4J_CHECKS: one glob, or several separated by spaces ('30_* 32_* 62_*', run in the order given).
+set -f; PATS=(${NV4J_CHECKS:-*}); set +f
+for pat in "${PATS[@]}"; do
+  for f in "$HERE"/checks/$pat.lua "$HERE"/checks/$pat*.lua; do
+    [ -f "$f" ] || continue
+    case " ${CHECKS[*]:-} " in *" $f "*) ;; *) CHECKS+=("$f") ;; esac
+  done
 done
 if [ ${#CHECKS[@]} -eq 0 ]; then
   echo "FATAL: no check matches NV4J_CHECKS='${NV4J_CHECKS:-*}' in $HERE/checks" >&2
@@ -156,11 +164,52 @@ if [ "${GRADLE_NEEDED:-0}" = 1 ]; then
   [ -z "$GRADLE_MISSING" ] || echo "WARN: Gradle fixture unavailable ($GRADLE_MISSING): checks 67, 68, 71 and 89 are skipped" | tee -a "$LOG"
 fi
 
+# Isolation between checks. Every check's nvim runs with NV4J_RUN_TAG=<pid>-<check> in its environment, so
+# the jdt.ls / Spring LS / test JVMs it starts (children in their own sessions: a process group kill misses
+# them) carry the tag too. reap_tag lists what is still alive after the check and kills it, so a check that
+# died, hung or leaked a server cannot hand a busy jdt.ls (or a held workspace lock) to the next one.
+# Gradle/Kotlin daemons are left alone (they idle-timeout by themselves; a cold one costs the next Gradle check minutes).
+reap_tag() {
+  local tag="$1" p pid left=() cmd
+  for p in /proc/[0-9]*; do
+    pid="${p#/proc/}"
+    [ "$pid" = "$$" ] && continue
+    grep -qaz "^NV4J_RUN_TAG=$tag\$" "$p/environ" 2>/dev/null || continue
+    cmd="$(tr '\0' ' ' <"$p/cmdline" 2>/dev/null | cut -c1-200)"
+    case "$cmd" in *GradleDaemon*|*kotlin-compiler-embeddable*|*KotlinCompileDaemon*) continue ;; esac
+    left+=("$pid")
+    echo "leftover after $name: pid $pid started $(ps -o lstart= -p "$pid" 2>/dev/null | tr -s ' '): $cmd" | tee -a "$LOG"
+  done
+  [ ${#left[@]} -eq 0 ] && return 0
+  [ "${NV4J_REAP:-1}" = 0 ] && return 1 # control: only list them, the next check starts at once (the old behaviour)
+  # They are normally jdt.ls / Spring LS still shutting down after nvim's `qa!` (2 to 4 s; jdt.ls saves its workspace
+  # then): wait for that, because the next check opens the SAME workspace (-data is per project root) and must not
+  # start beside a server that still holds it. Only after the grace period are they terminated.
+  local t0=$SECONDS alive
+  while :; do
+    alive=()
+    for pid in "${left[@]}"; do kill -0 "$pid" 2>/dev/null && alive+=("$pid"); done
+    [ ${#alive[@]} -eq 0 ] || [ $((SECONDS - t0)) -ge "${NV4J_REAP_GRACE:-30}" ] && break
+    sleep 0.25
+  done
+  if [ ${#alive[@]} -eq 0 ]; then
+    echo "all ${#left[@]} leftover process(es) of $name exited by themselves after about $((SECONDS - t0)) s" | tee -a "$LOG"
+    return 0
+  fi
+  kill -TERM "${alive[@]}" 2>/dev/null
+  sleep 5
+  kill -KILL "${alive[@]}" 2>/dev/null
+  echo "WARN: ${#alive[@]} of ${#left[@]} leftover process(es) of $name did not exit within ${NV4J_REAP_GRACE:-30} s: terminated" | tee -a "$LOG"
+  return 1
+}
+# One check may not starve the rest: NV4J_CHECK_TIMEOUT seconds (default 1200; the slowest healthy check, 62/91, takes about 4 min).
+CHECK_TIMEOUT="${NV4J_CHECK_TIMEOUT:-1200}"
+
 for check in "${CHECKS[@]}"; do
   name="$(basename "$check")"
   echo "== $name" | tee -a "$LOG"
   # load and other jdt.ls/java processes at the start of each check: a slow or stalled jdt.ls run can be matched to a busy machine afterwards (flake C)
-  echo "load: $(uptime | sed 's/.*averages: *//'), java processes: $(pgrep -x java | wc -l | tr -d ' ')" >>"$LOG"
+  echo "load: $(uptime | sed 's/.*averages: *//'), java processes: $(pgrep -x java | wc -l | tr -d ' '), $(free -m 2>/dev/null | awk '/^Mem:/{a=$7} /^Swap:/{s=$3} END{print "memory available " a " MB, swap used " s " MB"}')" >>"$LOG"
   case "$name" in
     67_*|68_*|71_*|89_*)
       if [ -n "$GRADLE_MISSING" ]; then
@@ -182,10 +231,20 @@ for check in "${CHECKS[@]}"; do
   # 21_*: nvim starts with JAVA_HOME = a real JDK below 25 (the SDKMAN `sdk use java 23` case): 23, else 24, else 22; none -> the check SKIPs itself.
   jh=()
   case "$name" in 21_*) for v in 23 24 22; do J23="$(find_jdk $v)"; [ -n "$J23" ] && [ -x "$J23/bin/java" ] && { jh=(JAVA_HOME="$J23"); break; }; done ;; esac
-  # Each check is bounded (NV4J_CHECK_TIMEOUT seconds, default 1500): a case that waits for a prompt nobody answers
-  # (32_code_actions did, 10 minutes per picker) is killed, has no DONE line and fails loudly below instead of hanging the run.
-  out="$(timeout -k 10 "${NV4J_CHECK_TIMEOUT:-1500}" env ${jh[@]+"${jh[@]}"} NV4J_CHECK="${name%.lua}" nvim --headless ${spring_off[@]+"${spring_off[@]}"} --cmd "set rtp+=$HERE/lib" -c "lua package.path='$HERE/lib/?.lua;'..package.path" -c "luafile $check" -c "qa!" </dev/null 2>&1)"
+  # Output goes to a file, not a $(...) pipe: a leaked child that inherited the pipe would keep the capture open after nvim is gone.
+  tag="$$-${name%.lua}"
+  outf="$LOGS/.out-$$.txt"
+  env ${jh[@]+"${jh[@]}"} NV4J_RUN_TAG="$tag" NV4J_CHECK="${name%.lua}" timeout -k 15 "$CHECK_TIMEOUT" nvim --headless ${spring_off[@]+"${spring_off[@]}"} --cmd "set rtp+=$HERE/lib" -c "lua package.path='$HERE/lib/?.lua;'..package.path" -c "luafile $check" -c "qa!" </dev/null >"$outf" 2>&1
   crc=$?
+  out="$(cat "$outf")"; rm -f "$outf"
+  reap_tag "$tag" || true
+  if [ $crc -eq 124 ] || [ $crc -eq 137 ]; then
+    echo "FAIL $name timed out after ${CHECK_TIMEOUT} s (killed, exit $crc); later checks still run" | tee -a "$LOG"
+    printf '%s\n' "$out" | grep -v '^[[:space:]]*$' | tail -n 8 | sed 's/^/    | /' | tee -a "$LOG"
+    printf '%s\n' "$out" >>"$LOG"
+    rc=1
+    continue
+  fi
   # Full output goes to the log (NV4J_RUNNER makes lsp.report skip its own append);
   # console shows just PASS/FAIL/DONE, everything else (jdtls progress noise, errors) goes to the log.
   printf '%s\n' "$out" | grep '^\(PASS\|FAIL\|SKIP\|DONE\) '
