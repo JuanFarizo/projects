@@ -507,6 +507,9 @@ tests/                     run.sh, checks/, fixtures/, lib/
 tests/run.sh                          # every check, each in its own headless Neovim
 NV4J_CHECKS=30 tests/run.sh           # only checks whose file name starts with 30
 NV4J_CHECKS='3*' tests/run.sh         # a glob works too
+NV4J_CHECKS='30_* 32_* 62_*' tests/run.sh  # several globs, run in the order given
+XDG_CONFIG_HOME=/some/dir tests/run.sh   # /some/dir/nv4j -> <checkout>/nvim: tests THAT checkout (default ~/.config/nv4j, which may be another one; the log's `config:` line says which)
+NV4J_CHECK_TIMEOUT=600 tests/run.sh      # seconds one check may run before it is killed and counts as FAIL (default 1200); NV4J_REAP_GRACE (30) = seconds leftover servers get to exit; NV4J_REAP=0 only lists them
 NV4J_PATH_JDK=25 tests/run.sh         # friendly case: JDK 25 first on PATH (default is the hostile 21)
 NV4J_FIXTURE_DIRTY=restore tests/run.sh  # restore a fixture an aborted run left changed (default: stop with the command)
 NV4J_CHECKS='67*' tests/run.sh         # Gradle (P4): resolves tests/fixtures/gradle-boot first (offline, then online); prints SKIP when Gradle cannot
