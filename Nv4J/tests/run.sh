@@ -182,7 +182,9 @@ for check in "${CHECKS[@]}"; do
   # 21_*: nvim starts with JAVA_HOME = a real JDK below 25 (the SDKMAN `sdk use java 23` case): 23, else 24, else 22; none -> the check SKIPs itself.
   jh=()
   case "$name" in 21_*) for v in 23 24 22; do J23="$(find_jdk $v)"; [ -n "$J23" ] && [ -x "$J23/bin/java" ] && { jh=(JAVA_HOME="$J23"); break; }; done ;; esac
-  out="$(env ${jh[@]+"${jh[@]}"} NV4J_CHECK="${name%.lua}" nvim --headless ${spring_off[@]+"${spring_off[@]}"} --cmd "set rtp+=$HERE/lib" -c "lua package.path='$HERE/lib/?.lua;'..package.path" -c "luafile $check" -c "qa!" </dev/null 2>&1)"
+  # Each check is bounded (NV4J_CHECK_TIMEOUT seconds, default 1500): a case that waits for a prompt nobody answers
+  # (32_code_actions did, 10 minutes per picker) is killed, has no DONE line and fails loudly below instead of hanging the run.
+  out="$(timeout -k 10 "${NV4J_CHECK_TIMEOUT:-1500}" env ${jh[@]+"${jh[@]}"} NV4J_CHECK="${name%.lua}" nvim --headless ${spring_off[@]+"${spring_off[@]}"} --cmd "set rtp+=$HERE/lib" -c "lua package.path='$HERE/lib/?.lua;'..package.path" -c "luafile $check" -c "qa!" </dev/null 2>&1)"
   crc=$?
   # Full output goes to the log (NV4J_RUNNER makes lsp.report skip its own append);
   # console shows just PASS/FAIL/DONE, everything else (jdtls progress noise, errors) goes to the log.
