@@ -86,7 +86,7 @@ local function actions(row)
   return a or {}
 end
 local ae, aq = actions(r_email), actions(r_query)
-lsp.report(P .. "add_query_offered", #ae == 1 and ae[1].title == "Add `@Query`" and #aq == 0, ("derived: %d (%s), @Query method: %d"):format(#ae, ae[1] and ae[1].title or "-", #aq))
+lsp.report(P .. "add_query_offered", #ae == 1 and ae[1].title == "Add `@Query`" and #vim.tbl_filter(function(a) return a.title == "Add `@Query`" end, aq) == 0, ("derived: %d (%s), @Query method: %d (%s; only an Add action counts, 2.5 also offers Convert query to text block)"):format(#ae, ae[1] and ae[1].title or "-", #aq, aq[1] and aq[1].title or "-"))
 
 local applied = false
 local orig_apply = c.handlers["workspace/applyEdit"] or vim.lsp.handlers["workspace/applyEdit"]
