@@ -173,3 +173,79 @@ Check 13 is written to fail on the baseline: jdt.ls gives every `java.util` type
 | 6b | Resolve cache per completion session (`nv4j.completion.resolve_cached`, installed as `sources.providers.lsp.override.resolve`): inside one blink context an answer of a jdt.ls item is reused for items with the same label, detail, package and kind; only documentation, detail and import-only `additionalTextEdits` are reused (never `textEdit`), answers with other edits and answers from other contexts are not | check 16 `DONE 5 0`: `resolve_cache_hit` (a second item object with the same content, same context: 0 jdt.ls `completionItem/resolve` requests, same documentation; control `NV4J_RESOLVE_CONTROL=1`, run `e6b_ctl`: 1 request, FAIL), `resolve_cache_keeps_edits` (the second item keeps its own textEdit, the import edit is still there, 1 and 1), `resolve_cache_new_context` (a new context asks again, 1). Checks 10 `17 0`, 11 `26 0`, 13 `8 0`, 14 `7 0`, 15 `4 0`. Check 63 async import: `DONE 63 27 1` with the one failure `rf_closed` ("Invalid buffer id: 1" in `plugins/blink.lua`), identical on the main repo's config without these changes, so not caused here; check 12 `DONE 5 2` (`no_rg_fallback`, `loose_root_skipped`) also identical on the main repo. Limit: the second item is a deep copy of the first, because blink reuses the objects of a complete list and an isIncomplete list could not be provoked in the headless harness; the saved javadoc time (0.4 to 0.8 s per repeated resolve) is counted as requests, not timed | kept |
 
 How these runs were made: `~/.config/nv4j` points at the main repo, so a plain `tests/run.sh` loads the main repo Lua. The runs above set `XDG_CONFIG_HOME` to a folder whose `nv4j` link is this checkout `nvim/`; check 14 passing proves it (`nv4j/favorites.lua` exists only here). Rows 4 and 5 (reverted) leave no code behind; the measurements are in this table only.
+
+## Smart `new` (user report: `Person p = ne` should offer `new Person(...)`)
+
+IntelliJ's smart completion (`JavaSmartCompletionContributor`, `ConstructorInsertHandler`, expected types from `ExpectedTypesProvider`) lists `new DeclaredType(...)` first after `Type x = `, and for an interface the inheritors (`List x = new ` offers `ArrayList`, `LinkedList`...). JDT (`CompletionEngine`, `R_EXPECTED_TYPE`) scores only the exact declared class (the constructor of `Person` after `new` has sortText 999998635 against 999999163 for every other type), not the subtypes of an interface, and not the `new` keyword at all.
+
+What ranked first through blink's pipeline on the demo fixture (App.java, real jdt.ls 1.63.0), before and after (check `17_completion_smartnew`; rank = place in the shown list, with jdt.ls's 200 item cut):
+
+| Typed | Before | After |
+|-------|--------|-------|
+| `Person p = n` | `nonNull` (static favourite, `boolean`); keyword `new` 2 | keyword `new` 1 |
+| `Person p = ne` | keyword `new` 1 (already) | keyword `new` 1 |
+| `Person p = new ` | `Person` constructor 1 (JDT expected type), then `App` | same |
+| `Person p = new Pe` | `Person` constructor 1 | same |
+| `List<String> l = new ` | only `App()` (jdt.ls returns 1 item: no type search without a prefix); no `ArrayList` | same (not solved, see limits) |
+| `List<String> l = new Arr` | `ArrayDeque` 1, `ArrayList` 3 | `ArrayList` 1 |
+| `Map<String,Integer> m = new H` | `HashMap` 10 (`HashPrintJobAttributeSet` 1) | `HashMap` 1 |
+| `Map<String,Integer> m = new Ha` | `HashMap` 4 (after `HashSet`, `Hashtable`) | `HashMap` 1 |
+| `Set<String> s = new Ha` | `HashSet` 1 | `HashSet` 1 |
+
+Change (`nvim/lua/nv4j/completion.lua`: `declared_type`, `smart_new`, used in `transform_lsp`): the declaration `Type<..> name = ` or `... = new ` is read from the text before the keyword (`final`, generics, qualified `Map.Entry` handled; `var`, `return`, arrays, comparisons and bare assignments `x = ` do nothing). While the typed text is a prefix of "new" the `new` keyword gets 3 JDT relevance steps (48 sortText units): past the static favourites, but not past a local of the expected type, because check 11 `local_expected_type` wants `nobody` before `new` (a first version with a blink score offset put `new` before `nobody` and failed it: `nobody` 2). After `new `, the constructors of the declared type and, for an interface, the usual JDK implementation (`IMPLEMENTATIONS`: List/Collection/Iterable to ArrayList, Set to HashSet, Map to HashMap, Queue/Deque to ArrayDeque, SortedMap/NavigableMap to TreeMap, SortedSet/NavigableSet to TreeSet, ConcurrentMap to ConcurrentHashMap, BlockingQueue to LinkedBlockingQueue) get a +20 blink score offset. Switch off with `vim.g.nv4j_no_smart_new = true`.
+
+Check 17 (16 cases): 8 `declared_type` parse cases plus 8 exact ranks. Control `NV4J_SMARTNEW_CONTROL=1` (feature off): `person_n` 2, `list_new_Arr` 3, `map_new_H` 10, `map_new_Ha` 4 FAIL (the other cases ranked 1 before, as in the table). Checks 10 `DONE 17 0`, 11 `26 0`, 13 `8 0`, 14 `7 0`, 15 `4 0`, 16 `5 0` (one run of 16 failed `resolve_cache_hit` under machine load 16 and passed alone).
+
+Limits: (1) `List<String> l = new ` with nothing typed after `new` still has no `ArrayList`: jdt.ls answers only the types in scope and does not search the index for an empty prefix, so there is nothing to rank; IntelliJ shows the inheritors. A synthesized `ArrayList<>()` item would need its own import edit; not built. Typing one letter fixes it. (2) Only the JDK implementation table; for a project interface the implementations are not known client-side (jdt.ls gives no subtype boost to unimported types). (3) `x = new ` for an already declared variable, `return new `, method arguments: the type is not known from the text, nothing is boosted.
+
+Measurement note: run with `XDG_CONFIG_HOME` pointing at a folder whose `nv4j` link is this checkout. The folder name must be unique: another agent re-pointed a shared scratchpad `xdg` link under this run, so a first set of numbers came from another worktree; they were redone, and a symbol that exists only here (`declared_type` in the loaded module, check 17 `declared_type` cases) is the proof.
+
+## Type and static member usage (REFERENCE-MAP row 23, `PreferMostUsedWeigher`)
+
+`nvim/lua/nv4j/usage.lua` counted only `.member` and `@Annotation` names. The same rg run now also counts every capitalised name in the non-import lines (`type` bucket; an `@Name` counts for both buckets, so an annotation used as `@Valid` is a used type). `completion.lua` gives each type item (class, interface, enum, struct, and the constructor items of `new `) `nv4j_tuses` and sorts it after relevance, member usage, generics and proximity, before name length (`java_sort` and `java_sort_empty`): it only breaks ties between types of equal jdt.ls relevance and equal proximity. `vim.g.nv4j_no_type_usage = true` switches it off (measurement and control).
+
+Measured with a probe on the demo fixture (App.java, prefix typed at the end of a new line, rank of the type with its package in blink's shown list), same run before (type counts off) and after:
+
+| Prefix | Type | Before | After |
+|--------|------|--------|-------|
+| `Op` | java.util.Optional | 39 | 1 |
+| `Opt` | java.util.Optional | 22 | 1 |
+| `Resp` | org.springframework.http.ResponseEntity | 11 | 1 |
+| `Ele` | java.lang.annotation.ElementType | 8 | 1 |
+| `Ret` | java.lang.annotation.RetentionPolicy | 11 | 1 |
+| `Val` | jakarta.validation.Valid | 10 | 1 (with the annotation counts; 10 without) |
+| `Req` | RequestBody | 13 | 1 (same) |
+| `Sec` | SecurityFilterChain | 44 | 4 |
+| `Lo`, `Sy`, `Str`, `Lis`, `Tar`, `Shape` | Long, System, String, List, Target, Shape | 1 | 1 (no change) |
+| `Res`, `Pa`, `Con` | ResponseEntity, PathVariable, Configuration | not in the 200 shown | same: the cut happens inside jdt.ls, a client re-rank cannot bring them back (Task C) |
+
+New cases in check 13 (`tuses_Op`, `tuses_Resp`, `tuses_Ret`, `tuses_Val`, each rank <= 3): `DONE 13_completion_tiebreak 12 0`; control `NV4J_TUSES_CONTROL=1` (type counts off) `12 -> 8 0 / 4 FAIL`: `Optional` 39, `ResponseEntity` 11, `RetentionPolicy` 11, `Valid` 10. Check 12 `type_counts` (new): `A` 1, `@Service` counted as a type 1, import line not counted. Checks 10 `17 0`, 11 `26 0`, 14 `7 0`, 15 `4 0`, 16 `5 0`, 17 `16 0`; check 12 still has its two failures `no_rg_fallback` and `loose_root_skipped` (identical on the main repo before this work, see experiment 6b).
+
+Static members: not changed. `Collectors.`, `Objects.`, `ResponseEntity.` already use the member counts through the `.` position (`toList` after `Collectors.`); static favourites in a bare position (`toList`, `post`, `anyString` after `= `) share the member names with every instance method, so counting them there would rank `save` or `get` by unrelated uses; reasoning only, not measured, not built.
+
+## Task C (feasibility only, not built): rank inside jdt.ls before the 200 item cut
+
+Question: can a small jdt.ls extension bundle with an `ICompletionRankingProvider` fix what the client cannot, the items that jdt.ls cuts away before blink sees them (`Res` -> `ResponseEntity`, `Pa` -> `PathVariable`, `Con` -> `Configuration` are not in the 200 returned items at all; `= new ` for an interface returns no implementation)?
+
+What the sources say (eclipse.jdt.ls clone, read only):
+
+- `CompletionProposalRequestor.getCompletionItems` (J/contentassist, lines 277-296 in the clone): `getAggregatedRankingResult` runs first; each provider's `rank(proposals, context, unit, monitor)` returns one `CompletionRanking` per proposal (or `null`); the score (clamped to 0..100, `CompletionRanking.MAX_SCORE`) is added to `proposal.setRelevance(...)`; only then `proposals.sort(new ProposalComparator(...))` and `limit = min(size, maxCompletionResults)`. So the provider ranks all proposals JDT found (every type of the prefix, more than 200 for one or two letters), before the cut; one relevance step is 16 sortText units, so +100 is up to 100 steps (the `java.*` bonus is 2 steps, expected type 20 or so). A response that is still cut stays `isIncomplete`.
+- It cannot add proposals: `Res` -> `ResponseEntity` works only when JDT proposes `ResponseEntity` (it does for a non-empty prefix). It cannot fix `List l = new ` with an empty prefix (JDT proposes no unimported type then, 1 item); for that the engine itself would need a different request.
+- Registration: `JavaLanguageServerPlugin.getCompletionContributionService().registerRankingProvider(p)` (`CompletionContributionService`, a plain list, no priorities, scores of several providers are added). The package `org.eclipse.jdt.ls.core.contentassist` is exported by the bundle manifest (`Export-Package` line 59), marked experimental in the Javadoc.
+- Loading: the same way the five Spring Boot jars and java-debug are loaded: `init_options.bundles` (`plugins/java.lua` already merges lists, `nv4j/spring.lua` `bundles_for`). `BundleUtils.loadBundles` installs each jar and calls `bundle.start`, so a jar with `Bundle-Activator`, `Bundle-SymbolicName: nv4j.jdtls.ranking;singleton:=true` and `Require-Bundle: org.eclipse.jdt.ls.core,org.eclipse.jdt.core,org.eclipse.core.runtime,org.eclipse.lsp4j` (the Spring extension manifest, `jdt-ls-extension.jar`, is the template) registers its provider in `start(BundleContext)`.
+
+How it would be built (no Tycho needed for one class): `javac --release 21 -cp` the Mason jars (`jdtls/plugins/org.eclipse.jdt.ls.core_*.jar`, `org.eclipse.jdt.core_*.jar`, `org.eclipse.lsp4j_*.jar`, `org.eclipse.osgi_*.jar`), a hand written `MANIFEST.MF`, `jar cfm`. About 150 lines of Java: an Activator and a provider. Mason's jdtls version is pinned in the tests; the jar is compiled against that exact version (the API is marked experimental; a jdt.ls update can need a rebuild).
+
+What the provider would compute:
+
+1. Usage: the Lua side already counts names (`nv4j.usage`); send them once per project through a `workspace/executeCommand` the same bundle registers (delegate command handler, like the Spring jars) or a file path read at start; the provider adds `min(100, f(count))` to proposals of that name (types by simple name, members by name). This is the only way type usage reaches JDT proposals that the 200 cut would drop.
+2. Smart `new` (more general than the client side table): `context.getExpectedTypesSignatures()` gives the declared type for any expression position (assignments, arguments, `return`), and the proposal's declaring type can be tested with `IType.newSupertypeHierarchy` or `JavaModelUtil`: boost constructors of subtypes of the expected type, for project interfaces too.
+3. Optionally proximity (same package) the way `nv4j_near` does now.
+
+How it would be tested: a new check (own file, real jdt.ls) with the bundle in `init_options.bundles` of the test client: (a) `Res`, `Pa`, `Con` in the Spring fixture must show `ResponseEntity`, `PathVariable`, `Configuration` (rank nil today, all three cut), (b) `ArrayList` after `List<String> l = new Arr` with a project interface and its implementation as the second case, (c) control: same check without the jar in the bundle list must FAIL, (d) existing checks 10, 11, 13, 14, 15, 16, 17 stay green and check 10's latency budget (150 ms menu p95) is re-measured because the provider runs once per request over every proposal.
+
+Cost, in working days (one person who knows the repo): build script and manifest, bundle loads and `rank` is called (proof by a logged count and a changed sortText): 1. Provider with a score table pushed from Lua and its refresh on file writes (the existing debounced `nv4j.usage` run): 1. Expected-type subtype boost with the hierarchy lookup and its latency: 1. Checks, controls, docs, regression runs: 1. Total about 3 to 4 days; a first proof of concept (static map, no Lua side) about 1 day.
+
+Risks: experimental API compiled against one jdt.ls version (rebuild on each Mason update, a check can pin the version); the provider runs inside the jdt.ls JVM for every completion, a slow provider adds to every menu (budget 150 ms); the bundle must be listed before jdt.ls starts (init options are fixed at start, like the Spring jars); a jar in the repo (binary) or a build step at first start (`javac` is there when a JDK is). Alternative without Java: raise `java.completion.maxResults` (the cost is items per request and blink's sort time; not measured here).
+
+Recommendation: worth building only if the 200 cut remains a real annoyance after the client-side changes: the cases that the cut still hides are the one letter to three letter prefixes of types (`Res`, `Pa`, `Con`), and typing one more letter already finds them (the list is `isIncomplete`, blink asks again). It is the only path that can rank "used by this project" before the cut. Not decided here, the user's call.

@@ -30,6 +30,9 @@ lsp.report("12_usage_index.counts", ok and c and c.member.save == 2 and c.member
   c and ("save=%s findById=%s @Service=%s (import line not counted: want save=2)"):format(
     tostring(c.member.save), tostring(c.member.findById), tostring(c.anno.Service)) or "no counts")
 
+lsp.report("12_usage_index.type_counts", c and c.type and c.type.A == 1 and c.type.Service == 1 and c.type.Integer == nil,
+  c and c.type and ("A=%s @Service as type=%s (import line not counted)"):format(tostring(c.type.A), tostring(c.type.Service)) or "no type counts")
+
 -- 2. rg fails (exit 2): previous counts stay
 local bin = base .. "/fakebin"
 vim.fn.mkdir(bin, "p")
