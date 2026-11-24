@@ -3,7 +3,7 @@
 -- lazyvim.json (extras markdown, prettier). Deterministic and headless; no jdt.ls (the startup case opens a plain text file), no network, no real Claude.
 --  terminal_key   : <C-/> and <C-_> (n and t) are LazyVim core's terminal toggle (map defined in lazyvim/config/keymaps.lua,
 --                   not a comment); <C-j> is window navigation (LazyVim), no Nv4J map; the terminal "tabs" keys (<C-t>,
---                   <D-]>, <D-[> in terminal mode) are still there.
+--                   <D-]>, <D-[> in terminal mode; <A-]>, <A-[> on Linux, see os_keys) are still there.
 --  comment_key    : <D-/> exists in n, x and i with the comment behaviour; gcc comments a line of a scratch buffer, <D-/>
 --                   in normal and insert mode comments/uncomments it and the insert cursor stays on its character.
 --  keep_nv4j_keys : <leader>co stays LazyVim's Organize Imports (jdtls extra definition; no global map), <leader>cO is
@@ -82,7 +82,8 @@ do
   ok = ok and j_nav and next(cjt) == nil
   details[#details + 1] = ("<C-j>[n] desc=%s rhs=%s, [t] %s"):format(tostring(cj.desc), tostring(cj.rhs), next(cjt) and "mapped" or "unmapped")
   local tabs = {}
-  for _, lhs in ipairs({ "<C-t>", "<D-]>", "<D-[>" }) do
+  local APP = vim.g.nv4j_mod or (vim.uv.os_uname().sysname == "Darwin" and "D" or "A") -- same rule as config/keymaps.lua (Cmd on a Mac, Alt elsewhere)
+  for _, lhs in ipairs({ "<C-t>", "<" .. APP .. "-]>", "<" .. APP .. "-[>" }) do
     local m = map(lhs, "t")
     tabs[#tabs + 1] = lhs .. "=" .. tostring(m.desc)
     ok = ok and m.callback ~= nil

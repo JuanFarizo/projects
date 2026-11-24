@@ -179,16 +179,17 @@ for check in "${CHECKS[@]}"; do
   # NV4J_SPRING=0: the Spring Boot LS off from startup (g:nv4j_spring = false), for A/B timing runs.
   spring_off=()
   [ "${NV4J_SPRING:-1}" = "0" ] && spring_off=(--cmd "let g:nv4j_spring = v:false")
-  # 21_*: nvim starts with JAVA_HOME = a real JDK 23 (the SDKMAN `sdk use java 23` case); no JDK 23 -> the check SKIPs itself.
+  # 21_*: nvim starts with JAVA_HOME = a real JDK below 25 (the SDKMAN `sdk use java 23` case): 23, else 24, else 22; none -> the check SKIPs itself.
   jh=()
-  case "$name" in 21_*) J23="$(find_jdk 23)"; [ -x "$J23/bin/java" ] && jh=(JAVA_HOME="$J23") ;; esac
+  case "$name" in 21_*) for v in 23 24 22; do J23="$(find_jdk $v)"; [ -n "$J23" ] && [ -x "$J23/bin/java" ] && { jh=(JAVA_HOME="$J23"); break; }; done ;; esac
   out="$(env ${jh[@]+"${jh[@]}"} NV4J_CHECK="${name%.lua}" nvim --headless ${spring_off[@]+"${spring_off[@]}"} --cmd "set rtp+=$HERE/lib" -c "lua package.path='$HERE/lib/?.lua;'..package.path" -c "luafile $check" -c "qa!" </dev/null 2>&1)"
   crc=$?
   # Full output goes to the log (NV4J_RUNNER makes lsp.report skip its own append);
   # console shows just PASS/FAIL/DONE, everything else (jdtls progress noise, errors) goes to the log.
   printf '%s\n' "$out" | grep '^\(PASS\|FAIL\|SKIP\|DONE\) '
   printf '%s\n' "$out" >>"$LOG"
-  if ! printf '%s\n' "$out" | grep -q '^\(PASS\|FAIL\) '; then
+  # A check that SKIPs itself (and still prints DONE) is not a failure; neither PASS/FAIL nor SKIP is.
+  if ! printf '%s\n' "$out" | grep -q '^\(PASS\|FAIL\|SKIP\) '; then
     echo "FAIL $name produced no PASS/FAIL lines (exit $crc; details in $LOG)" | tee -a "$LOG"
     rc=1
     continue
