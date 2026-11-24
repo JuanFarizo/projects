@@ -28,17 +28,60 @@ function M.enabled() return vim.g.nv4j_spring ~= false end
 
 local function mason() return vim.fn.stdpath("data") .. "/mason" end
 
---- The server jar (Mason link to the version-named exec jar), or nil when the package is missing.
+-- Nv4J-managed installs (:Nv4JSpringUpdate, nv4j/springupdate.lua): <data>/spring-ls/<version>/extension (the unzipped
+-- vsix), side by side, plus the file <data>/spring-ls/current naming the active one. Mason's registry pins 2.2.0 and
+-- cannot install a pre-release (its link names the jar by version, the pre-release jar is 2.5.0-SNAPSHOT), so these
+-- do not go through Mason. NV4J_SPRING_HOME moves the root (verify runs), NV4J_SPRING_LS_VERSION picks a version.
+-- No network and no module load here: a few stat calls and one small file read.
+function M.managed_root() return vim.env.NV4J_SPRING_HOME or (vim.fn.stdpath("data") .. "/spring-ls") end
+
+--- The managed version in use: env override, then a pinned vim.g.nv4j_spring_version that is installed, then the
+--- `current` file. nil = use the Mason package.
+function M.managed_version()
+  local root = M.managed_root()
+  local function ok(v) return type(v) == "string" and v:match("^[%w%.%-]+$") and vim.uv.fs_stat(root .. "/" .. v .. "/extension") and v end
+  local env = vim.env.NV4J_SPRING_LS_VERSION
+  if env and env ~= "" then return ok(env) end
+  local g = vim.g.nv4j_spring_version
+  if ok(g) then return g end
+  local f = io.open(root .. "/current", "r")
+  if not f then return nil end
+  local v = vim.trim(f:read("*a") or "")
+  f:close()
+  return ok(v)
+end
+
+--- Directory holding `extension/` for the version in use, where it comes from, and the managed version.
+local function ext_dir()
+  local v = M.managed_version()
+  if v then return M.managed_root() .. "/" .. v .. "/extension", "managed", v end
+  return mason() .. "/packages/" .. PKG .. "/extension", "mason"
+end
+
+--- The server jar, or nil when none is installed.
 function M.ls_jar()
+  local ext, src = ext_dir()
+  if src == "managed" then return vim.fn.glob(ext .. "/language-server/*-exec.jar", false, true)[1] end
   local p = mason() .. "/share/" .. PKG .. "/language-server.jar"
   return vim.uv.fs_stat(p) and p or nil
+end
+
+--- Version of the installed server: { version = "2.4.1", source = "managed"|"mason" }, or nil.
+function M.installed_version()
+  local ext, src, v = ext_dir()
+  if src == "managed" then return { version = v, source = src } end
+  local f = io.open(ext .. "/package.json", "r")
+  if not f then return nil end
+  local ok, pkg = pcall(vim.json.decode, f:read("*a"))
+  f:close()
+  return ok and type(pkg) == "table" and pkg.version and { version = pkg.version, source = "mason" } or nil
 end
 
 local jars_cache
 --- jdt.ls extension bundles the Spring Boot LS needs (absolute paths, all existing), or {}.
 function M.jars()
   if jars_cache then return jars_cache end
-  local ext = mason() .. "/packages/" .. PKG .. "/extension"
+  local ext = ext_dir()
   local list = {}
   local f = io.open(ext .. "/package.json", "r")
   if f then
@@ -51,7 +94,7 @@ function M.jars()
   end
   if #list == 0 then
     for _, name in ipairs(FALLBACK_JARS) do
-      list[#list + 1] = mason() .. "/share/" .. PKG .. "/jdtls/" .. name
+      list[#list + 1] = ext .. "/jars/" .. name
     end
   end
   local out = vim.tbl_filter(function(p) return vim.uv.fs_stat(p) ~= nil end, list)
