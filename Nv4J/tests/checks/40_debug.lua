@@ -37,6 +37,10 @@
 --                    queue; a stopped client answers every queued request with an error.
 --  build_guard     : build before launch on stub clients: timeout, failed build (status 0) and stopped
 --                    client each warn visibly and launch anyway.
+--  setbp_retry     : a setBreakpoints error "Missing system library" (jdt.ls project not ready) is re-sent with the
+--                    same arguments until it succeeds (stub session: 2 errors then success = 3 requests); any
+--                    other error is not retried; the retries stop after 12.
+--  wipe_terminals  : terminal buffers of earlier launches whose job ended are wiped before the next launch; a running one stays.
 -- Timings: /tmp/nv4j/logs/latency.jsonl (debug_breakpoint_hit, debug_test_breakpoint_hit).
 vim.o.confirm = false
 local lsp = require("lsp")
@@ -438,6 +442,53 @@ local ok_all, err = pcall(function()
       and s_ms and s_ms < 1000 and s_msg:find("could not be sent", 1, true),
     ("timeout: %s ms '%s'; status 0: %s ms '%s'; stopped: %s ms '%s'"):format(tostring(t_ms and math.floor(t_ms)), t_msg:sub(-70),
       tostring(f_ms and math.floor(f_ms)), f_msg:sub(-80), tostring(s_ms and math.floor(s_ms)), s_msg:sub(-70)))
+
+  -- 6. setBreakpoints retry on "Missing system library" (stub session)
+  local function stub_session(fail_n, message)
+    local sess = { calls = 0, config = { type = "java" } }
+    function sess:request(cmd, args, cb)
+      self.calls = self.calls + 1
+      self.last = { cmd = cmd, args = args }
+      local n = self.calls
+      vim.schedule(function()
+        if n <= fail_n then cb({ message = message }) else cb(nil, { breakpoints = {} }) end
+      end)
+    end
+    return sess
+  end
+  local req = { command = "setBreakpoints", arguments = { source = { path = "/nonexistent/X.java" }, lines = { 11 } } }
+  local s1 = stub_session(2, "Missing system library")
+  D.retry_set_breakpoints(s1, { message = "Missing system library" }, nil, req)
+  vim.wait(8000, function() return s1.calls >= 2 and D.set_breakpoints_retried ~= nil end, 20)
+  local s2 = stub_session(0, "x")
+  D.retry_set_breakpoints(s2, { message = "other failure" }, nil, req)
+  vim.wait(1500, function() return s2.calls > 0 end, 20)
+  local s3 = stub_session(100, "Missing system library")
+  local tries_seen = 0
+  local real = s3.request
+  function s3:request(...) tries_seen = tries_seen + 1; return real(self, ...) end
+  D.retry_set_breakpoints(s3, { message = "Missing system library" }, nil, req, nil, 10)
+  vim.wait(4000, function() return tries_seen >= 2 end, 20)
+  vim.wait(1000)
+  lsp.report(P .. "setbp_retry", s1.calls == 3 and s1.last.cmd == "setBreakpoints" and s1.last.args == req.arguments
+      and s2.calls == 0 and tries_seen == 2,
+    ("missing library: %d requests (want 3, same args %s); other error: %d (want 0); starting at try 10: %d (want 2)"):format(
+      s1.calls, tostring(s1.last and s1.last.args == req.arguments), s2.calls, tries_seen))
+
+  -- 7. old debuggee terminals are wiped before the next launch, a running one is kept
+  local function term(cmd)
+    local tb = vim.api.nvim_create_buf(false, true)
+    vim.api.nvim_buf_call(tb, function() vim.fn.jobstart(cmd, { term = true }) end)
+    return tb
+  end
+  local t_done, t_run = term({ "true" }), term({ "sleep", "30" })
+  vim.wait(3000, function() return vim.fn.jobwait({ vim.b[t_done].terminal_job_id }, 0)[1] ~= -1 end, 20)
+  D.terms = { t_done, t_run }
+  D.wipe_old_terminals()
+  local done_gone, run_kept = not vim.api.nvim_buf_is_valid(t_done), vim.api.nvim_buf_is_valid(t_run)
+  pcall(vim.api.nvim_buf_delete, t_run, { force = true })
+  D.terms = {}
+  lsp.report(P .. "wipe_terminals", done_gone and run_kept, ("ended terminal wiped %s, running one kept %s"):format(tostring(done_gone), tostring(run_kept)))
 end)
 _G.print = orig_print
 cleanup()
