@@ -324,10 +324,15 @@ local function until_ms(t0, cond, ms)
   return ok, E.now() - t0
 end
 
---- Build clean: every path has a jdt.ls publish after t_edit and no ERROR, within CLEAN_MS.
-local function clean(paths, t_edit)
+--- Build clean: every path has a jdt.ls publish after t_edit and no ERROR, within CLEAN_MS. `untouched`: files the
+--- refactor did not write (jdt.ls has nothing new to publish for them): only "no ERROR" is required of them.
+local function clean(paths, t_edit, untouched)
   local detail = {}
   local ok = vim.wait(CLEAN_MS, function()
+    for _, p in ipairs(untouched or {}) do
+      local b = vim.fn.bufnr(p)
+      if b == -1 or E.count(vim.diagnostic.get(b), vim.diagnostic.severity.ERROR) > 0 then return false end
+    end
     for _, p in ipairs(paths) do
       local b = vim.fn.bufnr(p)
       if b == -1 then return false end
@@ -338,11 +343,11 @@ local function clean(paths, t_edit)
     return true
   end, 20)
   if not ok then
-    for _, p in ipairs(paths) do
+    for _, p in ipairs(vim.list_extend(vim.list_extend({}, paths), untouched or {})) do
       local b = vim.fn.bufnr(p)
       local errs = b ~= -1 and vim.tbl_filter(function(d) return d.severity == vim.diagnostic.severity.ERROR end, vim.diagnostic.get(b)) or {}
       detail[#detail + 1] = vim.fs.basename(p) .. ": " .. (b == -1 and "no buffer" or
-        ((published_at[vim.uri_from_fname(p)] or 0) < t_edit and "no publish after the edit" or (#errs .. " error(s) " .. E.fmt(errs))))
+        ((vim.tbl_contains(paths, p) and (published_at[vim.uri_from_fname(p)] or 0) < t_edit) and "no publish after the edit" or (#errs .. " error(s) " .. E.fmt(errs))))
     end
   end
   return ok, table.concat(detail, "; ")
@@ -1710,7 +1715,7 @@ case("inline_constant", function()
     { "Invoice unchanged (declaration and its use kept)", E.text(inv) == planted_inv },
     { "Checkout written", (disk(CHECKOUT) or ""):find("return 99 - 1;", 1, true) ~= nil },
     { "summary: 1 file Checkout.java", sum:find(label .. ": 1 file(s): src/main/java/demo/shop/Checkout.java", 1, true) == 1 },
-  }, clean({ CHECKOUT, INVOICE }, E.now() - r.ms))
+  }, clean({ CHECKOUT }, E.now() - r.ms, { INVOICE }))
 end)
 
 -- inline_constant_all: opts.all on Checkout's reference: every reference in both files, declaration removed.
