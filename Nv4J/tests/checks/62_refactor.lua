@@ -101,7 +101,7 @@
 --  change_signature_interface: from Rule.apply: Half.apply changed too (noted); from Half.apply refused.
 --  change_signature_boot: @Bean parameter / @Bean renamed / @GetMapping parameter: Spring warnings.
 --  change_signature_errors (+ _twin, stub): syntax error in Checkout; twin: its edit dropped -> warning.
---  change_signature_stale_twin: a planted stale error publish is cleared by refactor.revalidate.
+--  change_signature_stale_twin: a real stale ERROR on Checkout (jdt.ls validated it against the old declaration) is cleared by refactor.revalidate.
 --  change_signature_parse: typed-form and opts parsing (unit, no jdt.ls).
 --  safe_delete_blocked: on `total` (8 usages, main and test sources): nothing deleted, all 8 in the
 --                       quickfix (opened), the message names the count.
@@ -172,7 +172,11 @@ local snap = F.snapshot()
 local published_at = {}
 local orig_pd = vim.lsp.handlers["textDocument/publishDiagnostics"]
 vim.lsp.handlers["textDocument/publishDiagnostics"] = function(e, result, ctx, cfg)
-  if result and result.uri then published_at[result.uri] = E.now() end
+  -- Only jdt.ls's publishes count: the Spring LS (a second client on every Java buffer) publishes its own, usually
+  -- empty, diagnostics for the same file at unrelated times; counted, one of them looked like "jdt.ls published
+  -- again" while the stale jdt.ls diagnostics were still there (the change_signature_stale_twin flake).
+  local c = ctx and vim.lsp.get_client_by_id(ctx.client_id)
+  if result and result.uri and c and c.name == "jdtls" then published_at[result.uri] = E.now() end
   return orig_pd(e, result, ctx, cfg)
 end
 
@@ -320,10 +324,15 @@ local function until_ms(t0, cond, ms)
   return ok, E.now() - t0
 end
 
---- Build clean: every path has a jdt.ls publish after t_edit and no ERROR, within CLEAN_MS.
-local function clean(paths, t_edit)
+--- Build clean: every path has a jdt.ls publish after t_edit and no ERROR, within CLEAN_MS. `untouched`: files the
+--- refactor did not write (jdt.ls has nothing new to publish for them): only "no ERROR" is required of them.
+local function clean(paths, t_edit, untouched)
   local detail = {}
   local ok = vim.wait(CLEAN_MS, function()
+    for _, p in ipairs(untouched or {}) do
+      local b = vim.fn.bufnr(p)
+      if b == -1 or E.count(vim.diagnostic.get(b), vim.diagnostic.severity.ERROR) > 0 then return false end
+    end
     for _, p in ipairs(paths) do
       local b = vim.fn.bufnr(p)
       if b == -1 then return false end
@@ -334,11 +343,11 @@ local function clean(paths, t_edit)
     return true
   end, 20)
   if not ok then
-    for _, p in ipairs(paths) do
+    for _, p in ipairs(vim.list_extend(vim.list_extend({}, paths), untouched or {})) do
       local b = vim.fn.bufnr(p)
       local errs = b ~= -1 and vim.tbl_filter(function(d) return d.severity == vim.diagnostic.severity.ERROR end, vim.diagnostic.get(b)) or {}
       detail[#detail + 1] = vim.fs.basename(p) .. ": " .. (b == -1 and "no buffer" or
-        ((published_at[vim.uri_from_fname(p)] or 0) < t_edit and "no publish after the edit" or (#errs .. " error(s) " .. E.fmt(errs))))
+        ((vim.tbl_contains(paths, p) and (published_at[vim.uri_from_fname(p)] or 0) < t_edit) and "no publish after the edit" or (#errs .. " error(s) " .. E.fmt(errs))))
     end
   end
   return ok, table.concat(detail, "; ")
@@ -1706,7 +1715,7 @@ case("inline_constant", function()
     { "Invoice unchanged (declaration and its use kept)", E.text(inv) == planted_inv },
     { "Checkout written", (disk(CHECKOUT) or ""):find("return 99 - 1;", 1, true) ~= nil },
     { "summary: 1 file Checkout.java", sum:find(label .. ": 1 file(s): src/main/java/demo/shop/Checkout.java", 1, true) == 1 },
-  }, clean({ CHECKOUT, INVOICE }, E.now() - r.ms))
+  }, clean({ CHECKOUT }, E.now() - r.ms, { INVOICE }))
 end)
 
 -- inline_constant_all: opts.all on Checkout's reference: every reference in both files, declaration removed.
@@ -2562,10 +2571,14 @@ case("change_signature_errors_twin", function()
     ("returned %s after %.0f ms; warning: %s"):format(tostring(r.ret), r.ms, warn ~= "" and warn or "NONE"))
 end)
 
--- change_signature_stale_twin (deterministic twin of the build-clean race): after a clean change, a stale
--- ERROR publish for Checkout is planted (what jdt.ls leaves when it checked Checkout against the old
--- declaration and never again); refactor.revalidate (what change_signature sends after its edit) makes
--- jdt.ls publish Checkout again from the current state: the stale error is gone.
+-- change_signature_stale_twin (deterministic twin of the build-clean race): the stale state is made REAL in jdt.ls
+-- (a planted publish is not: jdt.ls does not republish a file whose diagnostics it believes unchanged, so the old
+-- twin failed about half of the runs). After a clean change, jdt.ls's working copy of PriceCalculator goes back to
+-- total(Invoice) and Checkout is validated against it (a real ERROR on Checkout); the declaration then goes forward
+-- again: jdt.ls validates PriceCalculator and leaves Checkout with the old error (validateAllOpenBuffersOnChanges adds
+-- the other buffers only to the NEXT validation). refactor.revalidate (what change_signature sends after its edit)
+-- makes jdt.ls publish Checkout again from the current state: the error is gone. Without the notification Checkout
+-- is never published again (control: 3 of 3 runs "no publish after the edit").
 case("change_signature_stale_twin", function()
   if not has("change_signature") then return lsp.report(P .. "change_signature_stale_twin", false, pending_reason("change_signature")) end
   local calc = lsp.open(CALC)
@@ -2573,14 +2586,24 @@ case("change_signature_stale_twin", function()
   local r = cs_at(calc, "public int total%(Invoice invoice%)", "total", ADD_DISCOUNT)
   local ok1 = cs_clean({ CHECKOUT, CALC }, E.now() - r.ms)
   local chk = loaded(CHECKOUT)
-  local h = vim.lsp.handlers["textDocument/publishDiagnostics"]
-  h(nil, { uri = vim.uri_from_fname(CHECKOUT), diagnostics = { { range = { start = { line = 11, character = 8 }, ["end"] = { line = 11, character = 20 } },
-    severity = 1, source = "Java", message = "planted stale error: total(Invoice) is not applicable" } } }, { method = "textDocument/publishDiagnostics", client_id = client.id })
-  local planted = E.count(vim.diagnostic.get(chk), vim.diagnostic.severity.ERROR)
+  local good = table.concat(vim.api.nvim_buf_get_lines(calc, 0, -1, false), "\n") .. "\n"
+  local old_decl = good:gsub("int total%(Invoice invoice, int discount%)", "int total(Invoice invoice)", 1)
+  local ver = (vim.lsp.util.buf_versions[calc] or 0) + 1000000
+  local uri = vim.uri_from_fname(CALC)
+  local function send(text) ver = ver + 1; client:notify("textDocument/didChange", { textDocument = { uri = uri, version = ver }, contentChanges = { { text = text } } }) end
+  local function jdt_errs() return E.count(vim.diagnostic.get(chk, { namespace = vim.lsp.diagnostic.get_namespace(client.id) }), vim.diagnostic.severity.ERROR) end
+  -- jdt.ls's working copy of PriceCalculator goes back to total(Invoice): it publishes a real error on Checkout (2-argument calls).
+  send(old_decl)
+  local cver = (vim.lsp.util.buf_versions[chk] or 0) + 1000000
+  client:notify("textDocument/didChange", { textDocument = { uri = vim.uri_from_fname(CHECKOUT), version = cver }, contentChanges = { { text = table.concat(vim.api.nvim_buf_get_lines(chk, 0, -1, false), "\n") .. "\n" } } })
+  local broke = vim.wait(CLEAN_MS * 2, function() return jdt_errs() > 0 end, 20)
+  -- ... and forward again: jdt.ls validates PriceCalculator; Checkout is only added to the NEXT validation.
+  send(good)
+  local planted = jdt_errs()
   local t = refactor.revalidate(client, { CHECKOUT })
   local ok2, why = clean({ CHECKOUT }, t)
-  lsp.report(P .. "change_signature_stale_twin", r.ret == true and ok1 and planted > 0 and ok2,
-    ("change applied %s, clean %s; planted stale errors %d; after revalidate: %s"):format(tostring(r.ret), tostring(ok1), planted, ok2 and "fresh clean publish" or ("still NOT clean: " .. why)))
+  lsp.report(P .. "change_signature_stale_twin", r.ret == true and ok1 and broke and planted > 0 and ok2,
+    ("change applied %s, clean %s; jdt.ls error on Checkout %s, stale errors %d; after revalidate: %s"):format(tostring(r.ret), tostring(ok1), broke and "yes" or "NEVER", planted, ok2 and "fresh clean publish" or ("still NOT clean: " .. why)))
 end)
 
 -- change_signature_parse (unit, no jdt.ls): the typed form and opts turned into the new parameter list.
